@@ -1,0 +1,46 @@
+{
+  "name": "nd-rating-sync",
+  "version": "1.0.0",
+  "description": "Reads embedded rating tags from music files (FMPS_Rating / POPM / iTunes rtng) and syncs them to Navidrome's user ratings via the Subsonic API.",
+  "author": "Your Name <you@example.com>",
+  "homepage": "https://github.com/yourusername/nd-rating-sync",
+  "capabilities": ["lifecycle", "schedulerCallback"],
+  "permissions": {
+    "library": {
+      "reason": "Read music files to extract embedded rating tags",
+      "filesystem": true
+    },
+    "subsonicapi": {
+      "reason": "Call setRating to write star ratings back into Navidrome"
+    },
+    "users": {
+      "reason": "Required by the subsonicapi permission for per-user authorisation"
+    },
+    "scheduler": {
+      "reason": "Schedule periodic scans of the music library"
+    }
+  },
+  "config": [
+    {
+      "key": "username",
+      "label": "Navidrome username",
+      "description": "The Navidrome account whose ratings will be updated. Make sure this user is also added to 'User Access' below.",
+      "type": "string",
+      "required": true
+    },
+    {
+      "key": "skip_already_rated",
+      "label": "Skip already-rated songs",
+      "description": "When 'true' (default), songs that already have a star rating in Navidrome are left untouched. Set to 'false' to overwrite existing ratings from file tags.",
+      "type": "string",
+      "default": "true"
+    },
+    {
+      "key": "max_songs_per_run",
+      "label": "Max songs per scan",
+      "description": "Maximum number of songs to process in a single scheduled run. Use 0 for no limit. Defaults to 500.",
+      "type": "string",
+      "default": "500"
+    }
+  ]
+}
