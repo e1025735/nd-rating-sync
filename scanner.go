@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	pdk "github.com/extism/go-pdk"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
@@ -14,11 +16,19 @@ import (
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
-// pluginConfig holds values the admin sets in the Navidrome plugin UI.
+// pluginConfig holds values read from the Navidrome plugin settings UI.
 type pluginConfig struct {
 	// Username of the Navidrome account used for API calls.
 	// Required – the Subsonic API always needs a `u` parameter.
 	Username string
+	// SyncSchedule is the cron expression for automatic recurring scans.
+	// Set by the admin; defaults to every 6 hours.
+	SyncSchedule string
+	// UserScanCooldownHours is the minimum gap (in hours) between two
+	// user-triggered scans.  Set by the admin; defaults to 24 (once per day).
+	UserScanCooldownHours int
+	// TriggerUserScan is toggled to "true" by a user to request an immediate scan.
+	TriggerUserScan bool
 	// SkipAlreadyRated controls whether songs that already have a user rating
 	// in Navidrome are left untouched.  Defaults to true.
 	SkipAlreadyRated bool
@@ -29,11 +39,27 @@ type pluginConfig struct {
 
 func loadConfig() pluginConfig {
 	cfg := pluginConfig{
-		SkipAlreadyRated: true,
-		MaxSongsPerRun:   500,
+		SyncSchedule:          "0 */6 * * *",
+		UserScanCooldownHours: 24,
+		SkipAlreadyRated:      true,
+		MaxSongsPerRun:        500,
 	}
 	if v, ok := pdk.GetConfig("username"); ok {
 		cfg.Username = strings.TrimSpace(v)
+	}
+	if v, ok := pdk.GetConfig("sync_schedule"); ok {
+		if s := strings.TrimSpace(v); s != "" {
+			cfg.SyncSchedule = s
+		}
+	}
+	if v, ok := pdk.GetConfig("user_scan_cooldown_hours"); ok {
+		var n int
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n >= 0 {
+			cfg.UserScanCooldownHours = n
+		}
+	}
+	if v, ok := pdk.GetConfig("trigger_user_scan"); ok {
+		cfg.TriggerUserScan = strings.ToLower(strings.TrimSpace(v)) == "true"
 	}
 	if v, ok := pdk.GetConfig("skip_already_rated"); ok {
 		cfg.SkipAlreadyRated = strings.ToLower(strings.TrimSpace(v)) != "false"
@@ -45,6 +71,48 @@ func loadConfig() pluginConfig {
 		}
 	}
 	return cfg
+}
+
+// ─── User-triggered scan ──────────────────────────────────────────────────────
+
+var (
+	lastUserScanMu   sync.Mutex
+	lastUserScanTime time.Time // zero = never triggered
+)
+
+// checkAndRunUserTriggeredScan is called every 15 minutes. It runs a full sync
+// when all of these are true:
+//  1. trigger_user_scan is set to "true" in the plugin config
+//  2. the cooldown period configured by the admin has elapsed since the last
+//     user-triggered scan (or no such scan has happened since plugin load)
+func checkAndRunUserTriggeredScan() error {
+	cfg := loadConfig()
+	if !cfg.TriggerUserScan {
+		return nil
+	}
+
+	lastUserScanMu.Lock()
+	last := lastUserScanTime
+	lastUserScanMu.Unlock()
+
+	if cfg.UserScanCooldownHours > 0 && !last.IsZero() {
+		cooldown := time.Duration(cfg.UserScanCooldownHours) * time.Hour
+		remaining := cooldown - time.Since(last)
+		if remaining > 0 {
+			pdk.Log(pdk.LogInfo, fmt.Sprintf(
+				"nd-rating-sync: user scan requested but cooldown active (%.0f min remaining)",
+				remaining.Minutes()))
+			return nil
+		}
+	}
+
+	pdk.Log(pdk.LogInfo, "nd-rating-sync: running user-triggered rating sync")
+
+	lastUserScanMu.Lock()
+	lastUserScanTime = time.Now()
+	lastUserScanMu.Unlock()
+
+	return runSync()
 }
 
 // ─── Subsonic response types ──────────────────────────────────────────────────

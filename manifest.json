@@ -1,6 +1,6 @@
 {
   "name": "nd-rating-sync",
-  "version": "1.0.0",
+  "version": "0.2.0",
   "description": "Reads embedded rating tags from music files (FMPS_Rating / POPM / iTunes rtng) and syncs them to Navidrome's user ratings via the Subsonic API.",
   "author": "Your Name <you@example.com>",
   "homepage": "https://github.com/yourusername/nd-rating-sync",
@@ -27,6 +27,27 @@
       "description": "The Navidrome account whose ratings will be updated. Make sure this user is also added to 'User Access' below.",
       "type": "string",
       "required": true
+    },
+    {
+      "key": "sync_schedule",
+      "label": "Sync schedule (cron expression) [admin]",
+      "description": "Cron expression for automatic recurring scans. Examples: '0 */6 * * *' = every 6 hours, '0 2 * * *' = daily at 02:00. Changes take effect after the plugin is reloaded. Only administrators should change this.",
+      "type": "string",
+      "default": "0 */6 * * *"
+    },
+    {
+      "key": "user_scan_cooldown_hours",
+      "label": "User-scan cooldown (hours) [admin]",
+      "description": "Minimum number of hours a user must wait between manual scan requests. Default is 24 (once per day). Set to 0 to disable the cooldown. Only administrators should change this.",
+      "type": "string",
+      "default": "24"
+    },
+    {
+      "key": "trigger_user_scan",
+      "label": "Trigger scan now",
+      "description": "Set to 'true' to request an immediate one-time rating scan. The plugin checks for this request every 15 minutes. It resets automatically once the scan is queued. Subject to the cooldown period above.",
+      "type": "string",
+      "default": "false"
     },
     {
       "key": "skip_already_rated",
