@@ -5,6 +5,7 @@ module github.com/yourusername/nd-rating-sync
 go 1.23
 
 require (
+	github.com/bogem/id3v2/v2 v2.1.4
 	github.com/extism/go-pdk v1.0.2
 	github.com/navidrome/navidrome/plugins/pdk/go v0.0.0-20260101000000-000000000000
 )
