@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,117 +10,7 @@ import (
 	"time"
 
 	pdk "github.com/extism/go-pdk"
-	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 )
-
-// ─── Configuration ────────────────────────────────────────────────────────────
-
-type userConfig struct {
-	Username         string
-	TriggerUserScan  bool
-	SkipAlreadyRated bool
-	RatingTagOrder   []string
-}
-
-type libraryConfig struct {
-	LibraryID   string
-	LibraryName string
-	Users       []userConfig
-}
-
-// pluginConfig holds values read from the Navidrome plugin settings UI.
-type pluginConfig struct {
-	// SyncSchedule is the cron expression for automatic recurring scans.
-	SyncSchedule string
-	// UserScanCooldownHours is the minimum gap (in hours) between two
-	// user-triggered scans for the same user.
-	UserScanCooldownHours int
-	// MaxSongsPerRun caps the number of songs processed per scheduler run
-	// per user. 0 = unlimited.
-	MaxSongsPerRun int
-	// Libraries holds per-library, per-user rating sync settings.
-	Libraries []libraryConfig
-}
-
-// jsonUserConfig is used only for JSON unmarshaling of the libraries config.
-type jsonUserConfig struct {
-	Username         string   `json:"username"`
-	TriggerUserScan  bool     `json:"trigger_user_scan"`
-	SkipAlreadyRated *bool    `json:"skip_already_rated"` // pointer to detect absence (default: true)
-	RatingTagOrder   []string `json:"ratingTagOrder"`
-}
-
-type jsonLibraryConfig struct {
-	LibraryID   string           `json:"libraryId"`
-	LibraryName string           `json:"libraryName"`
-	Users       []jsonUserConfig `json:"users"`
-}
-
-var defaultTagOrder = []string{"WMP", "iTunes", "MediaMonkey"}
-
-func loadConfig() pluginConfig {
-	cfg := pluginConfig{
-		SyncSchedule:          "0 */6 * * *",
-		UserScanCooldownHours: 24,
-		MaxSongsPerRun:        500,
-	}
-
-	if v, ok := pdk.GetConfig("sync_schedule"); ok {
-		if s := strings.TrimSpace(v); s != "" {
-			cfg.SyncSchedule = s
-		}
-	}
-	if v, ok := pdk.GetConfig("user_scan_cooldown_hours"); ok {
-		var n int
-		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n >= 0 {
-			cfg.UserScanCooldownHours = n
-		}
-	}
-	if v, ok := pdk.GetConfig("max_songs_per_run"); ok {
-		var n int
-		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n >= 0 {
-			cfg.MaxSongsPerRun = n
-		} else {
-			pdk.Log(pdk.LogWarn, fmt.Sprintf(
-				"nd-rating-sync: invalid max_songs_per_run=%q – using default %d", v, cfg.MaxSongsPerRun))
-		}
-	}
-
-	if v, ok := pdk.GetConfig("libraries"); ok && v != "" {
-		var rawLibs []jsonLibraryConfig
-		if err := json.Unmarshal([]byte(v), &rawLibs); err != nil {
-			pdk.Log(pdk.LogWarn, "nd-rating-sync: failed to parse libraries config: "+err.Error())
-		} else {
-			for _, rl := range rawLibs {
-				lc := libraryConfig{
-					LibraryID:   rl.LibraryID,
-					LibraryName: rl.LibraryName,
-				}
-				for _, ru := range rl.Users {
-					uc := userConfig{
-						Username:         ru.Username,
-						TriggerUserScan:  ru.TriggerUserScan,
-						SkipAlreadyRated: true, // default
-						RatingTagOrder:   ru.RatingTagOrder,
-					}
-					if ru.SkipAlreadyRated != nil {
-						uc.SkipAlreadyRated = *ru.SkipAlreadyRated
-					}
-					if len(uc.RatingTagOrder) == 0 {
-						uc.RatingTagOrder = defaultTagOrder
-					}
-					lc.Users = append(lc.Users, uc)
-				}
-				cfg.Libraries = append(cfg.Libraries, lc)
-			}
-		}
-	}
-
-	pdk.Log(pdk.LogDebug, fmt.Sprintf(
-		"nd-rating-sync: config – libraries=%d sync_schedule=%q max_songs_per_run=%d",
-		len(cfg.Libraries), cfg.SyncSchedule, cfg.MaxSongsPerRun))
-	return cfg
-}
 
 // ─── User-triggered scan ──────────────────────────────────────────────────────
 
@@ -178,40 +67,9 @@ func checkAndRunUserTriggeredScan() error {
 	return nil
 }
 
-// ─── Subsonic response types ──────────────────────────────────────────────────
-
-type subsonicWrapper struct {
-	Response subsonicResponse `json:"subsonic-response"`
-}
-
-type subsonicResponse struct {
-	Status        string         `json:"status"`
-	Error         *subsonicError `json:"error,omitempty"`
-	SearchResult3 *searchResult3 `json:"searchResult3,omitempty"`
-}
-
-type subsonicError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-type searchResult3 struct {
-	Song []subsonicSong `json:"song"`
-}
-
-type subsonicSong struct {
-	ID         string `json:"id"`
-	Title      string `json:"title"`
-	Artist     string `json:"artist"`
-	Path       string `json:"path"`
-	Suffix     string `json:"suffix"`
-	UserRating int    `json:"userRating"` // 0 = unrated, 1–5 = stars
-}
-
 // ─── Sync ─────────────────────────────────────────────────────────────────────
 
-// runSync is the top-level entry called from the scheduler callback. It iterates
-// over every configured library/user combination and syncs ratings for each.
+// runSync iterates over every configured library/user combination and syncs ratings.
 func runSync() error {
 	cfg := loadConfig()
 	if len(cfg.Libraries) == 0 {
@@ -288,87 +146,6 @@ func runSyncForUser(lib libraryConfig, u userConfig, maxSongs int) error {
 	pdk.Log(pdk.LogInfo, fmt.Sprintf(
 		"nd-rating-sync: done user=%q – rated=%d skipped_already_rated=%d skipped_no_tag=%d errors=%d",
 		u.Username, rated, skippedRated, skippedNoTag, errored))
-	return nil
-}
-
-// ─── Subsonic helpers ─────────────────────────────────────────────────────────
-
-// fetchAllSongs pages through search3 and returns every song accessible by
-// username in the given library (musicFolderId). Pass an empty libraryID to
-// search across all libraries.
-func fetchAllSongs(username, libraryID string) ([]subsonicSong, error) {
-	const pageSize = 500
-	var all []subsonicSong
-	offset := 0
-
-	for {
-		uri := fmt.Sprintf(
-			"search3?query=%%22%%22&songCount=%d&songOffset=%d&albumCount=0&artistCount=0&u=%s",
-			pageSize, offset, username)
-		if libraryID != "" {
-			uri += "&musicFolderId=" + libraryID
-		}
-
-		pdk.Log(pdk.LogDebug, fmt.Sprintf(
-			"nd-rating-sync: fetching songs – user=%q library=%s offset=%d page_size=%d",
-			username, libraryID, offset, pageSize))
-
-		raw, err := host.SubsonicAPICall(uri)
-		if err != nil {
-			return nil, fmt.Errorf("SubsonicAPICall (offset=%d): %w", offset, err)
-		}
-
-		var wrapper subsonicWrapper
-		if err := json.Unmarshal(raw, &wrapper); err != nil {
-			return nil, fmt.Errorf("unmarshal search3 response: %w", err)
-		}
-		if wrapper.Response.Status != "ok" {
-			if wrapper.Response.Error != nil {
-				return nil, fmt.Errorf("Subsonic API error %d: %s",
-					wrapper.Response.Error.Code, wrapper.Response.Error.Message)
-			}
-			return nil, errors.New("Subsonic API returned non-ok status")
-		}
-
-		if wrapper.Response.SearchResult3 == nil {
-			break
-		}
-		page := wrapper.Response.SearchResult3.Song
-		all = append(all, page...)
-		pdk.Log(pdk.LogDebug, fmt.Sprintf(
-			"nd-rating-sync: page offset=%d returned %d songs (total so far: %d)",
-			offset, len(page), len(all)))
-
-		if len(page) < pageSize {
-			break
-		}
-		offset += pageSize
-	}
-
-	pdk.Log(pdk.LogInfo, fmt.Sprintf(
-		"nd-rating-sync: found %d songs for user=%q library=%s", len(all), username, libraryID))
-	return all, nil
-}
-
-// setRating calls the Subsonic setRating endpoint.
-func setRating(username, songID string, stars int) error {
-	uri := fmt.Sprintf("setRating?id=%s&rating=%d&u=%s", songID, stars, username)
-	raw, err := host.SubsonicAPICall(uri)
-	if err != nil {
-		return err
-	}
-
-	var wrapper subsonicWrapper
-	if err := json.Unmarshal(raw, &wrapper); err != nil {
-		return fmt.Errorf("unmarshal setRating response: %w", err)
-	}
-	if wrapper.Response.Status != "ok" {
-		if wrapper.Response.Error != nil {
-			return fmt.Errorf("API error %d: %s",
-				wrapper.Response.Error.Code, wrapper.Response.Error.Message)
-		}
-		return errors.New("setRating returned non-ok status")
-	}
 	return nil
 }
 

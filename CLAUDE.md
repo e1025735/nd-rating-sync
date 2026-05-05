@@ -4,10 +4,12 @@ Navidrome plugin (WASM) that reads embedded star-rating tags from MP3 files and 
 
 ## File layout
 
-| File | Role |
-|------|------|
-| `main.go` | Lifecycle (`nd_lifecycle_on_init`) and scheduler callback entry points |
-| `scanner.go` | Config types/loading, user-triggered scan logic, `runSync`/`runSyncForUser`, Subsonic helpers |
+| File | Responsibility |
+|------|---------------|
+| `main.go` | Entry points — lifecycle init, scheduler callback registration via `ratingPlugin` |
+| `config.go` | Config types (`pluginConfig`, `libraryConfig`, `userConfig`) and `loadConfig()` |
+| `scanner.go` | Sync orchestration — `runSync`, `runSyncForUser`, `checkAndRunUserTriggeredScan`, `extractStarsFromFile` |
+| `subsonic.go` | Subsonic API domain — response types, `fetchAllSongs`, `setRating` |
 | `id3.go` | ID3v2 tag parsing (`parseID3v2Rating`) — dispatches by per-user `tagOrder` |
 | `rating.go` | Pure converters: `fmpsToStars`, `popmWMPToStars`, `popmITunesToStars`, `popmWinampToStars`, `popmLinear51ToStars` |
 | `manifest.json` | Plugin metadata, capabilities, JSON Schema config definition |

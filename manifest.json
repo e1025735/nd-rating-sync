@@ -1,6 +1,6 @@
 {
   "name": "nd-rating-sync",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Reads embedded rating tags from music files (FMPS_Rating / POPM / iTunes rtng / WMP / MediaMonkey) and syncs them to Navidrome's user ratings via the Subsonic API, with per-user per-library tag priority and overwrite control.",
   "author": "Your Name <you@example.com>",
   "homepage": "https://github.com/yourusername/nd-rating-sync",
