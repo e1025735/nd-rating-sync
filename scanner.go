@@ -16,37 +16,56 @@ import (
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
+type userConfig struct {
+	Username         string
+	TriggerUserScan  bool
+	SkipAlreadyRated bool
+	RatingTagOrder   []string
+}
+
+type libraryConfig struct {
+	LibraryID   string
+	LibraryName string
+	Users       []userConfig
+}
+
 // pluginConfig holds values read from the Navidrome plugin settings UI.
 type pluginConfig struct {
-	// Username of the Navidrome account used for API calls.
-	// Required – the Subsonic API always needs a `u` parameter.
-	Username string
 	// SyncSchedule is the cron expression for automatic recurring scans.
-	// Set by the admin; defaults to every 6 hours.
 	SyncSchedule string
 	// UserScanCooldownHours is the minimum gap (in hours) between two
-	// user-triggered scans.  Set by the admin; defaults to 24 (once per day).
+	// user-triggered scans for the same user.
 	UserScanCooldownHours int
-	// TriggerUserScan is toggled to "true" by a user to request an immediate scan.
-	TriggerUserScan bool
-	// SkipAlreadyRated controls whether songs that already have a user rating
-	// in Navidrome are left untouched.  Defaults to true.
-	SkipAlreadyRated bool
-	// MaxSongsPerRun caps the number of songs processed per scheduler run to
-	// avoid very long-running tasks on large libraries.  0 = unlimited.
+	// MaxSongsPerRun caps the number of songs processed per scheduler run
+	// per user. 0 = unlimited.
 	MaxSongsPerRun int
+	// Libraries holds per-library, per-user rating sync settings.
+	Libraries []libraryConfig
 }
+
+// jsonUserConfig is used only for JSON unmarshaling of the libraries config.
+type jsonUserConfig struct {
+	Username         string   `json:"username"`
+	TriggerUserScan  bool     `json:"trigger_user_scan"`
+	SkipAlreadyRated *bool    `json:"skip_already_rated"` // pointer to detect absence (default: true)
+	RatingTagOrder   []string `json:"ratingTagOrder"`
+}
+
+type jsonLibraryConfig struct {
+	LibraryID   string           `json:"libraryId"`
+	LibraryName string           `json:"libraryName"`
+	Users       []jsonUserConfig `json:"users"`
+}
+
+var defaultTagOrder = []string{"WMP", "iTunes", "MediaMonkey"}
 
 func loadConfig() pluginConfig {
 	cfg := pluginConfig{
 		SyncSchedule:          "0 */6 * * *",
 		UserScanCooldownHours: 24,
-		SkipAlreadyRated:      true,
 		MaxSongsPerRun:        500,
 	}
-	if v, ok := pdk.GetConfig("username"); ok {
-		cfg.Username = strings.TrimSpace(v)
-	}
+
 	if v, ok := pdk.GetConfig("sync_schedule"); ok {
 		if s := strings.TrimSpace(v); s != "" {
 			cfg.SyncSchedule = s
@@ -58,12 +77,6 @@ func loadConfig() pluginConfig {
 			cfg.UserScanCooldownHours = n
 		}
 	}
-	if v, ok := pdk.GetConfig("trigger_user_scan"); ok {
-		cfg.TriggerUserScan = strings.ToLower(strings.TrimSpace(v)) == "true"
-	}
-	if v, ok := pdk.GetConfig("skip_already_rated"); ok {
-		cfg.SkipAlreadyRated = strings.ToLower(strings.TrimSpace(v)) != "false"
-	}
 	if v, ok := pdk.GetConfig("max_songs_per_run"); ok {
 		var n int
 		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n >= 0 {
@@ -73,52 +86,96 @@ func loadConfig() pluginConfig {
 				"nd-rating-sync: invalid max_songs_per_run=%q – using default %d", v, cfg.MaxSongsPerRun))
 		}
 	}
+
+	if v, ok := pdk.GetConfig("libraries"); ok && v != "" {
+		var rawLibs []jsonLibraryConfig
+		if err := json.Unmarshal([]byte(v), &rawLibs); err != nil {
+			pdk.Log(pdk.LogWarn, "nd-rating-sync: failed to parse libraries config: "+err.Error())
+		} else {
+			for _, rl := range rawLibs {
+				lc := libraryConfig{
+					LibraryID:   rl.LibraryID,
+					LibraryName: rl.LibraryName,
+				}
+				for _, ru := range rl.Users {
+					uc := userConfig{
+						Username:         ru.Username,
+						TriggerUserScan:  ru.TriggerUserScan,
+						SkipAlreadyRated: true, // default
+						RatingTagOrder:   ru.RatingTagOrder,
+					}
+					if ru.SkipAlreadyRated != nil {
+						uc.SkipAlreadyRated = *ru.SkipAlreadyRated
+					}
+					if len(uc.RatingTagOrder) == 0 {
+						uc.RatingTagOrder = defaultTagOrder
+					}
+					lc.Users = append(lc.Users, uc)
+				}
+				cfg.Libraries = append(cfg.Libraries, lc)
+			}
+		}
+	}
+
 	pdk.Log(pdk.LogDebug, fmt.Sprintf(
-		"nd-rating-sync: config – username=%q skip_already_rated=%v max_songs_per_run=%d",
-		cfg.Username, cfg.SkipAlreadyRated, cfg.MaxSongsPerRun))
+		"nd-rating-sync: config – libraries=%d sync_schedule=%q max_songs_per_run=%d",
+		len(cfg.Libraries), cfg.SyncSchedule, cfg.MaxSongsPerRun))
 	return cfg
 }
 
 // ─── User-triggered scan ──────────────────────────────────────────────────────
 
 var (
-	lastUserScanMu   sync.Mutex
-	lastUserScanTime time.Time // zero = never triggered
+	lastUserScanMu    sync.Mutex
+	lastUserScanTimes = map[string]time.Time{} // key: username
 )
 
-// checkAndRunUserTriggeredScan is called every 15 minutes. It runs a full sync
-// when all of these are true:
-//  1. trigger_user_scan is set to "true" in the plugin config
-//  2. the cooldown period configured by the admin has elapsed since the last
-//     user-triggered scan (or no such scan has happened since plugin load)
+// checkAndRunUserTriggeredScan is called every 15 minutes. For each user who
+// has trigger_user_scan=true and whose cooldown has elapsed, it runs a full
+// sync scoped to that user and library.
 func checkAndRunUserTriggeredScan() error {
 	cfg := loadConfig()
-	if !cfg.TriggerUserScan {
-		return nil
-	}
 
-	lastUserScanMu.Lock()
-	last := lastUserScanTime
-	lastUserScanMu.Unlock()
+	var errMsgs []string
+	for _, lib := range cfg.Libraries {
+		for _, u := range lib.Users {
+			if !u.TriggerUserScan {
+				continue
+			}
 
-	if cfg.UserScanCooldownHours > 0 && !last.IsZero() {
-		cooldown := time.Duration(cfg.UserScanCooldownHours) * time.Hour
-		remaining := cooldown - time.Since(last)
-		if remaining > 0 {
+			lastUserScanMu.Lock()
+			last := lastUserScanTimes[u.Username]
+			lastUserScanMu.Unlock()
+
+			if cfg.UserScanCooldownHours > 0 && !last.IsZero() {
+				cooldown := time.Duration(cfg.UserScanCooldownHours) * time.Hour
+				remaining := cooldown - time.Since(last)
+				if remaining > 0 {
+					pdk.Log(pdk.LogInfo, fmt.Sprintf(
+						"nd-rating-sync: user scan requested for %q but cooldown active (%.0f min remaining)",
+						u.Username, remaining.Minutes()))
+					continue
+				}
+			}
+
 			pdk.Log(pdk.LogInfo, fmt.Sprintf(
-				"nd-rating-sync: user scan requested but cooldown active (%.0f min remaining)",
-				remaining.Minutes()))
-			return nil
+				"nd-rating-sync: running user-triggered rating sync for %q (library=%s)",
+				u.Username, lib.LibraryID))
+
+			lastUserScanMu.Lock()
+			lastUserScanTimes[u.Username] = time.Now()
+			lastUserScanMu.Unlock()
+
+			if err := runSyncForUser(lib, u, cfg.MaxSongsPerRun); err != nil {
+				errMsgs = append(errMsgs, fmt.Sprintf("user=%s lib=%s: %v", u.Username, lib.LibraryID, err))
+			}
 		}
 	}
 
-	pdk.Log(pdk.LogInfo, "nd-rating-sync: running user-triggered rating sync")
-
-	lastUserScanMu.Lock()
-	lastUserScanTime = time.Now()
-	lastUserScanMu.Unlock()
-
-	return runSync()
+	if len(errMsgs) > 0 {
+		return fmt.Errorf("user-triggered sync errors: %s", strings.Join(errMsgs, "; "))
+	}
+	return nil
 }
 
 // ─── Subsonic response types ──────────────────────────────────────────────────
@@ -153,65 +210,93 @@ type subsonicSong struct {
 
 // ─── Sync ─────────────────────────────────────────────────────────────────────
 
-// runSync is the top-level entry called from the scheduler callback.
+// runSync is the top-level entry called from the scheduler callback. It iterates
+// over every configured library/user combination and syncs ratings for each.
 func runSync() error {
 	cfg := loadConfig()
-	if cfg.Username == "" {
-		return errors.New("'username' is not configured – set it in the plugin settings")
+	if len(cfg.Libraries) == 0 {
+		return errors.New("no libraries configured – add at least one library with users in the plugin settings")
 	}
 
 	pdk.Log(pdk.LogInfo, fmt.Sprintf(
-		"nd-rating-sync: starting sync – skip_already_rated=%v max_songs_per_run=%d",
-		cfg.SkipAlreadyRated, cfg.MaxSongsPerRun))
+		"nd-rating-sync: starting sync – libraries=%d max_songs_per_run=%d",
+		len(cfg.Libraries), cfg.MaxSongsPerRun))
 
-	songs, err := fetchAllSongs(cfg)
+	var errMsgs []string
+	for _, lib := range cfg.Libraries {
+		for _, u := range lib.Users {
+			if err := runSyncForUser(lib, u, cfg.MaxSongsPerRun); err != nil {
+				errMsgs = append(errMsgs, fmt.Sprintf("user=%s lib=%s: %v", u.Username, lib.LibraryID, err))
+			}
+		}
+	}
+
+	if len(errMsgs) > 0 {
+		return fmt.Errorf("sync errors: %s", strings.Join(errMsgs, "; "))
+	}
+	return nil
+}
+
+// runSyncForUser fetches and processes songs for a single library/user pair.
+func runSyncForUser(lib libraryConfig, u userConfig, maxSongs int) error {
+	if u.Username == "" {
+		return errors.New("username is empty – check plugin configuration")
+	}
+
+	pdk.Log(pdk.LogInfo, fmt.Sprintf(
+		"nd-rating-sync: syncing user=%q library=%s skip_already_rated=%v tag_order=%v",
+		u.Username, lib.LibraryID, u.SkipAlreadyRated, u.RatingTagOrder))
+
+	songs, err := fetchAllSongs(u.Username, lib.LibraryID)
 	if err != nil {
 		return fmt.Errorf("fetching songs: %w", err)
 	}
 
 	rated, skippedRated, skippedNoTag, errored := 0, 0, 0, 0
 	for i, s := range songs {
-		if cfg.MaxSongsPerRun > 0 && i >= cfg.MaxSongsPerRun {
+		if maxSongs > 0 && i >= maxSongs {
 			pdk.Log(pdk.LogInfo, fmt.Sprintf(
-				"nd-rating-sync: reached max_songs_per_run=%d, stopping early", cfg.MaxSongsPerRun))
+				"nd-rating-sync: reached max_songs_per_run=%d for user=%q, stopping early",
+				maxSongs, u.Username))
 			break
 		}
 
-		if cfg.SkipAlreadyRated && s.UserRating > 0 {
+		if u.SkipAlreadyRated && s.UserRating > 0 {
 			pdk.Log(pdk.LogDebug, fmt.Sprintf(
 				"nd-rating-sync: skipping %q – already rated (%d stars in Navidrome)", s.Title, s.UserRating))
 			skippedRated++
 			continue
 		}
 
-		stars, ok := extractStarsFromFile(s.Path, s.Suffix)
+		stars, ok := extractStarsFromFile(s.Path, s.Suffix, u.RatingTagOrder)
 		if !ok {
 			skippedNoTag++
 			continue
 		}
 
-		if err := setRating(cfg.Username, s.ID, stars); err != nil {
+		if err := setRating(u.Username, s.ID, stars); err != nil {
 			pdk.Log(pdk.LogWarn, fmt.Sprintf(
 				"nd-rating-sync: setRating failed for %q (id=%s): %v", s.Title, s.ID, err))
 			errored++
 			continue
 		}
 
-		pdk.Log(pdk.LogDebug, fmt.Sprintf(
-			"nd-rating-sync: rated %q → %d stars", s.Title, stars))
+		pdk.Log(pdk.LogDebug, fmt.Sprintf("nd-rating-sync: rated %q → %d stars", s.Title, stars))
 		rated++
 	}
 
 	pdk.Log(pdk.LogInfo, fmt.Sprintf(
-		"nd-rating-sync: done – rated=%d skipped_already_rated=%d skipped_no_tag=%d errors=%d",
-		rated, skippedRated, skippedNoTag, errored))
+		"nd-rating-sync: done user=%q – rated=%d skipped_already_rated=%d skipped_no_tag=%d errors=%d",
+		u.Username, rated, skippedRated, skippedNoTag, errored))
 	return nil
 }
 
 // ─── Subsonic helpers ─────────────────────────────────────────────────────────
 
-// fetchAllSongs pages through search3 and returns every song in the library.
-func fetchAllSongs(cfg pluginConfig) ([]subsonicSong, error) {
+// fetchAllSongs pages through search3 and returns every song accessible by
+// username in the given library (musicFolderId). Pass an empty libraryID to
+// search across all libraries.
+func fetchAllSongs(username, libraryID string) ([]subsonicSong, error) {
 	const pageSize = 500
 	var all []subsonicSong
 	offset := 0
@@ -219,9 +304,14 @@ func fetchAllSongs(cfg pluginConfig) ([]subsonicSong, error) {
 	for {
 		uri := fmt.Sprintf(
 			"search3?query=%%22%%22&songCount=%d&songOffset=%d&albumCount=0&artistCount=0&u=%s",
-			pageSize, offset, cfg.Username)
+			pageSize, offset, username)
+		if libraryID != "" {
+			uri += "&musicFolderId=" + libraryID
+		}
 
-		pdk.Log(pdk.LogDebug, fmt.Sprintf("nd-rating-sync: fetching songs – offset=%d page_size=%d", offset, pageSize))
+		pdk.Log(pdk.LogDebug, fmt.Sprintf(
+			"nd-rating-sync: fetching songs – user=%q library=%s offset=%d page_size=%d",
+			username, libraryID, offset, pageSize))
 
 		raw, err := host.SubsonicAPICall(uri)
 		if err != nil {
@@ -245,15 +335,18 @@ func fetchAllSongs(cfg pluginConfig) ([]subsonicSong, error) {
 		}
 		page := wrapper.Response.SearchResult3.Song
 		all = append(all, page...)
-		pdk.Log(pdk.LogDebug, fmt.Sprintf("nd-rating-sync: page offset=%d returned %d songs (total so far: %d)", offset, len(page), len(all)))
+		pdk.Log(pdk.LogDebug, fmt.Sprintf(
+			"nd-rating-sync: page offset=%d returned %d songs (total so far: %d)",
+			offset, len(page), len(all)))
 
 		if len(page) < pageSize {
-			break // last page
+			break
 		}
 		offset += pageSize
 	}
 
-	pdk.Log(pdk.LogInfo, fmt.Sprintf("nd-rating-sync: found %d songs in library", len(all)))
+	pdk.Log(pdk.LogInfo, fmt.Sprintf(
+		"nd-rating-sync: found %d songs for user=%q library=%s", len(all), username, libraryID))
 	return all, nil
 }
 
@@ -282,8 +375,9 @@ func setRating(username, songID string, stars int) error {
 // ─── File reading ─────────────────────────────────────────────────────────────
 
 // extractStarsFromFile reads the audio file at path and returns a 1–5 star
-// rating, or (0, false) if no recognised rating tag is found.
-func extractStarsFromFile(path, suffix string) (int, bool) {
+// rating using the tag formats in tagOrder for priority, or (0, false) if no
+// recognised rating tag is found.
+func extractStarsFromFile(path, suffix string, tagOrder []string) (int, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		pdk.Log(pdk.LogWarn, fmt.Sprintf("nd-rating-sync: cannot read %q: %v", path, err))
@@ -297,7 +391,7 @@ func extractStarsFromFile(path, suffix string) (int, bool) {
 
 	switch ext {
 	case "mp3":
-		stars, ok := parseID3v2Rating(data)
+		stars, ok := parseID3v2Rating(data, tagOrder)
 		if ok {
 			pdk.Log(pdk.LogDebug, fmt.Sprintf("nd-rating-sync: %q – found rating tag → %d stars", path, stars))
 		} else {
@@ -305,7 +399,8 @@ func extractStarsFromFile(path, suffix string) (int, bool) {
 		}
 		return stars, ok
 	default:
-		pdk.Log(pdk.LogWarn, fmt.Sprintf("nd-rating-sync: skipping %q – only MP3 files are supported (got .%s)", path, ext))
+		pdk.Log(pdk.LogWarn, fmt.Sprintf(
+			"nd-rating-sync: skipping %q – only MP3 files are supported (got .%s)", path, ext))
 		return 0, false
 	}
 }

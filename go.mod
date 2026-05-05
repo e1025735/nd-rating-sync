@@ -2,12 +2,21 @@ module github.com/yourusername/nd-rating-sync
 
 // TinyGo targets a specific Go version; check your TinyGo release notes
 // and align this with the supported version (typically 1.22+).
-go 1.23
+go 1.25
 
 require (
 	github.com/bogem/id3v2/v2 v2.1.4
-	github.com/extism/go-pdk v1.0.2
-	github.com/navidrome/navidrome/plugins/pdk/go v0.0.0-20260101000000-000000000000
+	github.com/extism/go-pdk v1.1.3
+	github.com/navidrome/navidrome/plugins/pdk/go v0.0.0-20260504220411-5b85b2839a43
+)
+
+require (
+	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/stretchr/objx v0.5.2 // indirect
+	github.com/stretchr/testify v1.11.1 // indirect
+	golang.org/x/text v0.3.8 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 // ── LOCAL DEVELOPMENT ──────────────────────────────────────────────────────────
