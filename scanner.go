@@ -214,19 +214,8 @@ func extractStarsFromFile(path, suffix string) (int, bool) {
 	switch ext {
 	case "mp3":
 		return parseID3v2Rating(data)
-	case "flac":
-		return parseFlacVorbisRating(data)
-	case "ogg", "oga":
-		return parseOggVorbisRating(data)
-	case "opus":
-		return parseOggVorbisRating(data) // Opus uses the same Ogg container
-	case "m4a", "mp4", "aac":
-		return parseMP4Rating(data)
 	default:
-		// Attempt ID3v2 for any unrecognised format (e.g. AIFF with ID3 chunk).
-		if stars, ok := parseID3v2Rating(data); ok {
-			return stars, true
-		}
+		pdk.Log(pdk.LogWarn, fmt.Sprintf("nd-rating-sync: skipping %q – only MP3 files are supported (got .%s)", path, ext))
 		return 0, false
 	}
 }
