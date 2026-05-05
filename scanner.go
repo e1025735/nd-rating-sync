@@ -42,8 +42,14 @@ func loadConfig() pluginConfig {
 		var n int
 		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n >= 0 {
 			cfg.MaxSongsPerRun = n
+		} else {
+			pdk.Log(pdk.LogWarn, fmt.Sprintf(
+				"nd-rating-sync: invalid max_songs_per_run=%q – using default %d", v, cfg.MaxSongsPerRun))
 		}
 	}
+	pdk.Log(pdk.LogDebug, fmt.Sprintf(
+		"nd-rating-sync: config – username=%q skip_already_rated=%v max_songs_per_run=%d",
+		cfg.Username, cfg.SkipAlreadyRated, cfg.MaxSongsPerRun))
 	return cfg
 }
 
@@ -86,27 +92,33 @@ func runSync() error {
 		return errors.New("'username' is not configured – set it in the plugin settings")
 	}
 
+	pdk.Log(pdk.LogInfo, fmt.Sprintf(
+		"nd-rating-sync: starting sync – skip_already_rated=%v max_songs_per_run=%d",
+		cfg.SkipAlreadyRated, cfg.MaxSongsPerRun))
+
 	songs, err := fetchAllSongs(cfg)
 	if err != nil {
 		return fmt.Errorf("fetching songs: %w", err)
 	}
 
-	rated, skipped, errored := 0, 0, 0
+	rated, skippedRated, skippedNoTag, errored := 0, 0, 0, 0
 	for i, s := range songs {
 		if cfg.MaxSongsPerRun > 0 && i >= cfg.MaxSongsPerRun {
-			pdk.Log(pdk.LogInfo, fmt.Sprintf("nd-rating-sync: reached max_songs_per_run=%d, stopping", cfg.MaxSongsPerRun))
+			pdk.Log(pdk.LogInfo, fmt.Sprintf(
+				"nd-rating-sync: reached max_songs_per_run=%d, stopping early", cfg.MaxSongsPerRun))
 			break
 		}
 
 		if cfg.SkipAlreadyRated && s.UserRating > 0 {
-			skipped++
+			pdk.Log(pdk.LogDebug, fmt.Sprintf(
+				"nd-rating-sync: skipping %q – already rated (%d stars in Navidrome)", s.Title, s.UserRating))
+			skippedRated++
 			continue
 		}
 
 		stars, ok := extractStarsFromFile(s.Path, s.Suffix)
 		if !ok {
-			// No embedded rating tag found – nothing to do.
-			skipped++
+			skippedNoTag++
 			continue
 		}
 
@@ -123,7 +135,8 @@ func runSync() error {
 	}
 
 	pdk.Log(pdk.LogInfo, fmt.Sprintf(
-		"nd-rating-sync: done – rated=%d skipped=%d errors=%d", rated, skipped, errored))
+		"nd-rating-sync: done – rated=%d skipped_already_rated=%d skipped_no_tag=%d errors=%d",
+		rated, skippedRated, skippedNoTag, errored))
 	return nil
 }
 
@@ -139,6 +152,8 @@ func fetchAllSongs(cfg pluginConfig) ([]subsonicSong, error) {
 		uri := fmt.Sprintf(
 			"search3?query=%%22%%22&songCount=%d&songOffset=%d&albumCount=0&artistCount=0&u=%s",
 			pageSize, offset, cfg.Username)
+
+		pdk.Log(pdk.LogDebug, fmt.Sprintf("nd-rating-sync: fetching songs – offset=%d page_size=%d", offset, pageSize))
 
 		raw, err := host.SubsonicAPICall(uri)
 		if err != nil {
@@ -162,6 +177,7 @@ func fetchAllSongs(cfg pluginConfig) ([]subsonicSong, error) {
 		}
 		page := wrapper.Response.SearchResult3.Song
 		all = append(all, page...)
+		pdk.Log(pdk.LogDebug, fmt.Sprintf("nd-rating-sync: page offset=%d returned %d songs (total so far: %d)", offset, len(page), len(all)))
 
 		if len(page) < pageSize {
 			break // last page
@@ -213,7 +229,13 @@ func extractStarsFromFile(path, suffix string) (int, bool) {
 
 	switch ext {
 	case "mp3":
-		return parseID3v2Rating(data)
+		stars, ok := parseID3v2Rating(data)
+		if ok {
+			pdk.Log(pdk.LogDebug, fmt.Sprintf("nd-rating-sync: %q – found rating tag → %d stars", path, stars))
+		} else {
+			pdk.Log(pdk.LogDebug, fmt.Sprintf("nd-rating-sync: %q – no rating tag found", path))
+		}
+		return stars, ok
 	default:
 		pdk.Log(pdk.LogWarn, fmt.Sprintf("nd-rating-sync: skipping %q – only MP3 files are supported (got .%s)", path, ext))
 		return 0, false
