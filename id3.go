@@ -121,13 +121,17 @@ func parseTXXXFMPS(data []byte) (int, bool) {
 
 // parsePOPM extracts the rating byte from a POPM (Popularimeter) frame.
 // Frame body layout: <email NUL> <rating byte> [<play count bytes>]
+//
+// The email field identifies the application that wrote the frame and
+// determines which byte→star scale to apply.
 func parsePOPM(data []byte) (int, bool) {
 	idx := bytes.IndexByte(data, 0x00)
 	if idx < 0 || idx+1 >= len(data) {
 		return 0, false
 	}
+	email := string(data[:idx])
 	ratingByte := data[idx+1]
-	return popmToStars(ratingByte)
+	return popmToStars(email, ratingByte)
 }
 
 // ─── UTF-16 helpers ───────────────────────────────────────────────────────────
