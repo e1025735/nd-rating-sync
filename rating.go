@@ -6,12 +6,10 @@ import (
 	"strings"
 )
 
-// fmpsToStars converts an FMPS_Rating float string (0.0–1.0) to 1–5 stars.
-// Returns (0, false) if the string cannot be parsed or is zero.
-//
-// Standard FMPS values map to stars via ceiling:
-//
-//	0.2 → 1 star, 0.4 → 2, 0.6 → 3, 0.8 → 4, 1.0 → 5
+/*
+fmpsToStars reads the FMPS_Rating float (0.0–1.0) and turns it into a 1–5 star value.
+Uses ceiling so the canonical values (0.2, 0.4 … 1.0) land exactly on whole stars.
+*/
 func fmpsToStars(s string) (int, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" || s == "0" || s == "0.0" {
@@ -29,8 +27,7 @@ func fmpsToStars(s string) (int, bool) {
 		f = 1
 	}
 
-	// Ceiling maps each fifth of the range to one star level so that the
-	// canonical FMPS values (0.2, 0.4, 0.6, 0.8, 1.0) round correctly.
+	// keep the canonical FMPS values (0.2, 0.4 … 1.0) on whole stars
 	stars := int(math.Ceil(f * 5))
 	if stars > 5 {
 		stars = 5
@@ -38,12 +35,12 @@ func fmpsToStars(s string) (int, bool) {
 	return stars, true
 }
 
-// popmWMPToStars applies the Windows Media Player POPM scale.
-//
-// WMP uses non-linear fixed points chosen to match its internal 0–99 rating:
-// 0=unrated, 1=★, 25=★★, 50=★★★, 75=★★★★, 99=★★★★★.
-// Values in between are interpolated toward the nearest star.
-// Returns 0 for unrated (byte 0); no parsing is involved so no bool is needed.
+/*
+popmWMPToStars decodes a POPM byte written by Windows Media Player.
+WMP's internal scale runs 0–99 with fixed star breakpoints (1, 25, 50, 75, 99),
+so the byte ranges between those points all collapse to the lower star.
+Byte 0 means unrated; anything above 99 is treated as 5 stars.
+*/
 func popmWMPToStars(b byte) int {
 	switch {
 	case b == 0:
@@ -61,12 +58,11 @@ func popmWMPToStars(b byte) int {
 	}
 }
 
-// popmITunesToStars applies the iTunes / Apple Music POPM scale.
-//
-// iTunes maps its 5-star system onto the 0–100 byte range:
-// 0=unrated, 20=★, 40=★★, 60=★★★, 80=★★★★, 100=★★★★★.
-// Intermediate values are rounded toward the nearest star boundary.
-// Returns 0 for unrated (byte 0); no parsing is involved so no bool is needed.
+/*
+popmITunesToStars decodes a POPM byte written by iTunes / Apple Music.
+iTunes spreads its 5 stars evenly across 0–100 in steps of 20, so the
+mapping is straightforward. Values between steps round up to the next star.
+*/
 func popmITunesToStars(b byte) int {
 	switch {
 	case b == 0:

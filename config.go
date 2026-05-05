@@ -29,7 +29,6 @@ type pluginConfig struct {
 }
 
 // jsonUserConfig / jsonLibraryConfig are used only for unmarshaling the
-// hierarchical libraries value from the plugin config store.
 type jsonUserConfig struct {
 	Username         string   `json:"username"`
 	TriggerUserScan  bool     `json:"trigger_user_scan"`

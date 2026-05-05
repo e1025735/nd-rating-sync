@@ -19,9 +19,11 @@ var (
 	lastUserScanTimes = map[string]time.Time{} // key: username
 )
 
-// checkAndRunUserTriggeredScan is called every 15 minutes. For each user who
-// has trigger_user_scan=true and whose cooldown has elapsed, it runs a full
-// sync scoped to that user and library.
+/*
+checkAndRunUserTriggeredScan is called every 15 minutes. For each user who
+has trigger_user_scan=true and whose cooldown has elapsed, it runs a full
+sync scoped to that user and library.
+*/
 func checkAndRunUserTriggeredScan() error {
 	cfg := loadConfig()
 
@@ -151,9 +153,11 @@ func runSyncForUser(lib libraryConfig, u userConfig, maxSongs int) error {
 
 // ─── File reading ─────────────────────────────────────────────────────────────
 
-// extractStarsFromFile reads the audio file at path and returns a 1–5 star
-// rating using the tag formats in tagOrder for priority, or (0, false) if no
-// recognised rating tag is found.
+/*
+extractStarsFromFile reads the audio file at path and returns a 1–5 star
+rating using the tag formats in tagOrder for priority, or (0, false) if no
+recognised rating tag is found.
+*/
 func extractStarsFromFile(path, suffix string, tagOrder []string) (int, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
