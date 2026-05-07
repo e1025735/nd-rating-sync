@@ -1,0 +1,53 @@
+{
+  "_comment_top": "Annotated example config for nd-rating-sync. Fields with leading underscores are inline notes — they are ignored by the plugin. Copy the relevant pieces into the Plugin Settings UI in Navidrome (avatar → Plugins → nd-rating-sync). The schema and defaults live in manifest.json.",
+
+  "_comment_admin_scalars": "Top-level admin-only settings. Apply globally; only Navidrome admins should change these.",
+
+  "sync_schedule": "0 */6 * * *",
+  "user_scan_cooldown_hours": 24,
+  "max_songs_per_run": 500,
+  "incremental_sync": true,
+
+  "_comment_libraries": "One entry per Navidrome library. The libraryId is the internal ID shown on the Libraries admin page — NOT the display name. libraryName is purely for your own reference. Each library carries its own users[] list, so a single user can be configured differently in different libraries.",
+
+  "libraries": [
+    {
+      "libraryId": "REPLACE-WITH-NAVIDROME-LIBRARY-ID",
+      "libraryName": "Main Music",
+
+      "users": [
+        {
+          "_comment_alice": "Alice keeps her library tagged with FMPS_Rating (written by MediaMonkey, Strawberry, Quod Libet, beets, etc.). She wants ratings she has already set inside Navidrome to win over file tags, so skip_already_rated stays true (the default). foobar2000 is listed as a fallback for the few albums she imported from a Windows machine — if a song has both FMPS_RATING and a plain RATING tag, FMPS_RATING wins because MediaMonkey is listed first.",
+
+          "username": "alice",
+          "trigger_user_scan": false,
+          "skip_already_rated": true,
+          "ratingTagOrder": ["MediaMonkey", "foobar2000"]
+        },
+        {
+          "_comment_bob": "Bob is a long-time foobar2000 user on Windows. His files have a plain RATING tag (1–5 integer), and some older albums have POPM frames written by WMP or iTunes. He wants every file's tag to overwrite whatever Navidrome currently shows, so skip_already_rated is false. The first match in his tagOrder wins on a per-file basis.",
+
+          "username": "bob",
+          "trigger_user_scan": false,
+          "skip_already_rated": false,
+          "ratingTagOrder": ["foobar2000", "WMP", "iTunes"]
+        }
+      ]
+    },
+
+    {
+      "_comment_second_library": "Optional second library example. Useful if you keep, say, lossy stream rips separate from your main lossless collection. Note that Bob is omitted here — he simply doesn't get rating sync for this library, while Alice still does.",
+
+      "libraryId": "REPLACE-WITH-SECOND-LIBRARY-ID",
+      "libraryName": "Streaming Rips",
+      "users": [
+        {
+          "username": "alice",
+          "trigger_user_scan": false,
+          "skip_already_rated": true,
+          "ratingTagOrder": ["MediaMonkey"]
+        }
+      ]
+    }
+  ]
+}
