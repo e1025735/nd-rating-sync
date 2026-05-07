@@ -1,6 +1,6 @@
 {
   "name": "nd-rating-sync",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Reads embedded rating tags from MP3 (ID3v2: FMPS_Rating / POPM iTunes / POPM WMP / TXXX:RATING), FLAC, OGG-Vorbis and Opus (Vorbis comments: FMPS_RATING / RATING) files and syncs them to Navidrome's user ratings via the Subsonic API, with per-user per-library tag priority and overwrite control.",
   "author": "Your Name <you@example.com>",
   "homepage": "https://github.com/yourusername/nd-rating-sync",
@@ -112,6 +112,13 @@
                       "default": true
                     },
 
+                    "clear_rating_if_untagged": {
+                      "type": "boolean",
+                      "title": "Clear rating if no tag found",
+                      "description": "When true, songs that have no embedded rating tag will have their Navidrome rating set to 0 (removed). To also clear ratings on songs that were previously rated in Navidrome, set skip_already_rated to false — otherwise already-rated songs are skipped before the file is read and their ratings will not be cleared. Default: false (untagged files are left untouched).",
+                      "default": false
+                    },
+
                     "ratingTagOrder": {
                       "type": "array",
                       "title": "Rating tag priority order",
@@ -158,6 +165,7 @@
               "username":                 { "ui:placeholder": "e.g. alice" },
               "trigger_user_scan":        { "ui:widget": "checkbox" },
               "skip_already_rated":       { "ui:widget": "checkbox" },
+              "clear_rating_if_untagged": { "ui:widget": "checkbox" },
               "ratingTagOrder": {
                 "ui:description": "Only include formats relevant to this user. Order determines priority — first match in the file wins."
               }

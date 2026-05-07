@@ -55,6 +55,7 @@ After a successful scan, the timestamp is persisted per `(library, user)` in Nav
 
 - **Tag priority order** — `ratingTagOrder` list; first tag *found in the file* wins
 - **Skip already-rated** — songs with an existing Navidrome rating are left untouched (default on; can be disabled to allow overwrites)
+- **Clear rating if untagged** — when enabled, songs whose file contains no recognised rating tag have their Navidrome rating removed (set to 0); requires `skip_already_rated=false` to also affect previously-rated songs
 - **Trigger scan flag** — set per user to request an on-demand scan without touching the cron schedule
 
 ---

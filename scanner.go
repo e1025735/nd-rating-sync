@@ -115,16 +115,23 @@ func runSyncForUser(lib libraryConfig, u userConfig, cfg pluginConfig) error {
 	}
 	scanStart := time.Now()
 
+	if u.ClearRatingIfUntagged && u.SkipAlreadyRated {
+		logWarn(fmt.Sprintf(
+			"nd-rating-sync: user=%q has clear_rating_if_untagged=true but skip_already_rated=true – "+
+				"songs already rated in Navidrome will be skipped before the file is read and their ratings will NOT be cleared",
+			u.Username))
+	}
+
 	logInfo(fmt.Sprintf(
-		"nd-rating-sync: syncing user=%q library=%s skip_already_rated=%v tag_order=%v incremental_threshold=%s",
-		u.Username, lib.LibraryID, u.SkipAlreadyRated, u.RatingTagOrder, formatThreshold(threshold)))
+		"nd-rating-sync: syncing user=%q library=%s skip_already_rated=%v clear_rating_if_untagged=%v tag_order=%v incremental_threshold=%s",
+		u.Username, lib.LibraryID, u.SkipAlreadyRated, u.ClearRatingIfUntagged, u.RatingTagOrder, formatThreshold(threshold)))
 
 	songs, err := fetchAllSongs(u.Username, lib.LibraryID)
 	if err != nil {
 		return fmt.Errorf("fetching songs: %w", err)
 	}
 
-	rated, skippedRated, skippedNoTag, skippedUnchanged, errored := 0, 0, 0, 0, 0
+	rated, cleared, skippedRated, skippedNoTag, skippedUnchanged, errored := 0, 0, 0, 0, 0, 0
 	for i, s := range songs {
 		if cfg.MaxSongsPerRun > 0 && i >= cfg.MaxSongsPerRun {
 			logInfo(fmt.Sprintf(
@@ -152,7 +159,18 @@ func runSyncForUser(lib libraryConfig, u userConfig, cfg pluginConfig) error {
 
 		stars, ok := extractStarsFromFile(s.Path, s.Suffix, u.RatingTagOrder)
 		if !ok {
-			skippedNoTag++
+			if u.ClearRatingIfUntagged {
+				if err := setRating(u.Username, s.ID, 0); err != nil {
+					logWarn(fmt.Sprintf(
+						"nd-rating-sync: setRating(0) failed for %q (id=%s): %v", s.Title, s.ID, err))
+					errored++
+				} else {
+					logDebug(fmt.Sprintf("nd-rating-sync: cleared rating for %q (no tag found)", s.Title))
+					cleared++
+				}
+			} else {
+				skippedNoTag++
+			}
 			continue
 		}
 
@@ -168,8 +186,8 @@ func runSyncForUser(lib libraryConfig, u userConfig, cfg pluginConfig) error {
 	}
 
 	logInfo(fmt.Sprintf(
-		"nd-rating-sync: done user=%q – rated=%d skipped_already_rated=%d skipped_unchanged=%d skipped_no_tag=%d errors=%d",
-		u.Username, rated, skippedRated, skippedUnchanged, skippedNoTag, errored))
+		"nd-rating-sync: done user=%q – rated=%d cleared=%d skipped_already_rated=%d skipped_unchanged=%d skipped_no_tag=%d errors=%d",
+		u.Username, rated, cleared, skippedRated, skippedUnchanged, skippedNoTag, errored))
 
 	if cfg.IncrementalSync {
 		saveLastSynced(lib.LibraryID, u.Username, scanStart)

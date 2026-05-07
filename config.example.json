@@ -22,14 +22,16 @@
           "username": "alice",
           "trigger_user_scan": false,
           "skip_already_rated": true,
+          "clear_rating_if_untagged": false,
           "ratingTagOrder": ["MediaMonkey", "foobar2000"]
         },
         {
-          "_comment_bob": "Bob is a long-time foobar2000 user on Windows. His files have a plain RATING tag (1–5 integer), and some older albums have POPM frames written by WMP or iTunes. He wants every file's tag to overwrite whatever Navidrome currently shows, so skip_already_rated is false. The first match in his tagOrder wins on a per-file basis.",
+          "_comment_bob": "Bob is a long-time foobar2000 user on Windows. His files have a plain RATING tag (1–5 integer), and some older albums have POPM frames written by WMP or iTunes. He wants every file's tag to overwrite whatever Navidrome currently shows, so skip_already_rated is false. clear_rating_if_untagged is also enabled so that songs he has removed ratings from in foobar2000 (tag absent or 0) will have their Navidrome rating cleared too — this requires skip_already_rated=false, otherwise already-rated songs would be skipped before the file is read. The first match in his tagOrder wins on a per-file basis.",
 
           "username": "bob",
           "trigger_user_scan": false,
           "skip_already_rated": false,
+          "clear_rating_if_untagged": true,
           "ratingTagOrder": ["foobar2000", "WMP", "iTunes"]
         }
       ]
@@ -45,6 +47,7 @@
           "username": "alice",
           "trigger_user_scan": false,
           "skip_already_rated": true,
+          "clear_rating_if_untagged": false,
           "ratingTagOrder": ["MediaMonkey"]
         }
       ]

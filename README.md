@@ -143,6 +143,7 @@ libraries while Bob is only in the main one.
 | `username` | (required) | Must exactly match the Navidrome username. The same user must also be listed under the plugin's *User Access* permissions panel — Navidrome enforces this independently. |
 | `trigger_user_scan` | `false` | Set to `true` to request an immediate one-shot rating scan for this user. The plugin checks every 15 minutes, runs the scan, then automatically resets the flag. Subject to `user_scan_cooldown_hours`. |
 | `skip_already_rated` | `true` | When `true`, songs that already have a Navidrome user rating are left untouched. Set `false` to let file tags overwrite existing Navidrome ratings — useful for one-off bulk imports. |
+| `clear_rating_if_untagged` | `false` | When `true`, songs whose audio file contains no recognised rating tag will have their Navidrome rating set to 0 (removed). Requires `skip_already_rated: false` to also clear ratings on songs that were previously rated in Navidrome — otherwise already-rated songs are skipped before the file is read and their ratings will not be cleared. |
 | `ratingTagOrder` | `["WMP", "iTunes", "MediaMonkey", "foobar2000"]` | Ordered list of source applications to try. The first match found in a given file wins. Trim or reorder the list to match the workflow you actually use; sources you don't use can stay in the list (they just never match) or be removed for clarity. |
 
 ### Two users, two workflows
@@ -230,7 +231,10 @@ plugin OnInit
                                        │
                                        ├─ pick the first match by ratingTagOrder
                                        │
-                                       └─ SubsonicAPICall("setRating?id=…&rating=…")
+                                       ├─ tag found?  → SubsonicAPICall("setRating?id=…&rating=N")
+                                       │
+                                       └─ no tag found + clear_rating_if_untagged?
+                                                       → SubsonicAPICall("setRating?id=…&rating=0")
                        │
                        ▼
         save scan-start timestamp to KVStore (incremental_sync)
@@ -301,18 +305,20 @@ Navidrome log for `nd-rating-sync:`. Each per-user run logs a summary line
 like:
 
 ```
-nd-rating-sync: done user="alice" – rated=12 skipped_already_rated=438 skipped_unchanged=2810 skipped_no_tag=15 errors=0
+nd-rating-sync: done user="alice" – rated=12 cleared=3 skipped_already_rated=438 skipped_unchanged=2810 skipped_no_tag=15 errors=0
 ```
 
 The counters tell you what happened:
 
 - **`rated`** — songs whose rating was just written to Navidrome.
+- **`cleared`** — songs whose Navidrome rating was set to 0 because no tag
+  was found (only appears when `clear_rating_if_untagged = true`).
 - **`skipped_already_rated`** — songs that already had a Navidrome rating
   for this user (only meaningful when `skip_already_rated = true`).
 - **`skipped_unchanged`** — songs whose file mtime predates the
   incremental-sync threshold. Should dominate after the first full pass.
 - **`skipped_no_tag`** — songs that had no recognised rating tag (or whose
-  tag was empty / unrated).
+  tag was empty / unrated). Only counted when `clear_rating_if_untagged = false`.
 - **`errors`** — `setRating` failures or other per-song errors.
 
 ### Common issues

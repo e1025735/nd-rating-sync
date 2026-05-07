@@ -7,10 +7,11 @@ import (
 )
 
 type userConfig struct {
-	Username         string
-	TriggerUserScan  bool
-	SkipAlreadyRated bool
-	RatingTagOrder   []string
+	Username              string
+	TriggerUserScan       bool
+	SkipAlreadyRated      bool
+	ClearRatingIfUntagged bool
+	RatingTagOrder        []string
 }
 
 type libraryConfig struct {
@@ -28,10 +29,11 @@ type pluginConfig struct {
 }
 
 type jsonUserConfig struct {
-	Username         string   `json:"username"`
-	TriggerUserScan  bool     `json:"trigger_user_scan"`
-	SkipAlreadyRated *bool    `json:"skip_already_rated"` // pointer so absence → default true
-	RatingTagOrder   []string `json:"ratingTagOrder"`
+	Username              string   `json:"username"`
+	TriggerUserScan       bool     `json:"trigger_user_scan"`
+	SkipAlreadyRated      *bool    `json:"skip_already_rated"` // pointer so absence → default true
+	ClearRatingIfUntagged bool     `json:"clear_rating_if_untagged"`
+	RatingTagOrder        []string `json:"ratingTagOrder"`
 }
 
 type jsonLibraryConfig struct {
@@ -99,10 +101,11 @@ func loadConfigFrom(get configGetter) pluginConfig {
 				lc := libraryConfig{LibraryID: rl.LibraryID, LibraryName: rl.LibraryName}
 				for _, ru := range rl.Users {
 					uc := userConfig{
-						Username:         ru.Username,
-						TriggerUserScan:  ru.TriggerUserScan,
-						SkipAlreadyRated: true,
-						RatingTagOrder:   ru.RatingTagOrder,
+						Username:              ru.Username,
+						TriggerUserScan:       ru.TriggerUserScan,
+						SkipAlreadyRated:      true,
+						ClearRatingIfUntagged: ru.ClearRatingIfUntagged,
+						RatingTagOrder:        ru.RatingTagOrder,
 					}
 					if ru.SkipAlreadyRated != nil {
 						uc.SkipAlreadyRated = *ru.SkipAlreadyRated

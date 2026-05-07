@@ -35,7 +35,7 @@ Config is a hierarchical JSON Schema (not a flat key-value list):
 - Top-level admin scalars read via `pdk.GetConfig`: `sync_schedule`, `user_scan_cooldown_hours`, `max_songs_per_run`
 - `libraries` array read via `pdk.GetConfig("libraries")` as a JSON string, then unmarshaled:
   - Each library: `libraryId`, `libraryName`, `users[]`
-  - Each user: `username`, `trigger_user_scan`, `skip_already_rated` (default `true`), `ratingTagOrder`
+  - Each user: `username`, `trigger_user_scan`, `skip_already_rated` (default `true`), `clear_rating_if_untagged` (default `false`), `ratingTagOrder`
 
 ## Supported tag formats
 
