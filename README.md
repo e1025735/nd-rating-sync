@@ -121,6 +121,7 @@ the same example. You enter these settings via the Navidrome UI:
 | `user_scan_cooldown_hours` | `24` | Minimum hours between two manual user-triggered scans for the same user. Set to `0` to disable the cooldown. |
 | `max_songs_per_run` | `500` | Hard cap on how many songs a single scheduled run will process. Set to `0` for unlimited. The cap protects against accidental runaways on very large libraries. |
 | `incremental_sync` | `true` | When enabled, recurring scans skip files whose mtime hasn't changed since the previous successful run. See **[Incremental sync](#incremental-sync)** below. |
+| `dry_run` | `false` | When true, the full scan pipeline runs but no `setRating` calls are made. Every rating that would be written or cleared is logged with a `[DRY RUN]` prefix. The incremental-sync threshold is not updated. Use this to verify tag parsing before the first real import. |
 
 ### Per-library settings
 
@@ -304,8 +305,14 @@ Set `[Plugins] LogLevel = "debug"` in Navidrome's config and grep the
 Navidrome log for `nd-rating-sync:`. Each per-user run logs a summary line
 like:
 
+Normal run:
 ```
 nd-rating-sync: done user="alice" – rated=12 cleared=3 skipped_already_rated=438 skipped_unchanged=2810 skipped_no_tag=15 errors=0
+```
+
+Dry run (`dry_run=true`):
+```
+nd-rating-sync: [DRY RUN] done user="alice" – would_rate=12 would_clear=3 skipped_already_rated=438 skipped_unchanged=2810 skipped_no_tag=15
 ```
 
 The counters tell you what happened:
@@ -319,7 +326,8 @@ The counters tell you what happened:
   incremental-sync threshold. Should dominate after the first full pass.
 - **`skipped_no_tag`** — songs that had no recognised rating tag (or whose
   tag was empty / unrated). Only counted when `clear_rating_if_untagged = false`.
-- **`errors`** — `setRating` failures or other per-song errors.
+- **`would_rate`** / **`would_clear`** — dry-run equivalents of `rated` / `cleared`; only appear when `dry_run = true`.
+- **`errors`** — `setRating` failures or other per-song errors. Not present in dry-run output.
 
 ### Common issues
 

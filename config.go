@@ -25,6 +25,7 @@ type pluginConfig struct {
 	UserScanCooldownHours int
 	MaxSongsPerRun        int
 	IncrementalSync       bool
+	DryRun                bool
 	Libraries             []libraryConfig
 }
 
@@ -80,6 +81,12 @@ func loadConfigFrom(get configGetter) pluginConfig {
 		default:
 			logWarn(fmt.Sprintf(
 				"nd-rating-sync: invalid incremental_sync=%q – keeping default %v", v, cfg.IncrementalSync))
+		}
+	}
+	if v, ok := get("dry_run"); ok {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1", "yes", "on":
+			cfg.DryRun = true
 		}
 	}
 	if v, ok := get("max_songs_per_run"); ok {

@@ -75,6 +75,7 @@ After a successful scan, the timestamp is persisted per `(library, user)` in Nav
 | `user_scan_cooldown_hours` | `24` | Minimum hours between user-triggered scans |
 | `max_songs_per_run` | `500` | Song cap per scheduled run (0 = unlimited) |
 | `incremental_sync` | `true` | Skip files whose mtime predates the last successful scan; set false to force a full rescan every run |
+| `dry_run` | `false` | Run the full scan pipeline without writing any ratings; logs `[DRY RUN] would_rate / would_clear` instead of calling `setRating`; does not advance the incremental-sync threshold |
 
 ---
 

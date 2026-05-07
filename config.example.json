@@ -7,6 +7,8 @@
   "user_scan_cooldown_hours": 24,
   "max_songs_per_run": 500,
   "incremental_sync": true,
+  "_comment_dry_run": "Set dry_run to true to verify tag parsing without writing any ratings. Every would-be change is logged with a [DRY RUN] prefix. The incremental-sync threshold is not advanced, so the next real run re-processes the same files. Switch back to false once you are happy with the results.",
+  "dry_run": false,
 
   "_comment_libraries": "One entry per Navidrome library. The libraryId is the internal ID shown on the Libraries admin page — NOT the display name. libraryName is purely for your own reference. Each library carries its own users[] list, so a single user can be configured differently in different libraries.",
 

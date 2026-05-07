@@ -1,6 +1,6 @@
 {
   "name": "nd-rating-sync",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Reads embedded rating tags from MP3 (ID3v2: FMPS_Rating / POPM iTunes / POPM WMP / TXXX:RATING), FLAC, OGG-Vorbis and Opus (Vorbis comments: FMPS_RATING / RATING) files and syncs them to Navidrome's user ratings via the Subsonic API, with per-user per-library tag priority and overwrite control.",
   "author": "Your Name <you@example.com>",
   "homepage": "https://github.com/yourusername/nd-rating-sync",
@@ -58,6 +58,13 @@
           "title": "Incremental sync [admin]",
           "description": "When enabled (default), each (library, user) pair stores the timestamp of its last successful scan and skips songs whose file mtime predates it. Drastically reduces work on recurring runs after the first pass. Disable to force a full scan every run — useful for debugging or after changing a user's ratingTagOrder.",
           "default": true
+        },
+
+        "dry_run": {
+          "type": "boolean",
+          "title": "Dry run [admin]",
+          "description": "When true, the plugin executes the full scan pipeline (fetch songs, read files, parse tags, apply all skip logic) but does not call setRating. Every rating that would be written or cleared is logged with a [DRY RUN] prefix instead. The incremental-sync threshold is not updated, so the next real run will re-process the same files. Useful for verifying tag parsing before the first import. Default: false.",
+          "default": false
         },
 
         "libraries": {
@@ -152,6 +159,9 @@
         "ui:widget": "updown"
       },
       "incremental_sync": {
+        "ui:widget": "checkbox"
+      },
+      "dry_run": {
         "ui:widget": "checkbox"
       },
       "libraries": {

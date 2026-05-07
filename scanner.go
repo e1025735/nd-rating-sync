@@ -79,8 +79,8 @@ func runSyncWith(cfg pluginConfig) error {
 	}
 
 	logInfo(fmt.Sprintf(
-		"nd-rating-sync: starting sync – libraries=%d max_songs_per_run=%d incremental=%v",
-		len(cfg.Libraries), cfg.MaxSongsPerRun, cfg.IncrementalSync))
+		"nd-rating-sync: starting sync – libraries=%d max_songs_per_run=%d incremental=%v dry_run=%v",
+		len(cfg.Libraries), cfg.MaxSongsPerRun, cfg.IncrementalSync, cfg.DryRun))
 
 	var errMsgs []string
 	for _, lib := range cfg.Libraries {
@@ -115,6 +115,11 @@ func runSyncForUser(lib libraryConfig, u userConfig, cfg pluginConfig) error {
 	}
 	scanStart := time.Now()
 
+	if cfg.DryRun {
+		logInfo(fmt.Sprintf(
+			"nd-rating-sync: [DRY RUN] user=%q – no ratings will be written", u.Username))
+	}
+
 	if u.ClearRatingIfUntagged && u.SkipAlreadyRated {
 		logWarn(fmt.Sprintf(
 			"nd-rating-sync: user=%q has clear_rating_if_untagged=true but skip_already_rated=true – "+
@@ -123,15 +128,15 @@ func runSyncForUser(lib libraryConfig, u userConfig, cfg pluginConfig) error {
 	}
 
 	logInfo(fmt.Sprintf(
-		"nd-rating-sync: syncing user=%q library=%s skip_already_rated=%v clear_rating_if_untagged=%v tag_order=%v incremental_threshold=%s",
-		u.Username, lib.LibraryID, u.SkipAlreadyRated, u.ClearRatingIfUntagged, u.RatingTagOrder, formatThreshold(threshold)))
+		"nd-rating-sync: syncing user=%q library=%s skip_already_rated=%v clear_rating_if_untagged=%v dry_run=%v tag_order=%v incremental_threshold=%s",
+		u.Username, lib.LibraryID, u.SkipAlreadyRated, u.ClearRatingIfUntagged, cfg.DryRun, u.RatingTagOrder, formatThreshold(threshold)))
 
 	songs, err := fetchAllSongs(u.Username, lib.LibraryID)
 	if err != nil {
 		return fmt.Errorf("fetching songs: %w", err)
 	}
 
-	rated, cleared, skippedRated, skippedNoTag, skippedUnchanged, errored := 0, 0, 0, 0, 0, 0
+	rated, cleared, wouldRate, wouldClear, skippedRated, skippedNoTag, skippedUnchanged, errored := 0, 0, 0, 0, 0, 0, 0, 0
 	for i, s := range songs {
 		if cfg.MaxSongsPerRun > 0 && i >= cfg.MaxSongsPerRun {
 			logInfo(fmt.Sprintf(
@@ -160,17 +165,28 @@ func runSyncForUser(lib libraryConfig, u userConfig, cfg pluginConfig) error {
 		stars, ok := extractStarsFromFile(s.Path, s.Suffix, u.RatingTagOrder)
 		if !ok {
 			if u.ClearRatingIfUntagged {
-				if err := setRating(u.Username, s.ID, 0); err != nil {
-					logWarn(fmt.Sprintf(
-						"nd-rating-sync: setRating(0) failed for %q (id=%s): %v", s.Title, s.ID, err))
-					errored++
+				if cfg.DryRun {
+					logInfo(fmt.Sprintf("nd-rating-sync: [DRY RUN] would clear rating for %q (no tag found)", s.Title))
+					wouldClear++
 				} else {
-					logDebug(fmt.Sprintf("nd-rating-sync: cleared rating for %q (no tag found)", s.Title))
-					cleared++
+					if err := setRating(u.Username, s.ID, 0); err != nil {
+						logWarn(fmt.Sprintf(
+							"nd-rating-sync: setRating(0) failed for %q (id=%s): %v", s.Title, s.ID, err))
+						errored++
+					} else {
+						logDebug(fmt.Sprintf("nd-rating-sync: cleared rating for %q (no tag found)", s.Title))
+						cleared++
+					}
 				}
 			} else {
 				skippedNoTag++
 			}
+			continue
+		}
+
+		if cfg.DryRun {
+			logInfo(fmt.Sprintf("nd-rating-sync: [DRY RUN] would rate %q → %d stars", s.Title, stars))
+			wouldRate++
 			continue
 		}
 
@@ -185,11 +201,17 @@ func runSyncForUser(lib libraryConfig, u userConfig, cfg pluginConfig) error {
 		rated++
 	}
 
-	logInfo(fmt.Sprintf(
-		"nd-rating-sync: done user=%q – rated=%d cleared=%d skipped_already_rated=%d skipped_unchanged=%d skipped_no_tag=%d errors=%d",
-		u.Username, rated, cleared, skippedRated, skippedUnchanged, skippedNoTag, errored))
+	if cfg.DryRun {
+		logInfo(fmt.Sprintf(
+			"nd-rating-sync: [DRY RUN] done user=%q – would_rate=%d would_clear=%d skipped_already_rated=%d skipped_unchanged=%d skipped_no_tag=%d",
+			u.Username, wouldRate, wouldClear, skippedRated, skippedUnchanged, skippedNoTag))
+	} else {
+		logInfo(fmt.Sprintf(
+			"nd-rating-sync: done user=%q – rated=%d cleared=%d skipped_already_rated=%d skipped_unchanged=%d skipped_no_tag=%d errors=%d",
+			u.Username, rated, cleared, skippedRated, skippedUnchanged, skippedNoTag, errored))
+	}
 
-	if cfg.IncrementalSync {
+	if cfg.IncrementalSync && !cfg.DryRun {
 		saveLastSynced(lib.LibraryID, u.Username, scanStart)
 	}
 	return nil
