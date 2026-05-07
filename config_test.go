@@ -14,7 +14,24 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	assert.Equal(t, "0 */6 * * *", cfg.SyncSchedule)
 	assert.Equal(t, 24, cfg.UserScanCooldownHours)
 	assert.Equal(t, 500, cfg.MaxSongsPerRun)
+	assert.True(t, cfg.IncrementalSync, "IncrementalSync should default to true")
 	assert.Empty(t, cfg.Libraries)
+}
+
+func TestLoadConfig_IncrementalSync(t *testing.T) {
+	for _, falsy := range []string{"false", "FALSE", "0", "no", "off"} {
+		cfg := loadConfigFrom(mapGetter(map[string]string{"incremental_sync": falsy}))
+		assert.False(t, cfg.IncrementalSync, "incremental_sync=%q should disable", falsy)
+	}
+	for _, truthy := range []string{"true", "1", "yes", "on", ""} {
+		cfg := loadConfigFrom(mapGetter(map[string]string{"incremental_sync": truthy}))
+		assert.True(t, cfg.IncrementalSync, "incremental_sync=%q should keep default", truthy)
+	}
+}
+
+func TestLoadConfig_IncrementalSyncInvalidKeepsDefault(t *testing.T) {
+	cfg := loadConfigFrom(mapGetter(map[string]string{"incremental_sync": "maybe"}))
+	assert.True(t, cfg.IncrementalSync)
 }
 
 func TestLoadConfig_SyncSchedule(t *testing.T) {

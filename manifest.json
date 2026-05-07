@@ -18,6 +18,9 @@
     },
     "scheduler": {
       "reason": "Schedule periodic scans of the music library and handle manual scan trigger requests"
+    },
+    "kvstore": {
+      "reason": "Persist the last successful scan timestamp per (library, user) so recurring scans can skip files whose mtime has not changed since"
     }
   },
   "config": {
@@ -48,6 +51,13 @@
           "description": "Maximum number of songs to process in a single scheduled run. Set to 0 for no limit.",
           "default": 500,
           "minimum": 0
+        },
+
+        "incremental_sync": {
+          "type": "boolean",
+          "title": "Incremental sync [admin]",
+          "description": "When enabled (default), each (library, user) pair stores the timestamp of its last successful scan and skips songs whose file mtime predates it. Drastically reduces work on recurring runs after the first pass. Disable to force a full scan every run — useful for debugging or after changing a user's ratingTagOrder.",
+          "default": true
         },
 
         "libraries": {
@@ -133,6 +143,9 @@
       },
       "max_songs_per_run": {
         "ui:widget": "updown"
+      },
+      "incremental_sync": {
+        "ui:widget": "checkbox"
       },
       "libraries": {
         "ui:label": "Libraries",

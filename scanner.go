@@ -55,7 +55,7 @@ func checkAndRunUserTriggeredScanWith(cfg pluginConfig) error {
 			lastUserScanTimes[u.Username] = time.Now()
 			lastUserScanMu.Unlock()
 
-			if err := runSyncForUser(lib, u, cfg.MaxSongsPerRun); err != nil {
+			if err := runSyncForUser(lib, u, cfg); err != nil {
 				errMsgs = append(errMsgs, fmt.Sprintf("user=%s lib=%s: %v", u.Username, lib.LibraryID, err))
 			}
 		}
@@ -79,13 +79,13 @@ func runSyncWith(cfg pluginConfig) error {
 	}
 
 	logInfo(fmt.Sprintf(
-		"nd-rating-sync: starting sync – libraries=%d max_songs_per_run=%d",
-		len(cfg.Libraries), cfg.MaxSongsPerRun))
+		"nd-rating-sync: starting sync – libraries=%d max_songs_per_run=%d incremental=%v",
+		len(cfg.Libraries), cfg.MaxSongsPerRun, cfg.IncrementalSync))
 
 	var errMsgs []string
 	for _, lib := range cfg.Libraries {
 		for _, u := range lib.Users {
-			if err := runSyncForUser(lib, u, cfg.MaxSongsPerRun); err != nil {
+			if err := runSyncForUser(lib, u, cfg); err != nil {
 				errMsgs = append(errMsgs, fmt.Sprintf("user=%s lib=%s: %v", u.Username, lib.LibraryID, err))
 			}
 		}
@@ -98,26 +98,38 @@ func runSyncWith(cfg pluginConfig) error {
 }
 
 // runSyncForUser fetches and processes songs for a single library/user pair.
-func runSyncForUser(lib libraryConfig, u userConfig, maxSongs int) error {
+//
+// When cfg.IncrementalSync is true, the previous successful scan time is
+// loaded from the KV store and any song whose file mtime predates it is
+// skipped without reading the file or calling setRating. The scan-start
+// time is captured before iterating and persisted at the end, so any file
+// edits that occur during the scan are caught on the next run.
+func runSyncForUser(lib libraryConfig, u userConfig, cfg pluginConfig) error {
 	if u.Username == "" {
 		return errors.New("username is empty – check plugin configuration")
 	}
 
+	var threshold time.Time
+	if cfg.IncrementalSync {
+		threshold = loadLastSynced(lib.LibraryID, u.Username)
+	}
+	scanStart := time.Now()
+
 	logInfo(fmt.Sprintf(
-		"nd-rating-sync: syncing user=%q library=%s skip_already_rated=%v tag_order=%v",
-		u.Username, lib.LibraryID, u.SkipAlreadyRated, u.RatingTagOrder))
+		"nd-rating-sync: syncing user=%q library=%s skip_already_rated=%v tag_order=%v incremental_threshold=%s",
+		u.Username, lib.LibraryID, u.SkipAlreadyRated, u.RatingTagOrder, formatThreshold(threshold)))
 
 	songs, err := fetchAllSongs(u.Username, lib.LibraryID)
 	if err != nil {
 		return fmt.Errorf("fetching songs: %w", err)
 	}
 
-	rated, skippedRated, skippedNoTag, errored := 0, 0, 0, 0
+	rated, skippedRated, skippedNoTag, skippedUnchanged, errored := 0, 0, 0, 0, 0
 	for i, s := range songs {
-		if maxSongs > 0 && i >= maxSongs {
+		if cfg.MaxSongsPerRun > 0 && i >= cfg.MaxSongsPerRun {
 			logInfo(fmt.Sprintf(
 				"nd-rating-sync: reached max_songs_per_run=%d for user=%q, stopping early",
-				maxSongs, u.Username))
+				cfg.MaxSongsPerRun, u.Username))
 			break
 		}
 
@@ -126,6 +138,16 @@ func runSyncForUser(lib libraryConfig, u userConfig, maxSongs int) error {
 				"nd-rating-sync: skipping %q – already rated (%d stars in Navidrome)", s.Title, s.UserRating))
 			skippedRated++
 			continue
+		}
+
+		if !threshold.IsZero() {
+			if info, err := os.Stat(s.Path); err == nil && info.ModTime().Before(threshold) {
+				logDebug(fmt.Sprintf(
+					"nd-rating-sync: skipping %q – unchanged since last scan (mtime=%s)",
+					s.Title, info.ModTime().Format(time.RFC3339)))
+				skippedUnchanged++
+				continue
+			}
 		}
 
 		stars, ok := extractStarsFromFile(s.Path, s.Suffix, u.RatingTagOrder)
@@ -146,9 +168,22 @@ func runSyncForUser(lib libraryConfig, u userConfig, maxSongs int) error {
 	}
 
 	logInfo(fmt.Sprintf(
-		"nd-rating-sync: done user=%q – rated=%d skipped_already_rated=%d skipped_no_tag=%d errors=%d",
-		u.Username, rated, skippedRated, skippedNoTag, errored))
+		"nd-rating-sync: done user=%q – rated=%d skipped_already_rated=%d skipped_unchanged=%d skipped_no_tag=%d errors=%d",
+		u.Username, rated, skippedRated, skippedUnchanged, skippedNoTag, errored))
+
+	if cfg.IncrementalSync {
+		saveLastSynced(lib.LibraryID, u.Username, scanStart)
+	}
 	return nil
+}
+
+// formatThreshold renders a threshold timestamp for log output, with a
+// distinct marker when no threshold has been recorded yet.
+func formatThreshold(t time.Time) string {
+	if t.IsZero() {
+		return "(none – full scan)"
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // ─── File reading ─────────────────────────────────────────────────────────────

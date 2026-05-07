@@ -10,6 +10,7 @@ import (
 	"github.com/bogem/id3v2/v2"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -186,9 +187,129 @@ func TestRunSyncForUser_HappyPath(t *testing.T) {
 		RatingTagOrder:   []string{"MediaMonkey"},
 	}
 
-	err := runSyncForUser(lib, user, 0)
+	err := runSyncForUser(lib, user, pluginConfig{})
 	require.NoError(t, err)
 	host.SubsonicAPIMock.AssertExpectations(t)
+}
+
+// ─── Incremental sync ─────────────────────────────────────────────────────────
+
+func TestRunSyncForUser_IncrementalFirstRun_ProcessesAllAndSavesThreshold(t *testing.T) {
+	resetSubsonicMock(t)
+	resetKVStoreMock(t)
+
+	path := writeFMPSFile(t, "0.6")
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Path: path, Suffix: "mp3"}}
+
+	host.SubsonicAPIMock.On("Call",
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=lib1`,
+	).Return(subsonicOK(songs), nil)
+	host.SubsonicAPIMock.On("Call", "setRating?id=song-1&rating=3&u=alice").
+		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
+
+	// First run: KV miss → full scan.
+	host.KVStoreMock.On("Get", "last-synced:lib1:alice").
+		Return([]byte(nil), false, nil).Once()
+	// At end of run, scan-start timestamp is written back.
+	host.KVStoreMock.On("Set", "last-synced:lib1:alice", mock.Anything).
+		Return(nil).Once()
+
+	lib := libraryConfig{LibraryID: "lib1"}
+	user := userConfig{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}
+
+	err := runSyncForUser(lib, user, pluginConfig{IncrementalSync: true})
+	require.NoError(t, err)
+	host.SubsonicAPIMock.AssertExpectations(t)
+	host.KVStoreMock.AssertExpectations(t)
+}
+
+func TestRunSyncForUser_IncrementalSkipsUnchangedFile(t *testing.T) {
+	resetSubsonicMock(t)
+	resetKVStoreMock(t)
+
+	path := writeFMPSFile(t, "0.6")
+	// Make the file appear older than the threshold by setting mtime to
+	// a fixed past instant.
+	fileTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, os.Chtimes(path, fileTime, fileTime))
+
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Path: path, Suffix: "mp3"}}
+	host.SubsonicAPIMock.On("Call",
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=lib1`,
+	).Return(subsonicOK(songs), nil)
+	// setRating should NOT be called — the file is unchanged.
+
+	threshold := fileTime.Add(time.Hour) // strictly after the file's mtime
+	host.KVStoreMock.On("Get", "last-synced:lib1:alice").
+		Return([]byte(threshold.Format(time.RFC3339Nano)), true, nil).Once()
+	host.KVStoreMock.On("Set", "last-synced:lib1:alice", mock.Anything).
+		Return(nil).Once()
+
+	lib := libraryConfig{LibraryID: "lib1"}
+	user := userConfig{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}
+
+	err := runSyncForUser(lib, user, pluginConfig{IncrementalSync: true})
+	require.NoError(t, err)
+	host.SubsonicAPIMock.AssertExpectations(t)
+	host.SubsonicAPIMock.AssertNotCalled(t, "Call", "setRating?id=song-1&rating=3&u=alice")
+	host.KVStoreMock.AssertExpectations(t)
+}
+
+func TestRunSyncForUser_IncrementalProcessesNewerFile(t *testing.T) {
+	resetSubsonicMock(t)
+	resetKVStoreMock(t)
+
+	path := writeFMPSFile(t, "0.8") // 4 stars
+	// File mtime in the future of the threshold → must be processed.
+	fileTime := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, os.Chtimes(path, fileTime, fileTime))
+
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Path: path, Suffix: "mp3"}}
+	host.SubsonicAPIMock.On("Call",
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=lib1`,
+	).Return(subsonicOK(songs), nil)
+	host.SubsonicAPIMock.On("Call", "setRating?id=song-1&rating=4&u=alice").
+		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
+
+	threshold := fileTime.Add(-time.Hour) // before file mtime
+	host.KVStoreMock.On("Get", "last-synced:lib1:alice").
+		Return([]byte(threshold.Format(time.RFC3339Nano)), true, nil).Once()
+	host.KVStoreMock.On("Set", "last-synced:lib1:alice", mock.Anything).
+		Return(nil).Once()
+
+	lib := libraryConfig{LibraryID: "lib1"}
+	user := userConfig{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}
+
+	err := runSyncForUser(lib, user, pluginConfig{IncrementalSync: true})
+	require.NoError(t, err)
+	host.SubsonicAPIMock.AssertExpectations(t)
+	host.KVStoreMock.AssertExpectations(t)
+}
+
+func TestRunSyncForUser_IncrementalDisabled_BypassesKV(t *testing.T) {
+	resetSubsonicMock(t)
+	resetKVStoreMock(t)
+
+	path := writeFMPSFile(t, "0.6")
+	// File mtime far in the past — would be skipped if incremental were on.
+	require.NoError(t, os.Chtimes(path, time.Unix(0, 0), time.Unix(0, 0)))
+
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Path: path, Suffix: "mp3"}}
+	host.SubsonicAPIMock.On("Call",
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=lib1`,
+	).Return(subsonicOK(songs), nil)
+	host.SubsonicAPIMock.On("Call", "setRating?id=song-1&rating=3&u=alice").
+		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
+
+	lib := libraryConfig{LibraryID: "lib1"}
+	user := userConfig{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}
+
+	err := runSyncForUser(lib, user, pluginConfig{IncrementalSync: false})
+	require.NoError(t, err)
+	host.SubsonicAPIMock.AssertExpectations(t)
+	// Confirm KV is never touched when incremental is off.
+	host.KVStoreMock.AssertNotCalled(t, "Get", mock.Anything)
+	host.KVStoreMock.AssertNotCalled(t, "Set", mock.Anything, mock.Anything)
 }
 
 // writeFMPSFile creates a temp .mp3 with an FMPS_Rating TXXX frame.

@@ -23,6 +23,7 @@ type pluginConfig struct {
 	SyncSchedule          string
 	UserScanCooldownHours int
 	MaxSongsPerRun        int
+	IncrementalSync       bool
 	Libraries             []libraryConfig
 }
 
@@ -54,6 +55,7 @@ func loadConfigFrom(get configGetter) pluginConfig {
 		SyncSchedule:          "0 */6 * * *",
 		UserScanCooldownHours: 24,
 		MaxSongsPerRun:        500,
+		IncrementalSync:       true,
 	}
 
 	if v, ok := get("sync_schedule"); ok {
@@ -65,6 +67,17 @@ func loadConfigFrom(get configGetter) pluginConfig {
 		var n int
 		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n >= 0 {
 			cfg.UserScanCooldownHours = n
+		}
+	}
+	if v, ok := get("incremental_sync"); ok {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "false", "0", "no", "off":
+			cfg.IncrementalSync = false
+		case "true", "1", "yes", "on", "":
+			// keep default true (or explicit true)
+		default:
+			logWarn(fmt.Sprintf(
+				"nd-rating-sync: invalid incremental_sync=%q – keeping default %v", v, cfg.IncrementalSync))
 		}
 	}
 	if v, ok := get("max_songs_per_run"); ok {

@@ -19,6 +19,16 @@ this plugin bridges file tags and the UI.
 
 ---
 
+## Incremental sync
+
+After a successful scan, the timestamp is persisted per `(library, user)` in Navidrome's KV store. Subsequent runs skip any song whose file mtime predates that timestamp, so recurring scans are nearly instant after the first pass.
+
+- Skip is decided by `os.Stat(path).ModTime()` vs the stored threshold — file mtime is the right signal because tag editors update it the moment the user saves a rating, regardless of whether Navidrome's own library scan has caught up.
+- KV failures are non-fatal: missing/corrupt state falls back to a full scan; failed writes mean the next run does redundant work, never incorrect work.
+- Disable with `incremental_sync=false` to force a full scan every run (useful after changing a user's `ratingTagOrder`).
+
+---
+
 ## Supported file formats
 
 | Container | Tag system | File extensions |
@@ -63,6 +73,7 @@ this plugin bridges file tags and the UI.
 | `sync_schedule` | `0 */6 * * *` | Cron expression for recurring sync |
 | `user_scan_cooldown_hours` | `24` | Minimum hours between user-triggered scans |
 | `max_songs_per_run` | `500` | Song cap per scheduled run (0 = unlimited) |
+| `incremental_sync` | `true` | Skip files whose mtime predates the last successful scan; set false to force a full rescan every run |
 
 ---
 
@@ -80,4 +91,4 @@ this plugin bridges file tags and the UI.
 - Does not support container formats beyond MP3, FLAC, Ogg-Vorbis, and Opus (AAC/M4A, WAV, etc. are skipped with a warning)
 - Does not support tag formats beyond WMP POPM, iTunes POPM, MediaMonkey/foobar2000 FMPS_Rating, and foobar2000 RATING
 - Does not import ratings in the other direction (Navidrome → file)
-- Does not perform incremental sync — every run currently re-fetches the full song list
+- Does not deduplicate the Subsonic `search3` request itself — incremental sync skips per-file work, but the song list is still fetched in full each run
