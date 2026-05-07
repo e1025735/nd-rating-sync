@@ -98,3 +98,88 @@ func FuzzParseID3v2Rating(f *testing.F) {
 		}
 	})
 }
+
+func FuzzParseWAVRating(f *testing.F) {
+	f.Add([]byte{}, byte(0))
+	f.Add([]byte("RIFF\x04\x00\x00\x00WAVE"), byte(0))
+
+	orders := [][]string{
+		{"WMP", "iTunes", "MediaMonkey", "foobar2000"},
+		{"MediaMonkey", "foobar2000"},
+		{},
+	}
+	f.Fuzz(func(t *testing.T, data []byte, orderIdx byte) {
+		tagOrder := orders[int(orderIdx)%len(orders)]
+		stars, ok := parseWAVRating(data, tagOrder)
+		if stars < 0 || stars > 5 {
+			t.Errorf("parseWAVRating: stars=%d out of [0,5]", stars)
+		}
+		if !ok && stars != 0 {
+			t.Errorf("parseWAVRating: (%d, false) but stars must be 0 when ok is false", stars)
+		}
+	})
+}
+
+func FuzzParseDSFRating(f *testing.F) {
+	f.Add([]byte{}, byte(0))
+	f.Add([]byte("DSD \x1c\x00\x00\x00\x00\x00\x00\x00\x1c\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"), byte(0))
+
+	orders := [][]string{
+		{"WMP", "iTunes", "MediaMonkey", "foobar2000"},
+		{"foobar2000"},
+		{},
+	}
+	f.Fuzz(func(t *testing.T, data []byte, orderIdx byte) {
+		tagOrder := orders[int(orderIdx)%len(orders)]
+		stars, ok := parseDSFRating(data, tagOrder)
+		if stars < 0 || stars > 5 {
+			t.Errorf("parseDSFRating: stars=%d out of [0,5]", stars)
+		}
+		if !ok && stars != 0 {
+			t.Errorf("parseDSFRating: (%d, false) but stars must be 0 when ok is false", stars)
+		}
+	})
+}
+
+func FuzzParseM4ARating(f *testing.F) {
+	f.Add([]byte{}, byte(0))
+	f.Add(buildM4A(map[string]string{"FMPS_Rating": "0.6"}), byte(0))
+	f.Add(buildM4A(map[string]string{"RATING": "3", "rating": "60"}), byte(1))
+
+	orders := [][]string{
+		{"WMP", "iTunes", "MediaMonkey", "foobar2000"},
+		{"iTunes", "foobar2000"},
+		{},
+	}
+	f.Fuzz(func(t *testing.T, data []byte, orderIdx byte) {
+		tagOrder := orders[int(orderIdx)%len(orders)]
+		stars, ok := parseM4ARating(data, tagOrder)
+		if stars < 0 || stars > 5 {
+			t.Errorf("parseM4ARating: stars=%d out of [0,5]", stars)
+		}
+		if !ok && stars != 0 {
+			t.Errorf("parseM4ARating: (%d, false) but stars must be 0 when ok is false", stars)
+		}
+	})
+}
+
+func FuzzParseWMARating(f *testing.F) {
+	f.Add([]byte{}, byte(0))
+	f.Add(asfHeaderObjectGUID, byte(0))
+
+	orders := [][]string{
+		{"WMP", "MediaMonkey"},
+		{"MediaMonkey"},
+		{},
+	}
+	f.Fuzz(func(t *testing.T, data []byte, orderIdx byte) {
+		tagOrder := orders[int(orderIdx)%len(orders)]
+		stars, ok := parseWMARating(data, tagOrder)
+		if stars < 0 || stars > 5 {
+			t.Errorf("parseWMARating: stars=%d out of [0,5]", stars)
+		}
+		if !ok && stars != 0 {
+			t.Errorf("parseWMARating: (%d, false) but stars must be 0 when ok is false", stars)
+		}
+	})
+}

@@ -1,6 +1,6 @@
 {
   "name": "nd-rating-sync",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Reads embedded rating tags from MP3 (ID3v2: FMPS_Rating / POPM iTunes / POPM WMP / TXXX:RATING), FLAC, OGG-Vorbis and Opus (Vorbis comments: FMPS_RATING / RATING) files and syncs them to Navidrome's user ratings via the Subsonic API, with per-user per-library tag priority and overwrite control.",
   "author": "Your Name <you@example.com>",
   "homepage": "https://github.com/yourusername/nd-rating-sync",
@@ -129,7 +129,7 @@
                     "ratingTagOrder": {
                       "type": "array",
                       "title": "Rating tag priority order",
-                      "description": "Ordered list of embedded tag formats to try when reading a rating from a file. The first tag found in a file wins. Remove formats this user does not use. Supported values: WMP (POPM, MP3 only), iTunes (POPM, MP3 only), MediaMonkey (FMPS_Rating in MP3 TXXX or FLAC/Ogg/Opus Vorbis comments), foobar2000 (RATING in MP3 TXXX or FLAC/Ogg/Opus Vorbis comments, integer 1–5).",
+                      "description": "Ordered list of embedded tag formats to try when reading a rating from a file. The first tag found in a file wins. Remove formats this user does not use. Supported values: WMP (POPM in MP3/WAV/DSF), iTunes (POPM in MP3/WAV/DSF; lowercase 'rating' atom in M4A/AAC), MediaMonkey (FMPS_Rating TXXX in MP3/WAV/DSF; FMPS_RATING Vorbis comment in FLAC/Ogg/Opus; FMPS_Rating atom in M4A/AAC; FMPS_Rating Unicode string in WMA), foobar2000 (RATING TXXX in MP3/WAV/DSF; RATING Vorbis comment in FLAC/Ogg/Opus; uppercase RATING atom in M4A/AAC). Sources with no representation in a given container are silently skipped.",
                       "items": {
                         "type": "string",
                         "enum": ["WMP", "iTunes", "MediaMonkey", "foobar2000"]

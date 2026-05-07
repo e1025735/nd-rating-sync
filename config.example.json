@@ -19,7 +19,7 @@
 
       "users": [
         {
-          "_comment_alice": "Alice keeps her library tagged with FMPS_Rating (written by MediaMonkey, Strawberry, Quod Libet, beets, etc.). She wants ratings she has already set inside Navidrome to win over file tags, so skip_already_rated stays true (the default). foobar2000 is listed as a fallback for the few albums she imported from a Windows machine — if a song has both FMPS_RATING and a plain RATING tag, FMPS_RATING wins because MediaMonkey is listed first.",
+          "_comment_alice": "Alice keeps her library tagged with FMPS_Rating (written by MediaMonkey, Strawberry, Quod Libet, beets, etc.). She wants ratings she has already set inside Navidrome to win over file tags, so skip_already_rated stays true (the default). foobar2000 is listed as a fallback for the few albums she imported from a Windows machine — if a song has both FMPS_RATING and a plain RATING tag, FMPS_RATING wins because MediaMonkey is listed first. Both tags are recognised across MP3, FLAC, Ogg, Opus, WAV, DSF, M4A/AAC and WMA.",
 
           "username": "alice",
           "trigger_user_scan": false,

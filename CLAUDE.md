@@ -14,7 +14,11 @@ Navidrome plugin (WASM) that reads embedded star-rating tags from MP3, FLAC, Ogg
 | `id3.go` | ID3v2 tag parsing (`parseID3v2Rating`) — dispatches by per-user `tagOrder` |
 | `flac.go` | FLAC + Vorbis comment parsing (`parseFLACVorbisComments`, `parseFLACRating`) plus the shared `ratingFromVorbisComments` resolver — hand-rolled, no external dep |
 | `ogg.go` | Ogg page walker (`extractOggPackets`) and Vorbis/Opus comment dispatch (`parseOggVorbisRating`) — hand-rolled, no external dep |
-| `rating.go` | Pure converters: `fmpsToStars`, `ratingIntToStars`, `popmWMPToStars`, `popmITunesToStars`, `popmWinampToStars`, `popmLinear51ToStars` |
+| `wav.go` | WAV RIFF chunk walker (`parseWAVRating`) — extracts `id3 `/`ID3 ` chunk and delegates to `parseID3v2Rating` |
+| `dsf.go` | DSD Stream File parser (`parseDSFRating`) — reads ID3v2 offset from DSD header and delegates to `parseID3v2Rating` |
+| `m4a.go` | MP4 atom walker (`walkAtoms`, `findAtom`, `parseM4ARating`) — resolves freeform `----` atoms for FMPS_Rating, RATING, and rating |
+| `wma.go` | ASF header walker (`parseWMARating`, `parseASFExtContentDesc`, `decodeUTF16LE`) — reads `WM/SharedUserRating` and `FMPS_Rating` from Extended Content Description Object |
+| `rating.go` | Pure converters: `fmpsToStars`, `ratingIntToStars`, `popmWMPToStars`, `popmITunesToStars` |
 | `manifest.json` | Plugin metadata, capabilities, JSON Schema config definition |
 
 ## Build
@@ -41,12 +45,12 @@ Config is a hierarchical JSON Schema (not a flat key-value list):
 
 `ratingTagOrder` values are *source applications*, not container-specific keys. Each source maps to whatever tag(s) that application writes in each container. FLAC, Ogg-Vorbis and Opus all share the Vorbis comment format, so they use the same column.
 
-| `ratingTagOrder` key | MP3 (ID3v2) | FLAC / Ogg / Opus (Vorbis comments) | Scale |
-|----------------------|-------------|-------------------------------------|-------|
-| `"WMP"` | POPM (email contains "windows media player") | — | Non-linear fixed points (1/25/50/75/99) |
-| `"iTunes"` | POPM (email contains "itunes" / "com.apple.itunes") | — | Linear 0–100 (20/40/60/80/100) |
-| `"MediaMonkey"` | TXXX description "FMPS_Rating" | `FMPS_RATING` | Float 0.0–1.0 → ceiling×5 |
-| `"foobar2000"` | TXXX description "RATING" | `RATING` | Integer 1–5 (0/empty = unrated) |
+| `ratingTagOrder` key | MP3 / WAV / DSF (ID3v2) | FLAC / Ogg / Opus (Vorbis) | M4A / AAC (MP4 atom) | WMA (ASF) | Scale |
+|----------------------|-------------------------|----------------------------|-----------------------|-----------|-------|
+| `"WMP"` | POPM ("windows media player") | — | — | `WM/SharedUserRating` WORD | Non-linear fixed points (1/25/50/75/99) |
+| `"iTunes"` | POPM ("itunes" / "com.apple.itunes") | — | `rating` freeform (lowercase) | — | Linear 0–100 (20/40/60/80/100) |
+| `"MediaMonkey"` | TXXX `FMPS_Rating` | `FMPS_RATING` | `FMPS_Rating` freeform | `FMPS_Rating` Unicode | Float 0.0–1.0 → ceiling×5 |
+| `"foobar2000"` | TXXX `RATING` | `RATING` | `RATING` freeform (uppercase) | — | Integer 1–5 (0/empty = unrated) |
 
 Per-user `ratingTagOrder` controls priority; first match in the file wins. Sources without a representation in a given container are silently skipped (e.g. `WMP` listed for a FLAC file simply never matches — keeping it in the order is harmless).
 

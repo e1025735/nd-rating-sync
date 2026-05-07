@@ -37,17 +37,21 @@ After a successful scan, the timestamp is persisted per `(library, user)` in Nav
 | FLAC | Vorbis comments | `.flac` |
 | Ogg-Vorbis | Vorbis comments | `.ogg`, `.oga` |
 | Opus | Vorbis comments (`OpusTags`) | `.opus` |
+| WAV | ID3v2 chunk inside RIFF container | `.wav` |
+| DSD Stream File | ID3v2 block (offset stored in DSD header) | `.dsf` |
+| M4A / AAC | MP4 freeform (`----`) atoms | `.m4a`, `.aac`, `.mp4` |
+| WMA | ASF Extended Content Description Object | `.wma` |
 
 ## Supported tag formats
 
-`ratingTagOrder` values are *source applications*, not container-specific keys. Each source maps to whatever tag(s) that application writes in each container. Sources without a representation in a given container (e.g. `WMP` for FLAC) are silently skipped — they just never match.
+`ratingTagOrder` values are *source applications*, not container-specific keys. Each source maps to whatever tag(s) that application writes in each container. Sources without a representation in a given container are silently skipped — they just never match.
 
-| Key | MP3 (ID3v2) | FLAC / Ogg / Opus (Vorbis comments) | Scale / notes |
-|-----|-------------|-------------------------------------|---------------|
-| `WMP` | POPM (email contains "windows media player") | — | Non-linear fixed points: 1/25/50/75/99 → 1–5 stars |
-| `iTunes` | POPM (email contains "itunes" / "com.apple.itunes") | — | Linear 0–100 in steps of 20 → 1–5 stars |
-| `MediaMonkey` | TXXX description "FMPS_Rating" | `FMPS_RATING` | Float 0.0–1.0, ceiling × 5 → 1–5 stars |
-| `foobar2000` | TXXX description "RATING" | `RATING` | Integer 1–5 (0 / empty / out-of-range = unrated) |
+| Key | MP3 / WAV / DSF (ID3v2) | FLAC / Ogg / Opus (Vorbis) | M4A / AAC (MP4 atom) | WMA (ASF) | Scale / notes |
+|-----|-------------------------|----------------------------|----------------------|-----------|---------------|
+| `WMP` | POPM ("windows media player") | — | — | `WM/SharedUserRating` WORD | Non-linear: 1/25/50/75/99 → 1–5 stars |
+| `iTunes` | POPM ("itunes" / "com.apple.itunes") | — | `rating` freeform (lowercase) | — | Linear 0–100 in steps of 20 → 1–5 stars |
+| `MediaMonkey` | TXXX `FMPS_Rating` | `FMPS_RATING` | `FMPS_Rating` freeform | `FMPS_Rating` Unicode string | Float 0.0–1.0, ceiling × 5 → 1–5 stars |
+| `foobar2000` | TXXX `RATING` | `RATING` | `RATING` freeform (uppercase) | — | Integer 1–5 (0 / empty / out-of-range = unrated) |
 
 ---
 
@@ -90,7 +94,7 @@ After a successful scan, the timestamp is persisted per `(library, user)` in Nav
 ## What the plugin does NOT do
 
 - Does not write tags back to files (read-only access to the filesystem)
-- Does not support container formats beyond MP3, FLAC, Ogg-Vorbis, and Opus (AAC/M4A, WAV, etc. are skipped with a warning)
+- Does not support container formats beyond MP3, FLAC, Ogg-Vorbis, Opus, WAV, DSF, M4A/AAC, and WMA (AIFF, WavPack, DFF, etc. are skipped with a warning)
 - Does not support tag formats beyond WMP POPM, iTunes POPM, MediaMonkey/foobar2000 FMPS_Rating, and foobar2000 RATING
 - Does not import ratings in the other direction (Navidrome → file)
 - Does not deduplicate the Subsonic `search3` request itself — incremental sync skips per-file work, but the song list is still fetched in full each run

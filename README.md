@@ -31,8 +31,12 @@ files.
 | FLAC | Vorbis comments | `.flac` |
 | Ogg-Vorbis | Vorbis comments | `.ogg`, `.oga` |
 | Opus | Vorbis comments (`OpusTags`) | `.opus` |
+| WAV | ID3v2 chunk inside RIFF | `.wav` |
+| DSD Stream File | ID3v2 block (offset from DSD header) | `.dsf` |
+| M4A / AAC | MP4 freeform atoms (`----`) | `.m4a`, `.aac`, `.mp4` |
+| WMA | ASF Extended Content Description | `.wma` |
 
-Files with other extensions (AAC/M4A, WAV, WMA, …) are skipped with a
+Files with other extensions (WavPack, AIFF, DFF, …) are skipped with a
 warning in the log.
 
 ## Supported rating tags
@@ -43,12 +47,12 @@ you happen to use. Sources that have no representation in a given container
 (e.g. WMP doesn't write FLAC) simply never match — listing them in the
 order is harmless.
 
-| Source | MP3 (ID3v2) | FLAC / Ogg / Opus (Vorbis) | Value scale |
-|--------|-------------|----------------------------|-------------|
-| `MediaMonkey` | TXXX `FMPS_Rating` | `FMPS_RATING` | Float 0.0–1.0 |
-| `foobar2000` | TXXX `RATING` | `RATING` | Integer 1–5 |
-| `WMP` | POPM (`Windows Media Player 9 Series`) | — | Byte 0–255, WMP scale |
-| `iTunes` | POPM (`iTunes` / `com.apple.iTunes`) | — | Byte 0–100, iTunes scale |
+| Source | MP3 / WAV / DSF (ID3v2) | FLAC / Ogg / Opus (Vorbis) | M4A / AAC (MP4 atom) | WMA (ASF) | Value scale |
+|--------|-------------------------|----------------------------|-----------------------|-----------|-------------|
+| `MediaMonkey` | TXXX `FMPS_Rating` | `FMPS_RATING` | `FMPS_Rating` freeform | `FMPS_Rating` Unicode | Float 0.0–1.0 |
+| `foobar2000` | TXXX `RATING` | `RATING` | `RATING` freeform (uppercase) | — | Integer 1–5 |
+| `WMP` | POPM (`Windows Media Player 9 Series`) | — | — | `WM/SharedUserRating` | Byte 0–255, WMP scale |
+| `iTunes` | POPM (`iTunes` / `com.apple.iTunes`) | — | `rating` freeform (lowercase) | — | Byte / int 0–100, iTunes scale |
 
 ### Rating value mapping
 
@@ -336,7 +340,7 @@ The counters tell you what happened:
 | `no libraries configured` | The `libraries` array is empty or missing. Add at least one library with at least one user. |
 | `setRating` API error 50 (`user not authorised`) | The user is configured in `libraries[].users[]` but **not** added to the plugin's *User Access* tab in the Navidrome UI. Both are required. |
 | `cannot read "/path/to/song.mp3": permission denied` | The plugin lacks *Library Access* for the library containing this song. |
-| `skipping … – only MP3, FLAC, OGG and Opus files are supported (got .m4a)` | The file is in a container the plugin doesn't support yet. The song is silently passed over. |
+| `skipping … – supported formats are MP3, FLAC, OGG, Opus, WAV, DSF, M4A/AAC and WMA (got .aiff)` | The file is in a container the plugin does not support. The song is silently passed over. |
 | Ratings not updating after I edited a tag | Incremental sync only re-processes files whose mtime moved. Confirm with `ls -l` that your tag editor actually updated the mtime. If it didn't, run a one-off `incremental_sync = false` pass. |
 | First run took forever, second run was fast | Working as designed — that's the whole point of incremental sync. |
 | `KVStoreGet … failed – falling back to full scan` (warning) | The Navidrome KV store is unreachable for some reason. The current scan still works (as a full scan); investigate the underlying error. |

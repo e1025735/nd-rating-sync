@@ -137,14 +137,8 @@ func runSyncForUser(lib libraryConfig, u userConfig, cfg pluginConfig) error {
 	}
 
 	rated, cleared, wouldRate, wouldClear, skippedRated, skippedNoTag, skippedUnchanged, errored := 0, 0, 0, 0, 0, 0, 0, 0
-	for i, s := range songs {
-		if cfg.MaxSongsPerRun > 0 && i >= cfg.MaxSongsPerRun {
-			logInfo(fmt.Sprintf(
-				"nd-rating-sync: reached max_songs_per_run=%d for user=%q, stopping early",
-				cfg.MaxSongsPerRun, u.Username))
-			break
-		}
-
+	processed := 0
+	for _, s := range songs {
 		if u.SkipAlreadyRated && s.UserRating > 0 {
 			logDebug(fmt.Sprintf(
 				"nd-rating-sync: skipping %q – already rated (%d stars in Navidrome)", s.Title, s.UserRating))
@@ -161,6 +155,14 @@ func runSyncForUser(lib libraryConfig, u userConfig, cfg pluginConfig) error {
 				continue
 			}
 		}
+
+		if cfg.MaxSongsPerRun > 0 && processed >= cfg.MaxSongsPerRun {
+			logInfo(fmt.Sprintf(
+				"nd-rating-sync: reached max_songs_per_run=%d for user=%q, stopping early",
+				cfg.MaxSongsPerRun, u.Username))
+			break
+		}
+		processed++
 
 		stars, ok := extractStarsFromFile(s.Path, s.Suffix, u.RatingTagOrder)
 		if !ok {
@@ -267,9 +269,41 @@ func extractStarsFromFile(path, suffix string, tagOrder []string) (int, bool) {
 			logDebug(fmt.Sprintf("nd-rating-sync: %q – no rating tag found", path))
 		}
 		return stars, ok
+	case "wav":
+		stars, ok := parseWAVRating(data, tagOrder)
+		if ok {
+			logDebug(fmt.Sprintf("nd-rating-sync: %q – found rating tag → %d stars", path, stars))
+		} else {
+			logDebug(fmt.Sprintf("nd-rating-sync: %q – no rating tag found", path))
+		}
+		return stars, ok
+	case "dsf":
+		stars, ok := parseDSFRating(data, tagOrder)
+		if ok {
+			logDebug(fmt.Sprintf("nd-rating-sync: %q – found rating tag → %d stars", path, stars))
+		} else {
+			logDebug(fmt.Sprintf("nd-rating-sync: %q – no rating tag found", path))
+		}
+		return stars, ok
+	case "m4a", "aac", "mp4":
+		stars, ok := parseM4ARating(data, tagOrder)
+		if ok {
+			logDebug(fmt.Sprintf("nd-rating-sync: %q – found rating tag → %d stars", path, stars))
+		} else {
+			logDebug(fmt.Sprintf("nd-rating-sync: %q – no rating tag found", path))
+		}
+		return stars, ok
+	case "wma":
+		stars, ok := parseWMARating(data, tagOrder)
+		if ok {
+			logDebug(fmt.Sprintf("nd-rating-sync: %q – found rating tag → %d stars", path, stars))
+		} else {
+			logDebug(fmt.Sprintf("nd-rating-sync: %q – no rating tag found", path))
+		}
+		return stars, ok
 	default:
 		logWarn(fmt.Sprintf(
-			"nd-rating-sync: skipping %q – only MP3, FLAC, OGG and Opus files are supported (got .%s)", path, ext))
+			"nd-rating-sync: skipping %q – supported formats are MP3, FLAC, OGG, Opus, WAV, DSF, M4A/AAC and WMA (got .%s)", path, ext))
 		return 0, false
 	}
 }
