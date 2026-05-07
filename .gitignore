@@ -1,0 +1,17 @@
+# Build artifacts
+*.wasm
+*.ndp
+*.exe
+
+# Go test/coverage output
+*.test
+*.out
+coverage.txt
+
+# Editor / IDE
+.idea/
+.vscode/
+
+# Claude Code local
+.claude/settings.local.json
+.claude/worktrees/
