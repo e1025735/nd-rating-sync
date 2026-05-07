@@ -1,9 +1,10 @@
 # nd-rating-sync — Feature List
 
 ## Core purpose
-Reads embedded star-rating tags from MP3 files and writes them to Navidrome's
-user-rating system via the Subsonic `setRating` API. Navidrome does not import
-embedded ratings on its own; this plugin bridges file tags and the UI.
+Reads embedded star-rating tags from MP3, FLAC, Ogg-Vorbis, and Opus files
+and writes them to Navidrome's user-rating system via the Subsonic
+`setRating` API. Navidrome does not import embedded ratings on its own;
+this plugin bridges file tags and the UI.
 
 ---
 
@@ -18,13 +19,25 @@ embedded ratings on its own; this plugin bridges file tags and the UI.
 
 ---
 
-## Supported tag formats (MP3 / ID3v2 only)
+## Supported file formats
 
-| Key | ID3v2 frame | Scale / notes |
-|-----|-------------|---------------|
-| `WMP` | POPM (email contains "windows media player") | Non-linear fixed points: 1/25/50/75/99 → 1–5 stars |
-| `iTunes` | POPM (email contains "itunes" / "com.apple.itunes") | Linear 0–100 in steps of 20 → 1–5 stars |
-| `MediaMonkey` | TXXX description "FMPS_Rating" | Float 0.0–1.0, ceiling × 5 → 1–5 stars |
+| Container | Tag system | File extensions |
+|-----------|------------|-----------------|
+| MP3 | ID3v2 (TXXX, POPM) | `.mp3` |
+| FLAC | Vorbis comments | `.flac` |
+| Ogg-Vorbis | Vorbis comments | `.ogg`, `.oga` |
+| Opus | Vorbis comments (`OpusTags`) | `.opus` |
+
+## Supported tag formats
+
+`ratingTagOrder` values are *source applications*, not container-specific keys. Each source maps to whatever tag(s) that application writes in each container. Sources without a representation in a given container (e.g. `WMP` for FLAC) are silently skipped — they just never match.
+
+| Key | MP3 (ID3v2) | FLAC / Ogg / Opus (Vorbis comments) | Scale / notes |
+|-----|-------------|-------------------------------------|---------------|
+| `WMP` | POPM (email contains "windows media player") | — | Non-linear fixed points: 1/25/50/75/99 → 1–5 stars |
+| `iTunes` | POPM (email contains "itunes" / "com.apple.itunes") | — | Linear 0–100 in steps of 20 → 1–5 stars |
+| `MediaMonkey` | TXXX description "FMPS_Rating" | `FMPS_RATING` | Float 0.0–1.0, ceiling × 5 → 1–5 stars |
+| `foobar2000` | TXXX description "RATING" | `RATING` | Integer 1–5 (0 / empty / out-of-range = unrated) |
 
 ---
 
@@ -64,6 +77,7 @@ embedded ratings on its own; this plugin bridges file tags and the UI.
 ## What the plugin does NOT do
 
 - Does not write tags back to files (read-only access to the filesystem)
-- Does not support file formats other than MP3 (FLAC, AAC, etc. are skipped with a warning)
-- Does not support tag formats beyond WMP POPM, iTunes POPM, and MediaMonkey FMPS_Rating
+- Does not support container formats beyond MP3, FLAC, Ogg-Vorbis, and Opus (AAC/M4A, WAV, etc. are skipped with a warning)
+- Does not support tag formats beyond WMP POPM, iTunes POPM, MediaMonkey/foobar2000 FMPS_Rating, and foobar2000 RATING
 - Does not import ratings in the other direction (Navidrome → file)
+- Does not perform incremental sync — every run currently re-fetches the full song list
