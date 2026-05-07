@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	pdk "github.com/extism/go-pdk"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 )
 
@@ -52,7 +51,7 @@ func fetchAllSongs(username, libraryID string) ([]subsonicSong, error) {
 			uri += "&musicFolderId=" + libraryID
 		}
 
-		pdk.Log(pdk.LogDebug, fmt.Sprintf(
+		logDebug(fmt.Sprintf(
 			"nd-rating-sync: fetching songs – user=%q library=%s offset=%d page_size=%d",
 			username, libraryID, offset, pageSize))
 
@@ -78,7 +77,7 @@ func fetchAllSongs(username, libraryID string) ([]subsonicSong, error) {
 		}
 		page := wrapper.Response.SearchResult3.Song
 		all = append(all, page...)
-		pdk.Log(pdk.LogDebug, fmt.Sprintf(
+		logDebug(fmt.Sprintf(
 			"nd-rating-sync: page offset=%d returned %d songs (total so far: %d)",
 			offset, len(page), len(all)))
 
@@ -88,7 +87,7 @@ func fetchAllSongs(username, libraryID string) ([]subsonicSong, error) {
 		offset += pageSize
 	}
 
-	pdk.Log(pdk.LogInfo, fmt.Sprintf(
+	logInfo(fmt.Sprintf(
 		"nd-rating-sync: found %d songs for user=%q library=%s", len(all), username, libraryID))
 	return all, nil
 }

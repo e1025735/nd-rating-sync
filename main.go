@@ -9,7 +9,6 @@ package main
 import (
 	"fmt"
 
-	pdk "github.com/extism/go-pdk"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 	"github.com/navidrome/navidrome/plugins/pdk/go/lifecycle"
 	"github.com/navidrome/navidrome/plugins/pdk/go/scheduler"
@@ -38,15 +37,19 @@ const (
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
 
 func (ratingPlugin) OnInit() error {
-	pdk.Log(pdk.LogInfo, "nd-rating-sync: initialising")
+	logInfo("nd-rating-sync: initialising")
+	return registerSchedules(loadConfig())
+}
 
-	cfg := loadConfig()
+// registerSchedules is the testable half of OnInit. It takes the resolved
+// config and registers the three scheduler entries with the host.
+func registerSchedules(cfg pluginConfig) error {
 	cronExpr := cfg.SyncSchedule
 
 	if _, err := host.SchedulerScheduleRecurring(cronExpr, "", scheduleID); err != nil {
 		return fmt.Errorf("failed to register recurring scan: %w", err)
 	}
-	pdk.Log(pdk.LogInfo, "nd-rating-sync: scheduled recurring scan with cron '"+cronExpr+"'")
+	logInfo("nd-rating-sync: scheduled recurring scan with cron '" + cronExpr + "'")
 
 	if _, err := host.SchedulerScheduleOneTime(0, "", scheduleIDImmediate); err != nil {
 		return fmt.Errorf("failed to queue immediate scan: %w", err)
@@ -55,7 +58,7 @@ func (ratingPlugin) OnInit() error {
 	if _, err := host.SchedulerScheduleRecurring("*/15 * * * *", "", scheduleIDTriggerCheck); err != nil {
 		return fmt.Errorf("failed to register trigger-check: %w", err)
 	}
-	pdk.Log(pdk.LogInfo, "nd-rating-sync: registered user-trigger check (every 15 min)")
+	logInfo("nd-rating-sync: registered user-trigger check (every 15 min)")
 
 	return nil
 }
@@ -67,7 +70,7 @@ func (ratingPlugin) OnCallback(req scheduler.SchedulerCallbackRequest) error {
 	case scheduleIDTriggerCheck:
 		return checkAndRunUserTriggeredScan()
 	default:
-		pdk.Log(pdk.LogInfo, "nd-rating-sync: running scheduled rating sync (scheduleId="+req.ScheduleID+")")
+		logInfo("nd-rating-sync: running scheduled rating sync (scheduleId=" + req.ScheduleID + ")")
 		return runSync()
 	}
 }
