@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"testing"
@@ -17,63 +17,62 @@ func resetSchedulerMock(t *testing.T) {
 	})
 }
 
-// ─── OnInit ───────────────────────────────────────────────────────────────────
+// ─── registerSchedules ────────────────────────────────────────────────────────
 
-func TestOnInit_RegistersAllThreeSchedules(t *testing.T) {
+func TestRegisterSchedules_DefaultCron(t *testing.T) {
 	resetSchedulerMock(t)
-	withConfig(t, map[string]string{})
+	cfg := pluginConfig{SyncSchedule: "0 */6 * * *"}
 
 	host.SchedulerMock.On("ScheduleRecurring", "0 */6 * * *", "", scheduleID).Return("id-1", nil)
 	host.SchedulerMock.On("ScheduleOneTime", int32(0), "", scheduleIDImmediate).Return("id-2", nil)
 	host.SchedulerMock.On("ScheduleRecurring", "*/15 * * * *", "", scheduleIDTriggerCheck).Return("id-3", nil)
 
-	err := ratingPlugin{}.OnInit()
-
-	require.NoError(t, err)
+	require.NoError(t, registerSchedules(cfg))
 	host.SchedulerMock.AssertExpectations(t)
 }
 
-func TestOnInit_UsesConfiguredCronExpression(t *testing.T) {
+func TestRegisterSchedules_CustomCron(t *testing.T) {
 	resetSchedulerMock(t)
-	withConfig(t, map[string]string{"sync_schedule": "0 3 * * *"})
+	cfg := pluginConfig{SyncSchedule: "0 3 * * *"}
 
 	host.SchedulerMock.On("ScheduleRecurring", "0 3 * * *", "", scheduleID).Return("id-1", nil)
 	host.SchedulerMock.On("ScheduleOneTime", int32(0), "", scheduleIDImmediate).Return("id-2", nil)
 	host.SchedulerMock.On("ScheduleRecurring", "*/15 * * * *", "", scheduleIDTriggerCheck).Return("id-3", nil)
 
-	err := ratingPlugin{}.OnInit()
-	require.NoError(t, err)
+	require.NoError(t, registerSchedules(cfg))
 	host.SchedulerMock.AssertExpectations(t)
 }
 
-func TestOnInit_ReturnsErrorWhenScheduleFails(t *testing.T) {
+func TestRegisterSchedules_RecurringFails(t *testing.T) {
 	resetSchedulerMock(t)
-	withConfig(t, map[string]string{})
+	cfg := pluginConfig{SyncSchedule: "0 */6 * * *"}
 
 	host.SchedulerMock.On("ScheduleRecurring", "0 */6 * * *", "", scheduleID).
 		Return("", assert.AnError)
 
-	err := ratingPlugin{}.OnInit()
-	require.Error(t, err)
+	require.Error(t, registerSchedules(cfg))
 }
 
-// ─── OnCallback ──────────────────────────────────────────────────────────────
+// ─── OnCallback routing ──────────────────────────────────────────────────────
+//
+// OnCallback uses the production loadConfig which returns ("", false) for every
+// key in non-WASM builds, so cfg.Libraries is empty. That's enough to verify
+// the scheduleID → handler dispatch.
 
-func TestOnCallback_TriggerCheckID_NoUsersConfigured(t *testing.T) {
-	withConfig(t, map[string]string{})
+func TestOnCallback_TriggerCheckIsNoOp(t *testing.T) {
+	resetSubsonicMock(t)
 	err := ratingPlugin{}.OnCallback(scheduler.SchedulerCallbackRequest{ScheduleID: scheduleIDTriggerCheck})
 	assert.NoError(t, err)
+	host.SubsonicAPIMock.AssertNotCalled(t, "Call")
 }
 
-func TestOnCallback_RecurringID_NoLibrariesReturnsError(t *testing.T) {
-	withConfig(t, map[string]string{})
+func TestOnCallback_RecurringRunsSyncAndErrorsWithoutLibraries(t *testing.T) {
 	err := ratingPlugin{}.OnCallback(scheduler.SchedulerCallbackRequest{ScheduleID: scheduleID})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no libraries configured")
 }
 
-func TestOnCallback_ImmediateID_FallsThroughToSync(t *testing.T) {
-	withConfig(t, map[string]string{})
+func TestOnCallback_ImmediateFallsThroughToSync(t *testing.T) {
 	err := ratingPlugin{}.OnCallback(scheduler.SchedulerCallbackRequest{ScheduleID: scheduleIDImmediate})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no libraries configured")

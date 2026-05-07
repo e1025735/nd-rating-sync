@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"bytes"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bogem/id3v2/v2"
+	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +32,6 @@ func TestExtractStarsFromFile_UnsupportedFormat(t *testing.T) {
 }
 
 func TestExtractStarsFromFile_ExtensionFromPath(t *testing.T) {
-	// When suffix is empty the extension is derived from the file path.
 	f, err := os.CreateTemp(t.TempDir(), "song*.ogg")
 	require.NoError(t, err)
 	f.Close()
@@ -55,31 +55,16 @@ func TestExtractStarsFromFile_MP3NoRatingTag(t *testing.T) {
 }
 
 func TestExtractStarsFromFile_MP3WithFMPS(t *testing.T) {
-	tag := id3v2.NewEmptyTag()
-	tag.AddFrame("TXXX", id3v2.UserDefinedTextFrame{
-		Encoding:    id3v2.EncodingUTF8,
-		Description: "FMPS_Rating",
-		Value:       "0.6",
-	})
-	var buf bytes.Buffer
-	_, err := tag.WriteTo(&buf)
-	require.NoError(t, err)
-
-	path := filepath.Join(t.TempDir(), "song.mp3")
-	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o644))
-
+	path := writeFMPSFile(t, "0.6")
 	stars, ok := extractStarsFromFile(path, "mp3", []string{"MediaMonkey"})
 	assert.True(t, ok)
 	assert.Equal(t, 3, stars)
 }
 
 func TestExtractStarsFromFile_SuffixOverridesPathExtension(t *testing.T) {
-	// File named .bin but suffix="mp3" forces ID3 parsing.
 	tag := id3v2.NewEmptyTag()
 	tag.AddFrame("TXXX", id3v2.UserDefinedTextFrame{
-		Encoding:    id3v2.EncodingUTF8,
-		Description: "FMPS_Rating",
-		Value:       "0.8",
+		Encoding: id3v2.EncodingUTF8, Description: "FMPS_Rating", Value: "0.8",
 	})
 	var buf bytes.Buffer
 	_, err := tag.WriteTo(&buf)
@@ -93,17 +78,19 @@ func TestExtractStarsFromFile_SuffixOverridesPathExtension(t *testing.T) {
 	assert.Equal(t, 4, stars)
 }
 
-// ─── checkAndRunUserTriggeredScan ─────────────────────────────────────────────
+// ─── checkAndRunUserTriggeredScanWith ─────────────────────────────────────────
 
-func TestCheckAndRunUserTriggeredScan_NoTriggerUsers(t *testing.T) {
-	withConfig(t, map[string]string{})
-	err := checkAndRunUserTriggeredScan()
+func TestCheckAndRunUserTriggeredScanWith_NoTriggerUsers(t *testing.T) {
+	resetSubsonicMock(t)
+	err := checkAndRunUserTriggeredScanWith(pluginConfig{})
 	assert.NoError(t, err)
+	host.SubsonicAPIMock.AssertNotCalled(t, "Call")
 }
 
-func TestCheckAndRunUserTriggeredScan_CooldownPreventsRepeat(t *testing.T) {
-	const username = "alice"
+func TestCheckAndRunUserTriggeredScanWith_CooldownSkipsUser(t *testing.T) {
+	resetSubsonicMock(t)
 
+	const username = "alice"
 	lastUserScanMu.Lock()
 	lastUserScanTimes[username] = time.Now()
 	lastUserScanMu.Unlock()
@@ -113,21 +100,77 @@ func TestCheckAndRunUserTriggeredScan_CooldownPreventsRepeat(t *testing.T) {
 		lastUserScanMu.Unlock()
 	})
 
-	withConfig(t, map[string]string{
-		"user_scan_cooldown_hours": "24",
-		"libraries":                `[{"libraryId":"lib1","users":[{"username":"alice","trigger_user_scan":true}]}]`,
-	})
+	cfg := pluginConfig{
+		UserScanCooldownHours: 24,
+		Libraries: []libraryConfig{{
+			LibraryID: "lib1",
+			Users: []userConfig{{
+				Username:        username,
+				TriggerUserScan: true,
+				RatingTagOrder:  defaultTagOrder,
+			}},
+		}},
+	}
 
-	// Should return nil because the cooldown is still active.
-	err := checkAndRunUserTriggeredScan()
+	err := checkAndRunUserTriggeredScanWith(cfg)
 	assert.NoError(t, err)
+	// The actual invariant: cooldown means no Subsonic traffic at all.
+	host.SubsonicAPIMock.AssertNotCalled(t, "Call")
 }
 
-// ─── runSync ─────────────────────────────────────────────────────────────────
+// ─── runSyncWith ─────────────────────────────────────────────────────────────
 
-func TestRunSync_NoLibraries(t *testing.T) {
-	withConfig(t, map[string]string{})
-	err := runSync()
+func TestRunSyncWith_NoLibraries(t *testing.T) {
+	err := runSyncWith(pluginConfig{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no libraries configured")
+}
+
+// ─── runSyncForUser happy path (integration) ─────────────────────────────────
+
+// TestRunSyncForUser_HappyPath wires the full pipeline together: SubsonicAPI
+// returns one song pointing at a real ID3-tagged temp file, the scanner reads
+// the rating, and setRating is called with the correct star count.
+func TestRunSyncForUser_HappyPath(t *testing.T) {
+	resetSubsonicMock(t)
+
+	// 1. Real ID3 file with FMPS_Rating=0.6 (→ 3 stars).
+	path := writeFMPSFile(t, "0.6")
+
+	// 2. fetchAllSongs returns one song pointing at that path.
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Path: path, Suffix: "mp3"}}
+	host.SubsonicAPIMock.On("Call",
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=lib1`,
+	).Return(subsonicOK(songs), nil)
+
+	// 3. setRating expects rating=3.
+	host.SubsonicAPIMock.On("Call", "setRating?id=song-1&rating=3&u=alice").
+		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
+
+	lib := libraryConfig{LibraryID: "lib1"}
+	user := userConfig{
+		Username:         "alice",
+		SkipAlreadyRated: true,
+		RatingTagOrder:   []string{"MediaMonkey"},
+	}
+
+	err := runSyncForUser(lib, user, 0)
+	require.NoError(t, err)
+	host.SubsonicAPIMock.AssertExpectations(t)
+}
+
+// writeFMPSFile creates a temp .mp3 with an FMPS_Rating TXXX frame.
+func writeFMPSFile(t *testing.T, value string) string {
+	t.Helper()
+	tag := id3v2.NewEmptyTag()
+	tag.AddFrame("TXXX", id3v2.UserDefinedTextFrame{
+		Encoding: id3v2.EncodingUTF8, Description: "FMPS_Rating", Value: value,
+	})
+	var buf bytes.Buffer
+	_, err := tag.WriteTo(&buf)
+	require.NoError(t, err)
+
+	path := filepath.Join(t.TempDir(), "song.mp3")
+	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o644))
+	return path
 }

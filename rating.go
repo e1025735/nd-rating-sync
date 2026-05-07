@@ -20,7 +20,9 @@ func fmpsToStars(s string) (int, bool) {
 	if _, err := fmt.Sscanf(s, "%f", &f); err != nil {
 		return 0, false
 	}
-	if f <= 0 {
+	// Reject NaN/Inf explicitly: comparisons with NaN are all false, so
+	// `f <= 0` would let it slip through and produce garbage from math.Ceil.
+	if math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 {
 		return 0, false
 	}
 	if f > 1 {

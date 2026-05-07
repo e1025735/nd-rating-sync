@@ -1,10 +1,9 @@
-﻿package main
+package main
 
 import (
 	"encoding/json"
 	"fmt"
 	"strings"
-
 )
 
 type userConfig struct {
@@ -27,11 +26,10 @@ type pluginConfig struct {
 	Libraries             []libraryConfig
 }
 
-// jsonUserConfig / jsonLibraryConfig are used only for unmarshaling the
 type jsonUserConfig struct {
 	Username         string   `json:"username"`
 	TriggerUserScan  bool     `json:"trigger_user_scan"`
-	SkipAlreadyRated *bool    `json:"skip_already_rated"` // pointer so absence â†’ default true
+	SkipAlreadyRated *bool    `json:"skip_already_rated"` // pointer so absence → default true
 	RatingTagOrder   []string `json:"ratingTagOrder"`
 }
 
@@ -43,38 +41,46 @@ type jsonLibraryConfig struct {
 
 var defaultTagOrder = []string{"WMP", "iTunes", "MediaMonkey"}
 
-func loadConfig() pluginConfig {
+// configGetter abstracts how a single config key is fetched. Production passes
+// the real PDK getConfig; tests pass a closure over a local map.
+type configGetter func(key string) (string, bool)
+
+// loadConfig reads from the real PDK config store. It is the production entry
+// point; tests should call loadConfigFrom directly with their own getter.
+func loadConfig() pluginConfig { return loadConfigFrom(getConfig) }
+
+func loadConfigFrom(get configGetter) pluginConfig {
 	cfg := pluginConfig{
 		SyncSchedule:          "0 */6 * * *",
 		UserScanCooldownHours: 24,
 		MaxSongsPerRun:        500,
 	}
 
-	if v, ok := getConfig("sync_schedule"); ok {
+	if v, ok := get("sync_schedule"); ok {
 		if s := strings.TrimSpace(v); s != "" {
 			cfg.SyncSchedule = s
 		}
 	}
-	if v, ok := getConfig("user_scan_cooldown_hours"); ok {
+	if v, ok := get("user_scan_cooldown_hours"); ok {
 		var n int
 		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n >= 0 {
 			cfg.UserScanCooldownHours = n
 		}
 	}
-	if v, ok := getConfig("max_songs_per_run"); ok {
+	if v, ok := get("max_songs_per_run"); ok {
 		var n int
 		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n >= 0 {
 			cfg.MaxSongsPerRun = n
 		} else {
 			logWarn(fmt.Sprintf(
-				"nd-rating-sync: invalid max_songs_per_run=%q â€“ using default %d", v, cfg.MaxSongsPerRun))
+				"nd-rating-sync: invalid max_songs_per_run=%q – using default %d", v, cfg.MaxSongsPerRun))
 		}
 	}
 
-	if v, ok := getConfig("libraries"); ok && v != "" {
+	if v, ok := get("libraries"); ok && v != "" {
 		var rawLibs []jsonLibraryConfig
 		if err := json.Unmarshal([]byte(v), &rawLibs); err != nil {
-			logWarn("nd-rating-sync: failed to parse libraries config: "+err.Error())
+			logWarn("nd-rating-sync: failed to parse libraries config: " + err.Error())
 		} else {
 			for _, rl := range rawLibs {
 				lc := libraryConfig{LibraryID: rl.LibraryID, LibraryName: rl.LibraryName}
@@ -99,8 +105,7 @@ func loadConfig() pluginConfig {
 	}
 
 	logDebug(fmt.Sprintf(
-		"nd-rating-sync: config â€“ libraries=%d sync_schedule=%q max_songs_per_run=%d",
+		"nd-rating-sync: config – libraries=%d sync_schedule=%q max_songs_per_run=%d",
 		len(cfg.Libraries), cfg.SyncSchedule, cfg.MaxSongsPerRun))
 	return cfg
 }
-

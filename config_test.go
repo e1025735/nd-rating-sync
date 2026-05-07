@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"encoding/json"
@@ -8,17 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// withConfig swaps configValues for the duration of a test.
-func withConfig(t *testing.T, values map[string]string) {
-	t.Helper()
-	old := configValues
-	configValues = values
-	t.Cleanup(func() { configValues = old })
-}
-
 func TestLoadConfig_Defaults(t *testing.T) {
-	withConfig(t, map[string]string{})
-	cfg := loadConfig()
+	cfg := loadConfigFrom(mapGetter(map[string]string{}))
 
 	assert.Equal(t, "0 */6 * * *", cfg.SyncSchedule)
 	assert.Equal(t, 24, cfg.UserScanCooldownHours)
@@ -27,44 +18,37 @@ func TestLoadConfig_Defaults(t *testing.T) {
 }
 
 func TestLoadConfig_SyncSchedule(t *testing.T) {
-	withConfig(t, map[string]string{"sync_schedule": "0 2 * * *"})
-	cfg := loadConfig()
+	cfg := loadConfigFrom(mapGetter(map[string]string{"sync_schedule": "0 2 * * *"}))
 	assert.Equal(t, "0 2 * * *", cfg.SyncSchedule)
 }
 
 func TestLoadConfig_SyncScheduleWhitespaceOnlyUsesDefault(t *testing.T) {
-	withConfig(t, map[string]string{"sync_schedule": "   "})
-	cfg := loadConfig()
+	cfg := loadConfigFrom(mapGetter(map[string]string{"sync_schedule": "   "}))
 	assert.Equal(t, "0 */6 * * *", cfg.SyncSchedule)
 }
 
 func TestLoadConfig_CooldownHours(t *testing.T) {
-	withConfig(t, map[string]string{"user_scan_cooldown_hours": "12"})
-	cfg := loadConfig()
+	cfg := loadConfigFrom(mapGetter(map[string]string{"user_scan_cooldown_hours": "12"}))
 	assert.Equal(t, 12, cfg.UserScanCooldownHours)
 }
 
 func TestLoadConfig_CooldownZeroDisablesCooldown(t *testing.T) {
-	withConfig(t, map[string]string{"user_scan_cooldown_hours": "0"})
-	cfg := loadConfig()
+	cfg := loadConfigFrom(mapGetter(map[string]string{"user_scan_cooldown_hours": "0"}))
 	assert.Equal(t, 0, cfg.UserScanCooldownHours)
 }
 
 func TestLoadConfig_MaxSongsPerRun(t *testing.T) {
-	withConfig(t, map[string]string{"max_songs_per_run": "250"})
-	cfg := loadConfig()
+	cfg := loadConfigFrom(mapGetter(map[string]string{"max_songs_per_run": "250"}))
 	assert.Equal(t, 250, cfg.MaxSongsPerRun)
 }
 
 func TestLoadConfig_MaxSongsZeroMeansUnlimited(t *testing.T) {
-	withConfig(t, map[string]string{"max_songs_per_run": "0"})
-	cfg := loadConfig()
+	cfg := loadConfigFrom(mapGetter(map[string]string{"max_songs_per_run": "0"}))
 	assert.Equal(t, 0, cfg.MaxSongsPerRun)
 }
 
 func TestLoadConfig_MaxSongsInvalidKeepsDefault(t *testing.T) {
-	withConfig(t, map[string]string{"max_songs_per_run": "not-a-number"})
-	cfg := loadConfig()
+	cfg := loadConfigFrom(mapGetter(map[string]string{"max_songs_per_run": "not-a-number"}))
 	assert.Equal(t, 500, cfg.MaxSongsPerRun)
 }
 
@@ -81,8 +65,7 @@ func TestLoadConfig_Libraries(t *testing.T) {
 	raw, err := json.Marshal(libs)
 	require.NoError(t, err)
 
-	withConfig(t, map[string]string{"libraries": string(raw)})
-	cfg := loadConfig()
+	cfg := loadConfigFrom(mapGetter(map[string]string{"libraries": string(raw)}))
 
 	require.Len(t, cfg.Libraries, 1)
 	lib := cfg.Libraries[0]
@@ -100,9 +83,7 @@ func TestLoadConfig_SkipAlreadyRatedDefaultsTrue(t *testing.T) {
 		{"libraryId": "lib1", "users": []map[string]any{{"username": "bob"}}},
 	}
 	raw, _ := json.Marshal(libs)
-	withConfig(t, map[string]string{"libraries": string(raw)})
-
-	cfg := loadConfig()
+	cfg := loadConfigFrom(mapGetter(map[string]string{"libraries": string(raw)}))
 	assert.True(t, cfg.Libraries[0].Users[0].SkipAlreadyRated)
 }
 
@@ -115,9 +96,7 @@ func TestLoadConfig_SkipAlreadyRatedCanBeDisabled(t *testing.T) {
 		},
 	}
 	raw, _ := json.Marshal(libs)
-	withConfig(t, map[string]string{"libraries": string(raw)})
-
-	cfg := loadConfig()
+	cfg := loadConfigFrom(mapGetter(map[string]string{"libraries": string(raw)}))
 	assert.False(t, cfg.Libraries[0].Users[0].SkipAlreadyRated)
 }
 
@@ -129,34 +108,38 @@ func TestLoadConfig_TagOrderDefaultWhenEmpty(t *testing.T) {
 		},
 	}
 	raw, _ := json.Marshal(libs)
-	withConfig(t, map[string]string{"libraries": string(raw)})
-
-	cfg := loadConfig()
+	cfg := loadConfigFrom(mapGetter(map[string]string{"libraries": string(raw)}))
 	assert.Equal(t, defaultTagOrder, cfg.Libraries[0].Users[0].RatingTagOrder)
 }
 
 func TestLoadConfig_InvalidLibrariesJSONKeepsEmptySlice(t *testing.T) {
-	withConfig(t, map[string]string{"libraries": "not valid json"})
-	cfg := loadConfig()
+	cfg := loadConfigFrom(mapGetter(map[string]string{"libraries": "not valid json"}))
 	assert.Empty(t, cfg.Libraries)
 }
 
 func TestLoadConfig_MultipleLibrariesAndUsers(t *testing.T) {
 	libs := []map[string]any{
-		{
-			"libraryId": "lib1",
-			"users":     []map[string]any{{"username": "alice"}, {"username": "bob"}},
-		},
-		{
-			"libraryId": "lib2",
-			"users":     []map[string]any{{"username": "carol"}},
-		},
+		{"libraryId": "lib1", "users": []map[string]any{{"username": "alice"}, {"username": "bob"}}},
+		{"libraryId": "lib2", "users": []map[string]any{{"username": "carol"}}},
 	}
 	raw, _ := json.Marshal(libs)
-	withConfig(t, map[string]string{"libraries": string(raw)})
+	cfg := loadConfigFrom(mapGetter(map[string]string{"libraries": string(raw)}))
 
-	cfg := loadConfig()
 	require.Len(t, cfg.Libraries, 2)
 	assert.Len(t, cfg.Libraries[0].Users, 2)
 	assert.Len(t, cfg.Libraries[1].Users, 1)
+}
+
+func TestLoadConfigFrom_IsParallelSafe(t *testing.T) {
+	// Two parallel subtests with disjoint configs prove there is no global state.
+	t.Run("a", func(t *testing.T) {
+		t.Parallel()
+		cfg := loadConfigFrom(mapGetter(map[string]string{"sync_schedule": "0 1 * * *"}))
+		assert.Equal(t, "0 1 * * *", cfg.SyncSchedule)
+	})
+	t.Run("b", func(t *testing.T) {
+		t.Parallel()
+		cfg := loadConfigFrom(mapGetter(map[string]string{"sync_schedule": "0 2 * * *"}))
+		assert.Equal(t, "0 2 * * *", cfg.SyncSchedule)
+	})
 }

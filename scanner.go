@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"errors"
@@ -8,24 +8,23 @@ import (
 	"strings"
 	"sync"
 	"time"
-
 )
 
-// â”€â”€â”€ User-triggered scan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── User-triggered scan ──────────────────────────────────────────────────────
 
 var (
 	lastUserScanMu    sync.Mutex
 	lastUserScanTimes = map[string]time.Time{} // key: username
 )
 
-/*
-checkAndRunUserTriggeredScan is called every 15 minutes. For each user who
-has trigger_user_scan=true and whose cooldown has elapsed, it runs a full
-sync scoped to that user and library.
-*/
+// checkAndRunUserTriggeredScan is called every 15 minutes.
 func checkAndRunUserTriggeredScan() error {
-	cfg := loadConfig()
+	return checkAndRunUserTriggeredScanWith(loadConfig())
+}
 
+// checkAndRunUserTriggeredScanWith is the testable variant that takes the
+// already-resolved config rather than reading it from the PDK.
+func checkAndRunUserTriggeredScanWith(cfg pluginConfig) error {
 	var errMsgs []string
 	for _, lib := range cfg.Libraries {
 		for _, u := range lib.Users {
@@ -68,17 +67,19 @@ func checkAndRunUserTriggeredScan() error {
 	return nil
 }
 
-// â”€â”€â”€ Sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Sync ─────────────────────────────────────────────────────────────────────
 
-// runSync iterates over every configured library/user combination and syncs ratings.
-func runSync() error {
-	cfg := loadConfig()
+// runSync iterates over every configured library/user combination.
+func runSync() error { return runSyncWith(loadConfig()) }
+
+// runSyncWith is the testable variant that takes the resolved config.
+func runSyncWith(cfg pluginConfig) error {
 	if len(cfg.Libraries) == 0 {
-		return errors.New("no libraries configured â€“ add at least one library with users in the plugin settings")
+		return errors.New("no libraries configured – add at least one library with users in the plugin settings")
 	}
 
 	logInfo(fmt.Sprintf(
-		"nd-rating-sync: starting sync â€“ libraries=%d max_songs_per_run=%d",
+		"nd-rating-sync: starting sync – libraries=%d max_songs_per_run=%d",
 		len(cfg.Libraries), cfg.MaxSongsPerRun))
 
 	var errMsgs []string
@@ -99,7 +100,7 @@ func runSync() error {
 // runSyncForUser fetches and processes songs for a single library/user pair.
 func runSyncForUser(lib libraryConfig, u userConfig, maxSongs int) error {
 	if u.Username == "" {
-		return errors.New("username is empty â€“ check plugin configuration")
+		return errors.New("username is empty – check plugin configuration")
 	}
 
 	logInfo(fmt.Sprintf(
@@ -122,7 +123,7 @@ func runSyncForUser(lib libraryConfig, u userConfig, maxSongs int) error {
 
 		if u.SkipAlreadyRated && s.UserRating > 0 {
 			logDebug(fmt.Sprintf(
-				"nd-rating-sync: skipping %q â€“ already rated (%d stars in Navidrome)", s.Title, s.UserRating))
+				"nd-rating-sync: skipping %q – already rated (%d stars in Navidrome)", s.Title, s.UserRating))
 			skippedRated++
 			continue
 		}
@@ -140,23 +141,20 @@ func runSyncForUser(lib libraryConfig, u userConfig, maxSongs int) error {
 			continue
 		}
 
-		logDebug(fmt.Sprintf("nd-rating-sync: rated %q â†’ %d stars", s.Title, stars))
+		logDebug(fmt.Sprintf("nd-rating-sync: rated %q → %d stars", s.Title, stars))
 		rated++
 	}
 
 	logInfo(fmt.Sprintf(
-		"nd-rating-sync: done user=%q â€“ rated=%d skipped_already_rated=%d skipped_no_tag=%d errors=%d",
+		"nd-rating-sync: done user=%q – rated=%d skipped_already_rated=%d skipped_no_tag=%d errors=%d",
 		u.Username, rated, skippedRated, skippedNoTag, errored))
 	return nil
 }
 
-// â”€â”€â”€ File reading â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── File reading ─────────────────────────────────────────────────────────────
 
-/*
-extractStarsFromFile reads the audio file at path and returns a 1â€“5 star
-rating using the tag formats in tagOrder for priority, or (0, false) if no
-recognised rating tag is found.
-*/
+// extractStarsFromFile reads the audio file at path and returns a 1–5 star
+// rating using the tag formats in tagOrder for priority.
 func extractStarsFromFile(path, suffix string, tagOrder []string) (int, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -173,14 +171,14 @@ func extractStarsFromFile(path, suffix string, tagOrder []string) (int, bool) {
 	case "mp3":
 		stars, ok := parseID3v2Rating(data, tagOrder)
 		if ok {
-			logDebug(fmt.Sprintf("nd-rating-sync: %q â€“ found rating tag â†’ %d stars", path, stars))
+			logDebug(fmt.Sprintf("nd-rating-sync: %q – found rating tag → %d stars", path, stars))
 		} else {
-			logDebug(fmt.Sprintf("nd-rating-sync: %q â€“ no rating tag found", path))
+			logDebug(fmt.Sprintf("nd-rating-sync: %q – no rating tag found", path))
 		}
 		return stars, ok
 	default:
 		logWarn(fmt.Sprintf(
-			"nd-rating-sync: skipping %q â€“ only MP3 files are supported (got .%s)", path, ext))
+			"nd-rating-sync: skipping %q – only MP3 files are supported (got .%s)", path, ext))
 		return 0, false
 	}
 }

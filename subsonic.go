@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"encoding/json"
@@ -33,7 +33,7 @@ type subsonicSong struct {
 	Artist     string `json:"artist"`
 	Path       string `json:"path"`
 	Suffix     string `json:"suffix"`
-	UserRating int    `json:"userRating"` // 0 = unrated, 1â€“5 = stars
+	UserRating int    `json:"userRating"` // 0 = unrated, 1–5 = stars
 }
 
 // fetchAllSongs pages through search3 and returns every song accessible by
@@ -52,7 +52,7 @@ func fetchAllSongs(username, libraryID string) ([]subsonicSong, error) {
 		}
 
 		logDebug(fmt.Sprintf(
-			"nd-rating-sync: fetching songs â€“ user=%q library=%s offset=%d page_size=%d",
+			"nd-rating-sync: fetching songs – user=%q library=%s offset=%d page_size=%d",
 			username, libraryID, offset, pageSize))
 
 		raw, err := host.SubsonicAPICall(uri)
