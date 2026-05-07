@@ -20,7 +20,9 @@ func fmpsToStars(s string) (int, bool) {
 	if _, err := fmt.Sscanf(s, "%f", &f); err != nil {
 		return 0, false
 	}
-	if f <= 0 {
+	// Reject NaN/Inf explicitly: comparisons with NaN are all false, so
+	// `f <= 0` would let it slip through and produce garbage from math.Ceil.
+	if math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 {
 		return 0, false
 	}
 	if f > 1 {
@@ -56,6 +58,27 @@ func popmWMPToStars(b byte) int {
 	default: // 99–255
 		return 5
 	}
+}
+
+/*
+ratingIntToStars parses a plain integer star count in the range 1–5.
+Used by foobar2000-style tags (TXXX:RATING in MP3, RATING Vorbis comment
+in FLAC / Ogg / Opus) where the value is just the star count as a string.
+Empty, "0", or out-of-range values are reported as unrated.
+*/
+func ratingIntToStars(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	var n int
+	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
+		return 0, false
+	}
+	if n < 1 || n > 5 {
+		return 0, false
+	}
+	return n, true
 }
 
 /*

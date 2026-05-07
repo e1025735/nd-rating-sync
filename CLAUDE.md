@@ -1,6 +1,6 @@
 # nd-rating-sync — project context
 
-Navidrome plugin (WASM) that reads embedded star-rating tags from MP3 files and writes them to Navidrome via the Subsonic `setRating` API. Navidrome doesn't import embedded ratings on its own; this plugin bridges file tags and the Navidrome user-rating system.
+Navidrome plugin (WASM) that reads embedded star-rating tags from MP3, FLAC, Ogg-Vorbis and Opus files and writes them to Navidrome via the Subsonic `setRating` API. Navidrome doesn't import embedded ratings on its own; this plugin bridges file tags and the Navidrome user-rating system.
 
 ## File layout
 
@@ -11,7 +11,9 @@ Navidrome plugin (WASM) that reads embedded star-rating tags from MP3 files and 
 | `scanner.go` | Sync orchestration — `runSync`, `runSyncForUser`, `checkAndRunUserTriggeredScan`, `extractStarsFromFile` |
 | `subsonic.go` | Subsonic API domain — response types, `fetchAllSongs`, `setRating` |
 | `id3.go` | ID3v2 tag parsing (`parseID3v2Rating`) — dispatches by per-user `tagOrder` |
-| `rating.go` | Pure converters: `fmpsToStars`, `popmWMPToStars`, `popmITunesToStars`, `popmWinampToStars`, `popmLinear51ToStars` |
+| `flac.go` | FLAC + Vorbis comment parsing (`parseFLACVorbisComments`, `parseFLACRating`) plus the shared `ratingFromVorbisComments` resolver — hand-rolled, no external dep |
+| `ogg.go` | Ogg page walker (`extractOggPackets`) and Vorbis/Opus comment dispatch (`parseOggVorbisRating`) — hand-rolled, no external dep |
+| `rating.go` | Pure converters: `fmpsToStars`, `ratingIntToStars`, `popmWMPToStars`, `popmITunesToStars`, `popmWinampToStars`, `popmLinear51ToStars` |
 | `manifest.json` | Plugin metadata, capabilities, JSON Schema config definition |
 
 ## Build
@@ -34,15 +36,20 @@ Config is a hierarchical JSON Schema (not a flat key-value list):
   - Each library: `libraryId`, `libraryName`, `users[]`
   - Each user: `username`, `trigger_user_scan`, `skip_already_rated` (default `true`), `ratingTagOrder`
 
-## Supported tag formats (MP3 / ID3v2 only)
+## Supported tag formats
 
-| `ratingTagOrder` key | ID3v2 frame | Scale |
-|----------------------|-------------|-------|
-| `"WMP"` | POPM (email contains "windows media player") | Non-linear fixed points (1/25/50/75/99) |
-| `"iTunes"` | POPM (email contains "itunes" / "com.apple.itunes") | Linear 0–100 (20/40/60/80/100) |
-| `"MediaMonkey"` | TXXX description "FMPS_Rating" | Float 0.0–1.0 → ceiling×5 |
+`ratingTagOrder` values are *source applications*, not container-specific keys. Each source maps to whatever tag(s) that application writes in each container. FLAC, Ogg-Vorbis and Opus all share the Vorbis comment format, so they use the same column.
 
-Per-user `ratingTagOrder` controls priority; first match in the file wins.
+| `ratingTagOrder` key | MP3 (ID3v2) | FLAC / Ogg / Opus (Vorbis comments) | Scale |
+|----------------------|-------------|-------------------------------------|-------|
+| `"WMP"` | POPM (email contains "windows media player") | — | Non-linear fixed points (1/25/50/75/99) |
+| `"iTunes"` | POPM (email contains "itunes" / "com.apple.itunes") | — | Linear 0–100 (20/40/60/80/100) |
+| `"MediaMonkey"` | TXXX description "FMPS_Rating" | `FMPS_RATING` | Float 0.0–1.0 → ceiling×5 |
+| `"foobar2000"` | TXXX description "RATING" | `RATING` | Integer 1–5 (0/empty = unrated) |
+
+Per-user `ratingTagOrder` controls priority; first match in the file wins. Sources without a representation in a given container are silently skipped (e.g. `WMP` listed for a FLAC file simply never matches — keeping it in the order is harmless).
+
+`ratingFromVorbisComments` (in `flac.go`) is the shared resolver used by the FLAC and Ogg/Opus paths — extending Vorbis-side tag detection means editing it once.
 
 ## Scheduler IDs
 

@@ -13,6 +13,7 @@ import (
 //
 // Recognised tagOrder values:
 //   - "MediaMonkey" – TXXX frame with description "FMPS_Rating" (float 0.0–1.0)
+//   - "foobar2000"  – TXXX frame with description "RATING" (integer 1–5)
 //   - "WMP"         – POPM frame written by Windows Media Player
 //   - "iTunes"      – POPM frame written by iTunes / Apple Music
 func parseID3v2Rating(data []byte, tagOrder []string) (int, bool) {
@@ -29,9 +30,15 @@ func parseID3v2Rating(data []byte, tagOrder []string) (int, bool) {
 		if !ok {
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(txxx.Description), "FMPS_Rating") {
+		desc := strings.ToUpper(strings.TrimSpace(txxx.Description))
+		switch desc {
+		case "FMPS_RATING":
 			if stars, ok := fmpsToStars(txxx.Value); ok {
 				found["MediaMonkey"] = stars
+			}
+		case "RATING":
+			if stars, ok := ratingIntToStars(txxx.Value); ok {
+				found["foobar2000"] = stars
 			}
 		}
 	}

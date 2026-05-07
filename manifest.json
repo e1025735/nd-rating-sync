@@ -1,7 +1,7 @@
 {
   "name": "nd-rating-sync",
   "version": "0.4.0",
-  "description": "Reads embedded rating tags from music files (FMPS_Rating / POPM / iTunes rtng / WMP / MediaMonkey) and syncs them to Navidrome's user ratings via the Subsonic API, with per-user per-library tag priority and overwrite control.",
+  "description": "Reads embedded rating tags from MP3 (ID3v2: FMPS_Rating / POPM iTunes / POPM WMP / TXXX:RATING), FLAC, OGG-Vorbis and Opus (Vorbis comments: FMPS_RATING / RATING) files and syncs them to Navidrome's user ratings via the Subsonic API, with per-user per-library tag priority and overwrite control.",
   "author": "Your Name <you@example.com>",
   "homepage": "https://github.com/yourusername/nd-rating-sync",
   "capabilities": ["lifecycle", "schedulerCallback"],
@@ -105,14 +105,14 @@
                     "ratingTagOrder": {
                       "type": "array",
                       "title": "Rating tag priority order",
-                      "description": "Ordered list of embedded tag formats to try when reading a rating from a file. The first tag found in a file wins. Remove formats this user does not use. Supported values: WMP (POPM/Windows Media Player), iTunes (rtng), MediaMonkey (FMPS_Rating).",
+                      "description": "Ordered list of embedded tag formats to try when reading a rating from a file. The first tag found in a file wins. Remove formats this user does not use. Supported values: WMP (POPM, MP3 only), iTunes (POPM, MP3 only), MediaMonkey (FMPS_Rating in MP3 TXXX or FLAC/Ogg/Opus Vorbis comments), foobar2000 (RATING in MP3 TXXX or FLAC/Ogg/Opus Vorbis comments, integer 1–5).",
                       "items": {
                         "type": "string",
-                        "enum": ["WMP", "iTunes", "MediaMonkey"]
+                        "enum": ["WMP", "iTunes", "MediaMonkey", "foobar2000"]
                       },
                       "uniqueItems": true,
                       "minItems": 1,
-                      "default": ["WMP", "iTunes", "MediaMonkey"]
+                      "default": ["WMP", "iTunes", "MediaMonkey", "foobar2000"]
                     }
 
                   }
