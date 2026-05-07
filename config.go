@@ -1,11 +1,10 @@
-package main
+﻿package main
 
 import (
 	"encoding/json"
 	"fmt"
 	"strings"
 
-	pdk "github.com/extism/go-pdk"
 )
 
 type userConfig struct {
@@ -32,7 +31,7 @@ type pluginConfig struct {
 type jsonUserConfig struct {
 	Username         string   `json:"username"`
 	TriggerUserScan  bool     `json:"trigger_user_scan"`
-	SkipAlreadyRated *bool    `json:"skip_already_rated"` // pointer so absence → default true
+	SkipAlreadyRated *bool    `json:"skip_already_rated"` // pointer so absence â†’ default true
 	RatingTagOrder   []string `json:"ratingTagOrder"`
 }
 
@@ -51,31 +50,31 @@ func loadConfig() pluginConfig {
 		MaxSongsPerRun:        500,
 	}
 
-	if v, ok := pdk.GetConfig("sync_schedule"); ok {
+	if v, ok := getConfig("sync_schedule"); ok {
 		if s := strings.TrimSpace(v); s != "" {
 			cfg.SyncSchedule = s
 		}
 	}
-	if v, ok := pdk.GetConfig("user_scan_cooldown_hours"); ok {
+	if v, ok := getConfig("user_scan_cooldown_hours"); ok {
 		var n int
 		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n >= 0 {
 			cfg.UserScanCooldownHours = n
 		}
 	}
-	if v, ok := pdk.GetConfig("max_songs_per_run"); ok {
+	if v, ok := getConfig("max_songs_per_run"); ok {
 		var n int
 		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n >= 0 {
 			cfg.MaxSongsPerRun = n
 		} else {
-			pdk.Log(pdk.LogWarn, fmt.Sprintf(
-				"nd-rating-sync: invalid max_songs_per_run=%q – using default %d", v, cfg.MaxSongsPerRun))
+			logWarn(fmt.Sprintf(
+				"nd-rating-sync: invalid max_songs_per_run=%q â€“ using default %d", v, cfg.MaxSongsPerRun))
 		}
 	}
 
-	if v, ok := pdk.GetConfig("libraries"); ok && v != "" {
+	if v, ok := getConfig("libraries"); ok && v != "" {
 		var rawLibs []jsonLibraryConfig
 		if err := json.Unmarshal([]byte(v), &rawLibs); err != nil {
-			pdk.Log(pdk.LogWarn, "nd-rating-sync: failed to parse libraries config: "+err.Error())
+			logWarn("nd-rating-sync: failed to parse libraries config: "+err.Error())
 		} else {
 			for _, rl := range rawLibs {
 				lc := libraryConfig{LibraryID: rl.LibraryID, LibraryName: rl.LibraryName}
@@ -99,8 +98,9 @@ func loadConfig() pluginConfig {
 		}
 	}
 
-	pdk.Log(pdk.LogDebug, fmt.Sprintf(
-		"nd-rating-sync: config – libraries=%d sync_schedule=%q max_songs_per_run=%d",
+	logDebug(fmt.Sprintf(
+		"nd-rating-sync: config â€“ libraries=%d sync_schedule=%q max_songs_per_run=%d",
 		len(cfg.Libraries), cfg.SyncSchedule, cfg.MaxSongsPerRun))
 	return cfg
 }
+
