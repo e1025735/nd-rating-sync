@@ -1,0 +1,86 @@
+name: Version bump on Renovate merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    if: github.event.pull_request.merged == true && github.event.pull_request.user.login == 'renovate[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine bump type from PR labels
+        id: bump
+        env:
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          if echo "$LABELS" | grep -q "renovate-minor"; then
+            echo "type=minor" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=patch" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute new version
+        id: version
+        run: |
+          CURRENT=$(jq -r '.version' manifest.json)
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          case "${{ steps.bump.outputs.type }}" in
+            minor) MINOR=$((MINOR+1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH+1)) ;;
+          esac
+          NEW="${MAJOR}.${MINOR}.${PATCH}"
+          echo "version=${NEW}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${NEW}" >> "$GITHUB_OUTPUT"
+
+      - name: Bump manifest.json
+        run: |
+          jq --arg v "${{ steps.version.outputs.version }}" '.version = $v' manifest.json > manifest.tmp
+          mv manifest.tmp manifest.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: go test ./...
+
+      - name: Set up TinyGo
+        uses: tinygo-org/setup-tinygo@v1
+        with:
+          tinygo-version: '0.41.1'
+
+      - name: Build WASM
+        run: tinygo build -o plugin.wasm -target wasip1 -buildmode=c-shared .
+
+      - name: Package plugin
+        run: zip -j nd-rating-sync.ndp manifest.json plugin.wasm
+
+      - name: Commit and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add manifest.json
+          git commit -m "chore(release): bump version to ${{ steps.version.outputs.tag }} after Renovate update"
+          git tag "${{ steps.version.outputs.tag }}"
+          git push
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          prerelease: false
+          files: nd-rating-sync.ndp

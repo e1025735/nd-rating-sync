@@ -1,0 +1,24 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["patch"],
+      "addLabels": ["renovate-patch"]
+    },
+    {
+      "matchUpdateTypes": ["minor", "major"],
+      "addLabels": ["renovate-minor"]
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": ["\\.github/workflows/.*\\.yml$"],
+      "matchStrings": ["tinygo-version: '(?<currentValue>[^']+)'"],
+      "depNameTemplate": "tinygo-org/tinygo",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver"
+    }
+  ]
+}
