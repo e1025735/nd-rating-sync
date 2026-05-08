@@ -37,9 +37,10 @@ Standard `go build` / `go vet` always fail with "missing function body" from the
 Config is a hierarchical JSON Schema (not a flat key-value list):
 
 - Top-level admin scalars read via `pdk.GetConfig`: `sync_schedule`, `user_scan_cooldown_hours`, `max_songs_per_run`, `dry_run`
+- Top-level admin tristate defaults (also via `pdk.GetConfig`): `default_trigger_user_scan`, `default_skip_already_rated`, `default_clear_rating_if_untagged` — each a `*bool` in `pluginConfig`; `nil` = no admin default
 - `libraries` array read via `pdk.GetConfig("libraries")` as a JSON string, then unmarshaled:
   - Each library: `libraryId`, `libraryName`, `users[]`
-  - Each user: `username`, `trigger_user_scan`, `skip_already_rated` (default `true`), `clear_rating_if_untagged` (default `false`), `ratingTagOrder`
+  - Each user: `username`, `trigger_user_scan` / `skip_already_rated` / `clear_rating_if_untagged` (all tristate `*bool`); resolved via `resolveTristate(user, adminDefault, pluginFallback)`, `ratingTagOrder`
 
 ## Supported tag formats
 

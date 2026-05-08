@@ -21,19 +21,22 @@ type libraryConfig struct {
 }
 
 type pluginConfig struct {
-	SyncSchedule          string
-	UserScanCooldownHours int
-	MaxSongsPerRun        int
-	IncrementalSync       bool
-	DryRun                bool
-	Libraries             []libraryConfig
+	SyncSchedule                string
+	UserScanCooldownHours       int
+	MaxSongsPerRun              int
+	IncrementalSync             bool
+	DryRun                      bool
+	DefaultTriggerUserScan      *bool
+	DefaultSkipAlreadyRated     *bool
+	DefaultClearRatingIfUntagged *bool
+	Libraries                   []libraryConfig
 }
 
 type jsonUserConfig struct {
 	Username              string   `json:"username"`
-	TriggerUserScan       bool     `json:"trigger_user_scan"`
-	SkipAlreadyRated      *bool    `json:"skip_already_rated"` // pointer so absence → default true
-	ClearRatingIfUntagged bool     `json:"clear_rating_if_untagged"`
+	TriggerUserScan       *bool    `json:"trigger_user_scan"`       // pointer so null → default false
+	SkipAlreadyRated      *bool    `json:"skip_already_rated"`      // pointer so null/absent → default true
+	ClearRatingIfUntagged *bool    `json:"clear_rating_if_untagged"` // pointer so null → default false
 	RatingTagOrder        []string `json:"ratingTagOrder"`
 }
 
@@ -44,6 +47,32 @@ type jsonLibraryConfig struct {
 }
 
 var defaultTagOrder = []string{"WMP", "iTunes", "MediaMonkey", "foobar2000"}
+
+// parseTristateConfig parses a PDK string value into a tristate bool pointer.
+// "true"/"1"/"yes"/"on" → &true; "false"/"0"/"no"/"off" → &false; anything else → nil (not set).
+func parseTristateConfig(v string) *bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true", "1", "yes", "on":
+		b := true
+		return &b
+	case "false", "0", "no", "off":
+		b := false
+		return &b
+	default:
+		return nil
+	}
+}
+
+// resolveTristate returns the first non-nil value in: user → admin → plugin hardcoded fallback.
+func resolveTristate(user, admin *bool, fallback bool) bool {
+	if user != nil {
+		return *user
+	}
+	if admin != nil {
+		return *admin
+	}
+	return fallback
+}
 
 // configGetter abstracts how a single config key is fetched. Production passes
 // the real PDK getConfig; tests pass a closure over a local map.
@@ -89,6 +118,15 @@ func loadConfigFrom(get configGetter) pluginConfig {
 			cfg.DryRun = true
 		}
 	}
+	if v, ok := get("default_trigger_user_scan"); ok {
+		cfg.DefaultTriggerUserScan = parseTristateConfig(v)
+	}
+	if v, ok := get("default_skip_already_rated"); ok {
+		cfg.DefaultSkipAlreadyRated = parseTristateConfig(v)
+	}
+	if v, ok := get("default_clear_rating_if_untagged"); ok {
+		cfg.DefaultClearRatingIfUntagged = parseTristateConfig(v)
+	}
 	if v, ok := get("max_songs_per_run"); ok {
 		var n int
 		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n >= 0 {
@@ -109,13 +147,10 @@ func loadConfigFrom(get configGetter) pluginConfig {
 				for _, ru := range rl.Users {
 					uc := userConfig{
 						Username:              ru.Username,
-						TriggerUserScan:       ru.TriggerUserScan,
-						SkipAlreadyRated:      true,
-						ClearRatingIfUntagged: ru.ClearRatingIfUntagged,
+						TriggerUserScan:       resolveTristate(ru.TriggerUserScan, cfg.DefaultTriggerUserScan, false),
+						SkipAlreadyRated:      resolveTristate(ru.SkipAlreadyRated, cfg.DefaultSkipAlreadyRated, true),
+						ClearRatingIfUntagged: resolveTristate(ru.ClearRatingIfUntagged, cfg.DefaultClearRatingIfUntagged, false),
 						RatingTagOrder:        ru.RatingTagOrder,
-					}
-					if ru.SkipAlreadyRated != nil {
-						uc.SkipAlreadyRated = *ru.SkipAlreadyRated
 					}
 					if len(uc.RatingTagOrder) == 0 {
 						uc.RatingTagOrder = defaultTagOrder

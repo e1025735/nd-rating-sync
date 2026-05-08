@@ -1,6 +1,6 @@
 {
   "name": "nd-rating-sync",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Reads embedded rating tags from MP3 (ID3v2: FMPS_Rating / POPM iTunes / POPM WMP / TXXX:RATING), FLAC, OGG-Vorbis and Opus (Vorbis comments: FMPS_RATING / RATING) files and syncs them to Navidrome's user ratings via the Subsonic API, with per-user per-library tag priority and overwrite control.",
   "author": "Your Name <you@example.com>",
   "homepage": "https://github.com/yourusername/nd-rating-sync",
@@ -67,6 +67,30 @@
           "default": false
         },
 
+        "default_trigger_user_scan": {
+          "type": ["boolean", "null"],
+          "title": "Default: trigger scan now [admin]",
+          "description": "Admin-level default for the per-user 'trigger_user_scan' flag. Applied when a user entry leaves that field as null. null here means no admin default — the plugin uses false.",
+          "enum": [null, true, false],
+          "default": null
+        },
+
+        "default_skip_already_rated": {
+          "type": ["boolean", "null"],
+          "title": "Default: skip already-rated songs [admin]",
+          "description": "Admin-level default for the per-user 'skip_already_rated' flag. Applied when a user entry leaves that field as null. null here means no admin default — the plugin uses true.",
+          "enum": [null, true, false],
+          "default": null
+        },
+
+        "default_clear_rating_if_untagged": {
+          "type": ["boolean", "null"],
+          "title": "Default: clear rating if no tag found [admin]",
+          "description": "Admin-level default for the per-user 'clear_rating_if_untagged' flag. Applied when a user entry leaves that field as null. null here means no admin default — the plugin uses false.",
+          "enum": [null, true, false],
+          "default": null
+        },
+
         "libraries": {
           "type": "array",
           "title": "Library configurations",
@@ -106,24 +130,27 @@
                     },
 
                     "trigger_user_scan": {
-                      "type": "boolean",
+                      "type": ["boolean", "null"],
                       "title": "Trigger scan now",
-                      "description": "Set to true to request an immediate one-time rating scan for this user. The plugin checks for this flag every 15 minutes and resets it automatically once the scan is queued. Subject to the cooldown period configured above.",
-                      "default": false
+                      "description": "Set to true to request an immediate one-time rating scan for this user. The plugin checks for this flag every 15 minutes and resets it automatically once the scan is queued. Subject to the cooldown period configured above. null = inherit from default_trigger_user_scan; if that is also null, the plugin uses false.",
+                      "enum": [null, true, false],
+                      "default": null
                     },
 
                     "skip_already_rated": {
-                      "type": "boolean",
+                      "type": ["boolean", "null"],
                       "title": "Skip already-rated songs",
-                      "description": "When true (default), songs that already have a star rating in Navidrome for this user are left untouched. Set to false to allow tag values to overwrite existing ratings.",
-                      "default": true
+                      "description": "When true, songs that already have a star rating in Navidrome for this user are left untouched. Set to false to allow tag values to overwrite existing ratings. null = inherit from default_skip_already_rated; if that is also null, the plugin uses true.",
+                      "enum": [null, true, false],
+                      "default": null
                     },
 
                     "clear_rating_if_untagged": {
-                      "type": "boolean",
+                      "type": ["boolean", "null"],
                       "title": "Clear rating if no tag found",
-                      "description": "When true, songs that have no embedded rating tag will have their Navidrome rating set to 0 (removed). To also clear ratings on songs that were previously rated in Navidrome, set skip_already_rated to false — otherwise already-rated songs are skipped before the file is read and their ratings will not be cleared. Default: false (untagged files are left untouched).",
-                      "default": false
+                      "description": "When true, songs that have no embedded rating tag will have their Navidrome rating set to 0 (removed). To also clear ratings on songs that were previously rated in Navidrome, set skip_already_rated to false — otherwise already-rated songs are skipped before the file is read and their ratings will not be cleared. null = inherit from default_clear_rating_if_untagged; if that is also null, the plugin uses false.",
+                      "enum": [null, true, false],
+                      "default": null
                     },
 
                     "ratingTagOrder": {
@@ -164,6 +191,9 @@
       "dry_run": {
         "ui:widget": "checkbox"
       },
+      "default_trigger_user_scan":        { "ui:widget": "select", "ui:enumNames": ["No admin default (plugin: false)", "Yes", "No"] },
+      "default_skip_already_rated":       { "ui:widget": "select", "ui:enumNames": ["No admin default (plugin: true)",  "Yes", "No"] },
+      "default_clear_rating_if_untagged": { "ui:widget": "select", "ui:enumNames": ["No admin default (plugin: false)", "Yes", "No"] },
       "libraries": {
         "ui:label": "Libraries",
         "items": {
@@ -173,9 +203,9 @@
             "ui:label": "Users",
             "items": {
               "username":                 { "ui:placeholder": "e.g. alice" },
-              "trigger_user_scan":        { "ui:widget": "checkbox" },
-              "skip_already_rated":       { "ui:widget": "checkbox" },
-              "clear_rating_if_untagged": { "ui:widget": "checkbox" },
+              "trigger_user_scan":        { "ui:widget": "select", "ui:enumNames": ["Inherit from admin default", "Yes", "No"] },
+              "skip_already_rated":       { "ui:widget": "select", "ui:enumNames": ["Inherit from admin default", "Yes", "No"] },
+              "clear_rating_if_untagged": { "ui:widget": "select", "ui:enumNames": ["Inherit from admin default", "Yes", "No"] },
               "ratingTagOrder": {
                 "ui:description": "Only include formats relevant to this user. Order determines priority — first match in the file wins."
               }

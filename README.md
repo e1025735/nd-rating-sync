@@ -126,6 +126,9 @@ the same example. You enter these settings via the Navidrome UI:
 | `max_songs_per_run` | `500` | Hard cap on how many songs a single scheduled run will process. Set to `0` for unlimited. The cap protects against accidental runaways on very large libraries. |
 | `incremental_sync` | `true` | When enabled, recurring scans skip files whose mtime hasn't changed since the previous successful run. See **[Incremental sync](#incremental-sync)** below. |
 | `dry_run` | `false` | When true, the full scan pipeline runs but no `setRating` calls are made. Every rating that would be written or cleared is logged with a `[DRY RUN]` prefix. The incremental-sync threshold is not updated. Use this to verify tag parsing before the first real import. |
+| `default_trigger_user_scan` | `null` | Admin-level default for `trigger_user_scan`. Applied to any user whose per-user setting is `null`. `null` here means no admin default — the plugin falls back to `false`. |
+| `default_skip_already_rated` | `null` | Admin-level default for `skip_already_rated`. Applied to any user whose per-user setting is `null`. `null` here means no admin default — the plugin falls back to `true`. |
+| `default_clear_rating_if_untagged` | `null` | Admin-level default for `clear_rating_if_untagged`. Applied to any user whose per-user setting is `null`. `null` here means no admin default — the plugin falls back to `false`. |
 
 ### Per-library settings
 
@@ -146,9 +149,9 @@ libraries while Bob is only in the main one.
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `username` | (required) | Must exactly match the Navidrome username. The same user must also be listed under the plugin's *User Access* permissions panel — Navidrome enforces this independently. |
-| `trigger_user_scan` | `false` | Set to `true` to request an immediate one-shot rating scan for this user. The plugin checks every 15 minutes, runs the scan, then automatically resets the flag. Subject to `user_scan_cooldown_hours`. |
-| `skip_already_rated` | `true` | When `true`, songs that already have a Navidrome user rating are left untouched. Set `false` to let file tags overwrite existing Navidrome ratings — useful for one-off bulk imports. |
-| `clear_rating_if_untagged` | `false` | When `true`, songs whose audio file contains no recognised rating tag will have their Navidrome rating set to 0 (removed). Requires `skip_already_rated: false` to also clear ratings on songs that were previously rated in Navidrome — otherwise already-rated songs are skipped before the file is read and their ratings will not be cleared. |
+| `trigger_user_scan` | `null` | Accepts `true`, `false`, or `null`. Set to `true` to request an immediate one-shot rating scan for this user. The plugin checks every 15 minutes, runs the scan, then automatically resets the flag. Subject to `user_scan_cooldown_hours`. `null` = inherit from `default_trigger_user_scan`, then plugin default (`false`). |
+| `skip_already_rated` | `null` | Accepts `true`, `false`, or `null`. When `true`, songs that already have a Navidrome user rating are left untouched. Set `false` to let file tags overwrite existing Navidrome ratings — useful for one-off bulk imports. `null` = inherit from `default_skip_already_rated`, then plugin default (`true`). |
+| `clear_rating_if_untagged` | `null` | Accepts `true`, `false`, or `null`. When `true`, songs whose audio file contains no recognised rating tag will have their Navidrome rating set to 0 (removed). Requires `skip_already_rated: false` to also clear ratings on songs that were previously rated in Navidrome — otherwise already-rated songs are skipped before the file is read and their ratings will not be cleared. `null` = inherit from `default_clear_rating_if_untagged`, then plugin default (`false`). |
 | `ratingTagOrder` | `["WMP", "iTunes", "MediaMonkey", "foobar2000"]` | Ordered list of source applications to try. The first match found in a given file wins. Trim or reorder the list to match the workflow you actually use; sources you don't use can stay in the list (they just never match) or be removed for clarity. |
 
 ### Two users, two workflows
