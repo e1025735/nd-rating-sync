@@ -1,6 +1,6 @@
 {
   "name": "nd-rating-sync",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "description": "Reads embedded rating tags from MP3, FLAC, Ogg-Vorbis, Opus, WAV, DSF, M4A/AAC and WMA files (ID3v2 TXXX FMPS_Rating / POPM iTunes / POPM WMP / TXXX:RATING; Vorbis comments FMPS_RATING / RATING; MP4 freeform atoms; ASF Extended Content Description Object) and syncs them to Navidrome's user ratings via the Subsonic API, with per-user per-library tag priority and overwrite control.",
   "author": "e1025735",
   "website": "https://github.com/e1025735/nd-rating-sync",
@@ -28,14 +28,12 @@
       "type": "object",
       "title": "nd-rating-sync — Configuration",
       "properties": {
-
         "sync_schedule": {
           "type": "string",
           "title": "Sync schedule (cron expression) [admin]",
           "description": "Cron expression for automatic recurring scans. Examples: '0 */6 * * *' = every 6 hours, '0 2 * * *' = daily at 02:00. Changes take effect after the plugin is reloaded. Only administrators should change this.",
           "default": "0 */6 * * *"
         },
-
         "user_scan_cooldown_hours": {
           "type": "integer",
           "title": "User-scan cooldown (hours) [admin]",
@@ -43,7 +41,6 @@
           "default": 24,
           "minimum": 0
         },
-
         "max_songs_per_run": {
           "type": "integer",
           "title": "Max songs per scan [admin]",
@@ -51,57 +48,78 @@
           "default": 500,
           "minimum": 0
         },
-
         "incremental_sync": {
           "type": "boolean",
           "title": "Incremental sync [admin]",
           "description": "When enabled (default), each (library, user) pair stores the timestamp of its last successful scan and skips songs whose file mtime predates it. Drastically reduces work on recurring runs after the first pass. Disable to force a full scan every run — useful for debugging or after changing a user's ratingTagOrder.",
           "default": true
         },
-
         "dry_run": {
           "type": "boolean",
           "title": "Dry run [admin]",
           "description": "When true, the plugin executes the full scan pipeline (fetch songs, read files, parse tags, apply all skip logic) but does not call setRating. Every rating that would be written or cleared is logged with a [DRY RUN] prefix instead. The incremental-sync threshold is not updated, so the next real run will re-process the same files. Useful for verifying tag parsing before the first import. Default: false.",
           "default": false
         },
-
         "default_trigger_user_scan": {
           "type": "string",
           "title": "Default: trigger scan now [admin]",
           "description": "Admin-level default for the per-user 'trigger_user_scan' flag. Applied when a user entry leaves that field as Inherit. 'No admin default' here means the plugin uses false.",
           "oneOf": [
-            { "const": "inherit", "title": "No admin default (plugin: false)" },
-            { "const": "yes",     "title": "Yes" },
-            { "const": "no",      "title": "No" }
+            {
+              "const": "inherit",
+              "title": "No admin default (plugin: false)"
+            },
+            {
+              "const": "yes",
+              "title": "Yes"
+            },
+            {
+              "const": "no",
+              "title": "No"
+            }
           ],
           "default": "inherit"
         },
-
         "default_skip_already_rated": {
           "type": "string",
           "title": "Default: skip already-rated songs [admin]",
           "description": "Admin-level default for the per-user 'skip_already_rated' flag. Applied when a user entry leaves that field as Inherit. 'No admin default' here means the plugin uses true.",
           "oneOf": [
-            { "const": "inherit", "title": "No admin default (plugin: true)" },
-            { "const": "yes",     "title": "Yes" },
-            { "const": "no",      "title": "No" }
+            {
+              "const": "inherit",
+              "title": "No admin default (plugin: true)"
+            },
+            {
+              "const": "yes",
+              "title": "Yes"
+            },
+            {
+              "const": "no",
+              "title": "No"
+            }
           ],
           "default": "inherit"
         },
-
         "default_clear_rating_if_untagged": {
           "type": "string",
           "title": "Default: clear rating if no tag found [admin]",
           "description": "Admin-level default for the per-user 'clear_rating_if_untagged' flag. Applied when a user entry leaves that field as Inherit. 'No admin default' here means the plugin uses false.",
           "oneOf": [
-            { "const": "inherit", "title": "No admin default (plugin: false)" },
-            { "const": "yes",     "title": "Yes" },
-            { "const": "no",      "title": "No" }
+            {
+              "const": "inherit",
+              "title": "No admin default (plugin: false)"
+            },
+            {
+              "const": "yes",
+              "title": "Yes"
+            },
+            {
+              "const": "no",
+              "title": "No"
+            }
           ],
           "default": "inherit"
         },
-
         "libraries": {
           "type": "array",
           "title": "Library configurations",
@@ -109,21 +127,20 @@
           "items": {
             "type": "object",
             "title": "Library",
-            "required": ["libraryId"],
+            "required": [
+              "libraryId"
+            ],
             "properties": {
-
               "libraryId": {
                 "type": "string",
                 "title": "Library ID",
                 "description": "The Navidrome internal ID of the library (visible in the Libraries admin page)."
               },
-
               "libraryName": {
                 "type": "string",
                 "title": "Library display name",
                 "description": "Human-readable label for your reference only — not used by the plugin at runtime."
               },
-
               "users": {
                 "type": "array",
                 "title": "User settings for this library",
@@ -131,88 +148,151 @@
                 "items": {
                   "type": "object",
                   "title": "User",
-                  "required": ["username"],
+                  "required": [
+                    "username"
+                  ],
                   "properties": {
-
                     "username": {
                       "type": "string",
                       "title": "Navidrome username",
                       "description": "Must match the Navidrome username exactly. Also add this user to 'User Access' in the plugin permissions panel."
                     },
-
                     "trigger_user_scan": {
                       "type": "string",
                       "title": "Trigger scan now",
                       "description": "Set to Yes to enable on-demand rating scans for this user. The plugin checks for this flag every 15 minutes and runs a scan when the cooldown has elapsed; the flag is NOT reset automatically — to stop further runs, set it back to No (or Inherit) yourself. Subject to the cooldown period configured above. Inherit = use default_trigger_user_scan; if that is also unset, the plugin uses false.",
                       "oneOf": [
-                        { "const": "inherit", "title": "Inherit from admin default" },
-                        { "const": "yes",     "title": "Yes" },
-                        { "const": "no",      "title": "No" }
+                        {
+                          "const": "inherit",
+                          "title": "Inherit from admin default"
+                        },
+                        {
+                          "const": "yes",
+                          "title": "Yes"
+                        },
+                        {
+                          "const": "no",
+                          "title": "No"
+                        }
                       ],
                       "default": "inherit"
                     },
-
                     "skip_already_rated": {
                       "type": "string",
                       "title": "Skip already-rated songs",
                       "description": "When Yes, songs that already have a star rating in Navidrome for this user are left untouched. Set to No to allow tag values to overwrite existing ratings. Inherit = use default_skip_already_rated; if that is also unset, the plugin uses true.",
                       "oneOf": [
-                        { "const": "inherit", "title": "Inherit from admin default" },
-                        { "const": "yes",     "title": "Yes" },
-                        { "const": "no",      "title": "No" }
+                        {
+                          "const": "inherit",
+                          "title": "Inherit from admin default"
+                        },
+                        {
+                          "const": "yes",
+                          "title": "Yes"
+                        },
+                        {
+                          "const": "no",
+                          "title": "No"
+                        }
                       ],
                       "default": "inherit"
                     },
-
                     "clear_rating_if_untagged": {
                       "type": "string",
                       "title": "Clear rating if no tag found",
                       "description": "When Yes, songs that have no embedded rating tag will have their Navidrome rating set to 0 (removed). To also clear ratings on songs that were previously rated in Navidrome, set skip_already_rated to No — otherwise already-rated songs are skipped before the file is read and their ratings will not be cleared. Inherit = use default_clear_rating_if_untagged; if that is also unset, the plugin uses false.",
                       "oneOf": [
-                        { "const": "inherit", "title": "Inherit from admin default" },
-                        { "const": "yes",     "title": "Yes" },
-                        { "const": "no",      "title": "No" }
+                        {
+                          "const": "inherit",
+                          "title": "Inherit from admin default"
+                        },
+                        {
+                          "const": "yes",
+                          "title": "Yes"
+                        },
+                        {
+                          "const": "no",
+                          "title": "No"
+                        }
                       ],
                       "default": "inherit"
                     },
-
                     "ratingTagOrder": {
                       "type": "array",
                       "title": "Rating tag priority order",
                       "description": "Ordered list of embedded tag formats to try when reading a rating from a file. The first tag found in a file wins. Remove formats this user does not use. Supported values: WMP (POPM in MP3/WAV/DSF), iTunes (POPM in MP3/WAV/DSF; lowercase 'rating' atom in M4A/AAC), MediaMonkey (FMPS_Rating TXXX in MP3/WAV/DSF; FMPS_RATING Vorbis comment in FLAC/Ogg/Opus; FMPS_Rating atom in M4A/AAC; FMPS_Rating Unicode string in WMA), foobar2000 (RATING TXXX in MP3/WAV/DSF; RATING Vorbis comment in FLAC/Ogg/Opus; uppercase RATING atom in M4A/AAC). Sources with no representation in a given container are silently skipped.",
                       "uniqueItems": true,
                       "minItems": 1,
-                      "default": ["WMP", "iTunes", "MediaMonkey", "foobar2000"],
+                      "default": [
+                        "WMP",
+                        "iTunes",
+                        "MediaMonkey",
+                        "foobar2000"
+                      ],
                       "items": {
                         "oneOf": [
-                          { "const": "WMP",         "title": "WMP (Windows Media Player)" },
-                          { "const": "iTunes",      "title": "iTunes" },
-                          { "const": "MediaMonkey", "title": "MediaMonkey" },
-                          { "const": "foobar2000",  "title": "foobar2000" }
+                          {
+                            "const": "WMP",
+                            "title": "WMP (Windows Media Player)"
+                          },
+                          {
+                            "const": "iTunes",
+                            "title": "iTunes"
+                          },
+                          {
+                            "const": "MediaMonkey",
+                            "title": "MediaMonkey"
+                          },
+                          {
+                            "const": "foobar2000",
+                            "title": "foobar2000"
+                          }
                         ]
                       }
                     }
-
                   }
                 }
               }
             }
           }
         }
-
       }
     },
     "uiSchema": {
       "type": "VerticalLayout",
       "elements": [
-        { "type": "Control", "scope": "#/properties/sync_schedule" },
-        { "type": "Control", "scope": "#/properties/user_scan_cooldown_hours" },
-        { "type": "Control", "scope": "#/properties/max_songs_per_run" },
-        { "type": "Control", "scope": "#/properties/incremental_sync" },
-        { "type": "Control", "scope": "#/properties/dry_run" },
-        { "type": "Control", "scope": "#/properties/default_trigger_user_scan" },
-        { "type": "Control", "scope": "#/properties/default_skip_already_rated" },
-        { "type": "Control", "scope": "#/properties/default_clear_rating_if_untagged" },
+        {
+          "type": "Control",
+          "scope": "#/properties/sync_schedule"
+        },
+        {
+          "type": "Control",
+          "scope": "#/properties/user_scan_cooldown_hours"
+        },
+        {
+          "type": "Control",
+          "scope": "#/properties/max_songs_per_run"
+        },
+        {
+          "type": "Control",
+          "scope": "#/properties/incremental_sync"
+        },
+        {
+          "type": "Control",
+          "scope": "#/properties/dry_run"
+        },
+        {
+          "type": "Control",
+          "scope": "#/properties/default_trigger_user_scan"
+        },
+        {
+          "type": "Control",
+          "scope": "#/properties/default_skip_already_rated"
+        },
+        {
+          "type": "Control",
+          "scope": "#/properties/default_clear_rating_if_untagged"
+        },
         {
           "type": "Control",
           "scope": "#/properties/libraries",
@@ -221,8 +301,14 @@
             "detail": {
               "type": "VerticalLayout",
               "elements": [
-                { "type": "Control", "scope": "#/properties/libraryId" },
-                { "type": "Control", "scope": "#/properties/libraryName" },
+                {
+                  "type": "Control",
+                  "scope": "#/properties/libraryId"
+                },
+                {
+                  "type": "Control",
+                  "scope": "#/properties/libraryName"
+                },
                 {
                   "type": "Control",
                   "scope": "#/properties/users",
@@ -231,11 +317,26 @@
                     "detail": {
                       "type": "VerticalLayout",
                       "elements": [
-                        { "type": "Control", "scope": "#/properties/username" },
-                        { "type": "Control", "scope": "#/properties/trigger_user_scan" },
-                        { "type": "Control", "scope": "#/properties/skip_already_rated" },
-                        { "type": "Control", "scope": "#/properties/clear_rating_if_untagged" },
-                        { "type": "Control", "scope": "#/properties/ratingTagOrder" }
+                        {
+                          "type": "Control",
+                          "scope": "#/properties/username"
+                        },
+                        {
+                          "type": "Control",
+                          "scope": "#/properties/trigger_user_scan"
+                        },
+                        {
+                          "type": "Control",
+                          "scope": "#/properties/skip_already_rated"
+                        },
+                        {
+                          "type": "Control",
+                          "scope": "#/properties/clear_rating_if_untagged"
+                        },
+                        {
+                          "type": "Control",
+                          "scope": "#/properties/ratingTagOrder"
+                        }
                       ]
                     }
                   }
