@@ -2,12 +2,9 @@
   "name": "nd-rating-sync",
   "version": "0.9.1",
   "description": "Reads embedded rating tags from MP3 (ID3v2: FMPS_Rating / POPM iTunes / POPM WMP / TXXX:RATING), FLAC, OGG-Vorbis and Opus (Vorbis comments: FMPS_RATING / RATING) files and syncs them to Navidrome's user ratings via the Subsonic API, with per-user per-library tag priority and overwrite control.",
-  "author": "Your Name <you@example.com>",
-  "homepage": "https://github.com/yourusername/nd-rating-sync",
-  "capabilities": [
-    "lifecycle",
-    "schedulerCallback"
-  ],
+  "author": "e1025735 <you@example.com>",
+  "homepage": "https://github.com/e1025735/nd-rating-sync",
+  "capabilities": ["lifecycle", "schedulerCallback"],
   "permissions": {
     "libraries": {
       "reason": "Read music files from all assigned Navidrome libraries to extract embedded rating tags",

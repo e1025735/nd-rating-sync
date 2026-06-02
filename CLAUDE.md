@@ -1,6 +1,6 @@
 # nd-rating-sync — project context
 
-Navidrome plugin (WASM) that reads embedded star-rating tags from MP3, FLAC, Ogg-Vorbis and Opus files and writes them to Navidrome via the Subsonic `setRating` API. Navidrome doesn't import embedded ratings on its own; this plugin bridges file tags and the Navidrome user-rating system.
+Navidrome plugin (WASM) that reads embedded star-rating tags from MP3, FLAC, Ogg-Vorbis, Opus, WAV, DSF, M4A/AAC and WMA files and writes them to Navidrome via the Subsonic `setRating` API. Navidrome doesn't import embedded ratings on its own; this plugin bridges file tags and the Navidrome user-rating system.
 
 ## File layout
 
@@ -8,18 +8,18 @@ Navidrome plugin (WASM) that reads embedded star-rating tags from MP3, FLAC, Ogg
 |------|---------------|
 | `main.go` | Entry points — lifecycle init, scheduler callback registration via `ratingPlugin` |
 | `config.go` | Config types (`pluginConfig`, `libraryConfig`, `userConfig`) and `loadConfig()` |
-| `scanner.go` | Sync orchestration — `runSync`, `runSyncForUser`, `checkAndRunUserTriggeredScan`, `extractStarsFromFile` |
-| `state.go` | Incremental-sync state — `loadLastSynced` / `saveLastSynced` backed by `host.KVStore` |
+| `scanner.go` | Sync orchestration — `runSync`, `runSyncForUser`, `checkAndRunUserTriggeredScan`, `extractStarsFromFile` returning a `fileReadResult` (`tagFound` / `tagAbsent` / `fileUnreadable`) so I/O failures, oversize files (`maxAudioFileBytes` = 64 MiB), unsupported extensions, and parser panics never trigger `clear_rating_if_untagged`. `readAudioFile` enforces the size cap; `dispatchParser` recovers panics from any container parser so one hostile file can't kill the whole sync. |
+| `state.go` | Incremental-sync state — `loadLastSynced` / `saveLastSynced` backed by `host.KVStore`. KV key is `"last-synced:" + url.QueryEscape(libraryID) + ":" + url.QueryEscape(username)` so a `:` in either component can't collide with a different tuple. |
 | `subsonic.go` | Subsonic API domain — response types, `fetchAllSongs`, `setRating` |
 | `id3.go` | ID3v2 tag parsing (`parseID3v2Rating`) — dispatches by per-user `tagOrder` |
-| `flac.go` | FLAC + Vorbis comment parsing (`parseFLACVorbisComments`, `parseFLACRating`) plus the shared `ratingFromVorbisComments` resolver — hand-rolled, no external dep |
+| `flac.go` | FLAC + Vorbis comment parsing (`parseFLACVorbisComments`, `parseFLACRating`) plus the shared `ratingFromVorbisComments` resolver — hand-rolled, no external dep. Comment count is clamped to `maxVorbisComments` (1024) so a crafted block declaring `count = 2^32` can't burn millions of allocations before the byte budget runs out. |
 | `ogg.go` | Ogg page walker (`extractOggPackets`) and Vorbis/Opus comment dispatch (`parseOggVorbisRating`) — hand-rolled, no external dep |
-| `wav.go` | WAV RIFF chunk walker (`parseWAVRating`) — extracts `id3 `/`ID3 ` chunk and delegates to `parseID3v2Rating` |
+| `wav.go` | WAV RIFF chunk walker (`parseWAVRating`) — extracts `id3 `/`ID3 ` chunk and delegates to `parseID3v2Rating`. Chunk-size arithmetic stays in `uint64` before narrowing to `int` so a high-bit-set `uint32` can't sign-wrap on 32-bit `wasip1` and rewind `pos` into an infinite loop (mirrors the wma.go pattern). |
 | `dsf.go` | DSD Stream File parser (`parseDSFRating`) — reads ID3v2 offset from DSD header and delegates to `parseID3v2Rating` |
 | `m4a.go` | MP4 atom walker (`walkAtoms`, `findAtom`, `parseM4ARating`) — resolves freeform `----` atoms for FMPS_Rating, RATING, and rating |
 | `wma.go` | ASF header walker (`parseWMARating`, `parseASFExtContentDesc`, `decodeUTF16LE`) — reads `WM/SharedUserRating` and `FMPS_Rating` from Extended Content Description Object |
 | `rating.go` | Pure converters: `fmpsToStars`, `ratingIntToStars`, `popmWMPToStars`, `popmITunesToStars` |
-| `manifest.json` | Plugin metadata, capabilities, JSON Schema config definition |
+| `manifest.json` | Plugin metadata, `permissions`, and `config` (draft-07 JSON Schema + **JSONForms** `uiSchema`). Permission key is `library` (singular) + `filesystem:true`; capabilities are auto-detected from exported WASM functions, **not** declared here. See the manifest-format note under Build. |
 
 ## Build
 
@@ -30,7 +30,18 @@ tinygo build -o plugin.wasm -target wasip1 -buildmode=c-shared .
 zip -j nd-rating-sync.ndp manifest.json plugin.wasm
 ```
 
-Standard `go build` / `go vet` always fail with "missing function body" from the extism PDK's WASM host imports — this is expected and not a code error. `GOARCH=wasm GOOS=wasip1 go vet ./...` will additionally error on `host.RegisterLifecycle` (Navidrome PDK is TinyGo-only) — also expected.
+`go test ./...` and `go vet ./...` work on the regular toolchain (CI runs both). `pdk_stub.go` is `//go:build !wasip1` and provides no-op stand-ins for `logInfo`/`logDebug`/`logWarn`/`getConfig`; the Navidrome PDK ships matching non-wasip1 stubs for `host.*`. Only `GOARCH=wasm GOOS=wasip1 go vet ./...` fails — host imports have no Go function bodies under wasip1; TinyGo wires them up at link time. That part is expected.
+
+### Manifest format (Navidrome ≥ v0.61)
+
+`manifest.json` is validated against `plugins/manifest-schema.json` in the Navidrome module (top-level and per-permission `additionalProperties:false`). Navidrome's `ParseManifest` does a plain `json.Unmarshal`, so **unknown keys are silently dropped** — a typo means the feature just doesn't take effect. Gotchas, all fixed in v0.10.0:
+
+- **Permissions:** the library permission key is `library` (singular) with `filesystem:true` for disk reads — *not* `libraries`, and there is no `allowWrite`. Wrong key ⇒ no filesystem access. Mirror the `library-inspector-rs` example.
+- **No `capabilities` / `homepage` keys:** capabilities come from the exported functions registered in [main.go](main.go) (`lifecycle.Register`/`scheduler.Register`); the repo/URL field is `website`.
+- **Config UI is JSONForms:** `uiSchema` must use `VerticalLayout`/`Control` with `scope: "#/properties/<field>"` (object arrays via `options.detail` + `elementLabelProp`, scopes inside a detail are relative to the array's *item* schema). react-jsonschema-form `ui:widget`/`ui:placeholder`/`ui:enumNames` produce **"No applicable renderer found."** Reference: the `discord-rich-presence-rs` example.
+- **Tristate fields** use `oneOf` `const`/`title` (`null`/`true`/`false`) instead of `enum` + `ui:enumNames`, which keeps the `*bool`/`parseTristateConfig` model (null/absent = inherit) while showing friendly dropdown labels.
+
+Validate after edits: the manifest against `manifest-schema.json` and the inner `config.schema` as draft-07 (e.g. `npx ajv-cli@5 validate -s <schema> -d manifest.json --spec=draft2020 --strict=false`).
 
 ## Config model (v0.3.0+)
 
