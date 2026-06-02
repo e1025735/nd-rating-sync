@@ -1,7 +1,7 @@
 {
   "_comment_top": "Annotated example config for nd-rating-sync. Fields with leading underscores are inline notes — they are ignored by the plugin. Copy the relevant pieces into the Plugin Settings UI in Navidrome (avatar → Plugins → nd-rating-sync). The schema and defaults live in manifest.json.",
 
-  "_comment_admin_scalars": "Top-level admin-only settings. Apply globally; only Navidrome admins should change these.",
+  "_comment_global_scalars": "Top-level settings that apply globally — one value for the whole plugin.",
 
   "sync_schedule": "0 */6 * * *",
   "user_scan_cooldown_hours": 24,
@@ -10,11 +10,11 @@
   "_comment_dry_run": "Set dry_run to true to verify tag parsing without writing any ratings. Every would-be change is logged with a [DRY RUN] prefix. The incremental-sync threshold is not advanced, so the next real run re-processes the same files. Switch back to false once you are happy with the results.",
   "dry_run": false,
 
-  "_comment_admin_defaults": "Admin-level defaults for the three per-user tristate flags. Each accepts true, false, or null. null means 'no admin default — fall back to the plugin hardcoded value'. Per-user settings override these; a per-user null inherits from here.",
-  "default_trigger_user_scan": null,
-  "_comment_default_skip": "Most installations want to protect existing Navidrome ratings, so true is a sensible admin-wide default. Individual users can override by setting skip_already_rated explicitly.",
-  "default_skip_already_rated": true,
-  "default_clear_rating_if_untagged": null,
+  "_comment_global_defaults": "Plugin-wide defaults for the three per-user tristate flags. Each accepts \"yes\", \"no\", or \"inherit\". \"inherit\" means 'no global default — fall back to the plugin's built-in value'. Per-user settings override these; a per-user \"inherit\" falls back to here.",
+  "default_trigger_user_scan": "inherit",
+  "_comment_default_skip": "Most installations want to protect existing Navidrome ratings, so \"yes\" is a sensible plugin-wide default. Individual users can override by setting skip_already_rated explicitly.",
+  "default_skip_already_rated": "yes",
+  "default_clear_rating_if_untagged": "inherit",
 
   "_comment_libraries": "One entry per Navidrome library. The libraryId is the internal ID shown on the Libraries admin page — NOT the display name. libraryName is purely for your own reference. Each library carries its own users[] list, so a single user can be configured differently in different libraries.",
 
@@ -25,21 +25,21 @@
 
       "users": [
         {
-          "_comment_alice": "Alice keeps her library tagged with FMPS_Rating (written by MediaMonkey, Strawberry, Quod Libet, beets, etc.). skip_already_rated is true — ratings she has already set inside Navidrome win over file tags. foobar2000 is listed as a fallback for the few albums she imported from a Windows machine — if a song has both FMPS_RATING and a plain RATING tag, FMPS_RATING wins because MediaMonkey is listed first. Both tags are recognised across MP3, FLAC, Ogg, Opus, WAV, DSF, M4A/AAC and WMA.",
+          "_comment_alice": "Alice keeps her library tagged with FMPS_Rating (written by MediaMonkey, Strawberry, Quod Libet, beets, etc.). skip_already_rated is \"yes\" — ratings she has already set inside Navidrome win over file tags. foobar2000 is listed as a fallback for the few albums she imported from a Windows machine — if a song has both FMPS_RATING and a plain RATING tag, FMPS_RATING wins because MediaMonkey is listed first. Both tags are recognised across MP3, FLAC, Ogg, Opus, WAV, DSF, M4A/AAC and WMA.",
 
           "username": "alice",
-          "trigger_user_scan": null,
-          "skip_already_rated": true,
-          "clear_rating_if_untagged": null,
+          "trigger_user_scan": "inherit",
+          "skip_already_rated": "yes",
+          "clear_rating_if_untagged": "inherit",
           "ratingTagOrder": ["MediaMonkey", "foobar2000"]
         },
         {
-          "_comment_bob": "Bob is a long-time foobar2000 user on Windows. His files have a plain RATING tag (1–5 integer), and some older albums have POPM frames written by WMP or iTunes. He wants every file's tag to overwrite whatever Navidrome currently shows, so he explicitly overrides skip_already_rated to false (overriding the admin default of true). clear_rating_if_untagged is also enabled so that songs he has removed ratings from in foobar2000 (tag absent or 0) will have their Navidrome rating cleared too — this requires skip_already_rated=false, otherwise already-rated songs would be skipped before the file is read. The first match in his tagOrder wins on a per-file basis.",
+          "_comment_bob": "Bob is a long-time foobar2000 user on Windows. His files have a plain RATING tag (1–5 integer), and some older albums have POPM frames written by WMP or iTunes. He wants every file's tag to overwrite whatever Navidrome currently shows, so he explicitly sets skip_already_rated to \"no\" (overriding the global default of \"yes\"). clear_rating_if_untagged is also enabled so that songs he has removed ratings from in foobar2000 (tag absent or 0) will have their Navidrome rating cleared too — this requires skip_already_rated=\"no\", otherwise already-rated songs would be skipped before the file is read. The first match in his tagOrder wins on a per-file basis.",
 
           "username": "bob",
-          "trigger_user_scan": null,
-          "skip_already_rated": false,
-          "clear_rating_if_untagged": true,
+          "trigger_user_scan": "inherit",
+          "skip_already_rated": "no",
+          "clear_rating_if_untagged": "yes",
           "ratingTagOrder": ["foobar2000", "WMP", "iTunes"]
         }
       ]
@@ -53,9 +53,9 @@
       "users": [
         {
           "username": "alice",
-          "trigger_user_scan": null,
-          "skip_already_rated": null,
-          "clear_rating_if_untagged": null,
+          "trigger_user_scan": "inherit",
+          "skip_already_rated": "inherit",
+          "clear_rating_if_untagged": "inherit",
           "ratingTagOrder": ["MediaMonkey"]
         }
       ]

@@ -1,10 +1,10 @@
 # nd-rating-sync — Feature List
 
 ## Core purpose
-Reads embedded star-rating tags from MP3, FLAC, Ogg-Vorbis, and Opus files
-and writes them to Navidrome's user-rating system via the Subsonic
-`setRating` API. Navidrome does not import embedded ratings on its own;
-this plugin bridges file tags and the UI.
+Reads embedded star-rating tags from MP3, FLAC, Ogg-Vorbis, Opus, WAV, DSF,
+M4A/AAC, and WMA files and writes them to Navidrome's user-rating system via
+the Subsonic `setRating` API. Navidrome does not import embedded ratings on
+its own; this plugin bridges file tags and the UI.
 
 ---
 
@@ -14,7 +14,7 @@ this plugin bridges file tags and the UI.
 |---------|---------|
 | Immediate on load | One-shot scan runs as soon as the plugin initialises |
 | Recurring (cron) | Configurable cron expression, default every 6 hours |
-| User-triggered | `trigger_user_scan=true` flag checked every 15 min; one-shot scan per user |
+| User-triggered | `trigger_user_scan="yes"` flag checked every 15 min; one-shot scan per user |
 | Cooldown guard | Configurable minimum gap between user-triggered scans (default 24 h) |
 
 ---
@@ -59,8 +59,20 @@ After a successful scan, the timestamp is persisted per `(library, user)` in Nav
 
 - **Tag priority order** — `ratingTagOrder` list; first tag *found in the file* wins
 - **Skip already-rated** — songs with an existing Navidrome rating are left untouched (default on; can be disabled to allow overwrites)
-- **Clear rating if untagged** — when enabled, songs whose file contains no recognised rating tag have their Navidrome rating removed (set to 0); requires `skip_already_rated=false` to also affect previously-rated songs
+- **Clear rating if untagged** — when enabled, songs whose file contains no recognised rating tag have their Navidrome rating removed (set to 0); requires `skip_already_rated="no"` to also affect previously-rated songs. Files the plugin cannot read (I/O error, permission denied, unsupported extension, unparseable container) are **never** cleared — they're counted under `skipped_unreadable` so a transient read failure cannot wipe a user's rating.
 - **Trigger scan flag** — set per user to request an on-demand scan without touching the cron schedule
+
+---
+
+## Robustness
+
+- **Per-file size cap (64 MiB)** — files larger than the cap are not read into memory; they are counted under `skipped_unreadable` and never cleared. Guards the wasm sandbox against OOM on misreported paths.
+- **Per-file panic isolation** — a panic in any container parser is recovered and the file is treated as unreadable, so a single hostile file cannot abort the whole sync run.
+- **32-bit-safe chunk arithmetic** — RIFF (WAV) and ASF (WMA) chunk-size fields are evaluated in `uint64` before narrowing to `int`, so a sign-wrap on TinyGo wasip1 (32-bit `int`) cannot rewind the cursor and produce an infinite loop in the chunk walker.
+- **Vorbis comment cap** — the FLAC / Ogg / Opus comment-block parser clamps the declared entry count to 1024 so a crafted file with `count = 2^32` cannot exhaust CPU/GC before the byte budget runs out.
+- **KV key escaping** — `last-synced` keys URL-escape both `libraryID` and `username`, so a `:` inside either component cannot collide with a different `(library, user)` tuple.
+- **Log-line hygiene** — every user-controlled string (paths, song IDs, library IDs, usernames, file extensions, server error messages) is rendered with `%q` so embedded `\r\n` or ANSI escapes cannot inject log lines into downstream aggregators.
+- **No raw OS errors in open/read warnings** — failures to open or read a music file log only the path; the underlying `os` error string (which would distinguish "permission denied" from "no such file or directory") is gated to debug-level only, so plugin warnings cannot be used to probe arbitrary paths' existence via planted symlinks.
 
 ---
 

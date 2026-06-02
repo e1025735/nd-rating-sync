@@ -126,9 +126,9 @@ the same example. You enter these settings via the Navidrome UI:
 | `max_songs_per_run` | `500` | Hard cap on how many songs a single scheduled run will process. Set to `0` for unlimited. The cap protects against accidental runaways on very large libraries. |
 | `incremental_sync` | `true` | When enabled, recurring scans skip files whose mtime hasn't changed since the previous successful run. See **[Incremental sync](#incremental-sync)** below. |
 | `dry_run` | `false` | When true, the full scan pipeline runs but no `setRating` calls are made. Every rating that would be written or cleared is logged with a `[DRY RUN]` prefix. The incremental-sync threshold is not updated. Use this to verify tag parsing before the first real import. |
-| `default_trigger_user_scan` | `null` | Admin-level default for `trigger_user_scan`. Applied to any user whose per-user setting is `null`. `null` here means no admin default — the plugin falls back to `false`. |
-| `default_skip_already_rated` | `null` | Admin-level default for `skip_already_rated`. Applied to any user whose per-user setting is `null`. `null` here means no admin default — the plugin falls back to `true`. |
-| `default_clear_rating_if_untagged` | `null` | Admin-level default for `clear_rating_if_untagged`. Applied to any user whose per-user setting is `null`. `null` here means no admin default — the plugin falls back to `false`. |
+| `default_trigger_user_scan` | `"inherit"` | Global default for `trigger_user_scan`, applied to any user whose setting is `"inherit"`. `"inherit"` here means no global default — the plugin falls back to `false`. |
+| `default_skip_already_rated` | `"inherit"` | Global default for `skip_already_rated`, applied to any user whose setting is `"inherit"`. `"inherit"` here means no global default — the plugin falls back to `true`. |
+| `default_clear_rating_if_untagged` | `"inherit"` | Global default for `clear_rating_if_untagged`, applied to any user whose setting is `"inherit"`. `"inherit"` here means no global default — the plugin falls back to `false`. |
 
 ### Per-library settings
 
@@ -149,10 +149,10 @@ libraries while Bob is only in the main one.
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `username` | (required) | Must exactly match the Navidrome username. The same user must also be listed under the plugin's *User Access* permissions panel — Navidrome enforces this independently. |
-| `trigger_user_scan` | `null` | Accepts `true`, `false`, or `null`. Set to `true` to request an immediate one-shot rating scan for this user. The plugin checks every 15 minutes, runs the scan, then automatically resets the flag. Subject to `user_scan_cooldown_hours`. `null` = inherit from `default_trigger_user_scan`, then plugin default (`false`). |
-| `skip_already_rated` | `null` | Accepts `true`, `false`, or `null`. When `true`, songs that already have a Navidrome user rating are left untouched. Set `false` to let file tags overwrite existing Navidrome ratings — useful for one-off bulk imports. `null` = inherit from `default_skip_already_rated`, then plugin default (`true`). |
-| `clear_rating_if_untagged` | `null` | Accepts `true`, `false`, or `null`. When `true`, songs whose audio file contains no recognised rating tag will have their Navidrome rating set to 0 (removed). Requires `skip_already_rated: false` to also clear ratings on songs that were previously rated in Navidrome — otherwise already-rated songs are skipped before the file is read and their ratings will not be cleared. `null` = inherit from `default_clear_rating_if_untagged`, then plugin default (`false`). |
-| `ratingTagOrder` | `["WMP", "iTunes", "MediaMonkey", "foobar2000"]` | Ordered list of source applications to try. The first match found in a given file wins. Trim or reorder the list to match the workflow you actually use; sources you don't use can stay in the list (they just never match) or be removed for clarity. |
+| `trigger_user_scan` | `"inherit"` | Accepts `"yes"`, `"no"`, or `"inherit"`. Set to `"yes"` to enable on-demand rating scans for this user. The plugin checks every 15 minutes and runs a scan once the cooldown has elapsed; the flag is **not** reset automatically, so leaving it `"yes"` causes the scan to repeat each cooldown window. Set it back to `"no"` (or `"inherit"`) when you no longer want the scans. Subject to `user_scan_cooldown_hours`. `"inherit"` = inherit from `default_trigger_user_scan`, then plugin default (`false`). |
+| `skip_already_rated` | `"inherit"` | Accepts `"yes"`, `"no"`, or `"inherit"`. When `"yes"`, songs that already have a Navidrome user rating are left untouched. Set `"no"` to let file tags overwrite existing Navidrome ratings — useful for one-off bulk imports. `"inherit"` = inherit from `default_skip_already_rated`, then plugin default (`true`). |
+| `clear_rating_if_untagged` | `"inherit"` | Accepts `"yes"`, `"no"`, or `"inherit"`. When `"yes"`, songs whose audio file contains no recognised rating tag will have their Navidrome rating set to 0 (removed). Requires `skip_already_rated: "no"` to also clear ratings on songs that were previously rated in Navidrome — otherwise already-rated songs are skipped before the file is read and their ratings will not be cleared. `"inherit"` = inherit from `default_clear_rating_if_untagged`, then plugin default (`false`). |
+| `ratingTagOrder` | `["WMP", "iTunes", "MediaMonkey", "foobar2000"]` | Ordered list of source applications to try. The first match found in a given file wins. In the Settings UI, use the add/remove and up/down controls to build the priority order. Trim or reorder the list to match the workflow you actually use; sources you don't use can stay in the list (they just never match) or be removed for clarity. |
 
 ### Two users, two workflows
 
@@ -161,14 +161,14 @@ tagging workflow they actually use:
 
 - **Alice** rates her library in MediaMonkey/Strawberry, which writes
   `FMPS_Rating`. Her order is `["MediaMonkey", "foobar2000"]` — the first
-  tag found in each file wins. She also keeps `skip_already_rated: true`,
+  tag found in each file wins. She also keeps `skip_already_rated: "yes"`,
   so any rating she's already given a track inside the Navidrome web UI
   takes priority over the file tag.
 
 - **Bob** has decades of foobar2000 ratings (plain `RATING` integer 1–5),
   with some older albums tagged by WMP and iTunes. His order is
   `["foobar2000", "WMP", "iTunes"]`. He also sets `skip_already_rated:
-  false` to let the file tags fully overwrite whatever Navidrome shows.
+  "no"` to let the file tags fully overwrite whatever Navidrome shows.
 
 You can configure **the same** Navidrome user with **different orders in
 different libraries** if your tagging conventions vary across collections.
@@ -215,7 +215,7 @@ plugin OnInit
       │                                                          │
       └──── trigger-check (every 15 min) ──────────────┐         │
                                                        ▼         │
-                              for each user with trigger_user_scan = true,
+                              for each user with trigger_user_scan enabled,
                               if cooldown elapsed: queue a scan
                                                                  │
                                                                  ▼
@@ -233,9 +233,9 @@ plugin OnInit
                                        │
                                        ├─ os.Stat(path).mtime < threshold?  → skip (unchanged)
                                        │
-                                       ├─ os.ReadFile(path)
+                                       ├─ read file (≤ 64 MiB)     → fail or oversize? skip (unreadable, never clears)
                                        │
-                                       ├─ parse tags (ID3v2 / Vorbis comments)
+                                       ├─ parse tags (ID3v2 / Vorbis / MP4 / ASF)
                                        │
                                        ├─ pick the first match by ratingTagOrder
                                        │
@@ -314,25 +314,31 @@ like:
 
 Normal run:
 ```
-nd-rating-sync: done user="alice" – rated=12 cleared=3 skipped_already_rated=438 skipped_unchanged=2810 skipped_no_tag=15 errors=0
+nd-rating-sync: done user="alice" – rated=12 cleared=3 skipped_already_rated=438 skipped_unchanged=2810 skipped_no_tag=15 skipped_unreadable=0 errors=0
 ```
 
 Dry run (`dry_run=true`):
 ```
-nd-rating-sync: [DRY RUN] done user="alice" – would_rate=12 would_clear=3 skipped_already_rated=438 skipped_unchanged=2810 skipped_no_tag=15
+nd-rating-sync: [DRY RUN] done user="alice" – would_rate=12 would_clear=3 skipped_already_rated=438 skipped_unchanged=2810 skipped_no_tag=15 skipped_unreadable=0
 ```
 
 The counters tell you what happened:
 
 - **`rated`** — songs whose rating was just written to Navidrome.
 - **`cleared`** — songs whose Navidrome rating was set to 0 because no tag
-  was found (only appears when `clear_rating_if_untagged = true`).
+  was found (only appears when `clear_rating_if_untagged` is enabled).
 - **`skipped_already_rated`** — songs that already had a Navidrome rating
-  for this user (only meaningful when `skip_already_rated = true`).
+  for this user (only meaningful when `skip_already_rated` is enabled).
 - **`skipped_unchanged`** — songs whose file mtime predates the
   incremental-sync threshold. Should dominate after the first full pass.
 - **`skipped_no_tag`** — songs that had no recognised rating tag (or whose
-  tag was empty / unrated). Only counted when `clear_rating_if_untagged = false`.
+  tag was empty / unrated). Only counted when `clear_rating_if_untagged` is disabled.
+- **`skipped_unreadable`** — songs the plugin could not open or whose
+  container could not be parsed (I/O error, permission denied, unsupported
+  extension). These are *never* cleared, even with
+  `clear_rating_if_untagged` is enabled, because a transient read failure must
+  not wipe the user's existing rating. Each occurrence is also logged as a
+  warning with the underlying error.
 - **`would_rate`** / **`would_clear`** — dry-run equivalents of `rated` / `cleared`; only appear when `dry_run = true`.
 - **`errors`** — `setRating` failures or other per-song errors. Not present in dry-run output.
 
@@ -342,8 +348,9 @@ The counters tell you what happened:
 |---------|-------------|
 | `no libraries configured` | The `libraries` array is empty or missing. Add at least one library with at least one user. |
 | `setRating` API error 50 (`user not authorised`) | The user is configured in `libraries[].users[]` but **not** added to the plugin's *User Access* tab in the Navidrome UI. Both are required. |
-| `cannot read "/path/to/song.mp3": permission denied` | The plugin lacks *Library Access* for the library containing this song. |
-| `skipping … – supported formats are MP3, FLAC, OGG, Opus, WAV, DSF, M4A/AAC and WMA (got .aiff)` | The file is in a container the plugin does not support. The song is silently passed over. |
+| `cannot open "/path/to/song.mp3": permission denied` | The plugin lacks *Library Access* for the library containing this song. |
+| `skipping "/path/to/song.flac" – size NNN exceeds cap …` | The file is larger than the 64 MiB read cap (typically a misreported path or a sample-rate-extreme archival rip). Counted under `skipped_unreadable`; the existing Navidrome rating is left untouched. |
+| `skipping … – supported formats are MP3, FLAC, Ogg, Opus, WAV, DSF, M4A/AAC and WMA (got .aiff)` | The file is in a container the plugin does not support. The song is silently passed over. |
 | Ratings not updating after I edited a tag | Incremental sync only re-processes files whose mtime moved. Confirm with `ls -l` that your tag editor actually updated the mtime. If it didn't, run a one-off `incremental_sync = false` pass. |
 | First run took forever, second run was fast | Working as designed — that's the whole point of incremental sync. |
 | `KVStoreGet … failed – falling back to full scan` (warning) | The Navidrome KV store is unreachable for some reason. The current scan still works (as a full scan); investigate the underlying error. |
