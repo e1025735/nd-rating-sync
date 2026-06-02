@@ -33,10 +33,13 @@ type pluginConfig struct {
 }
 
 type jsonUserConfig struct {
-	Username              string   `json:"username"`
-	TriggerUserScan       *bool    `json:"trigger_user_scan"`       // pointer so null → default false
-	SkipAlreadyRated      *bool    `json:"skip_already_rated"`      // pointer so null/absent → default true
-	ClearRatingIfUntagged *bool    `json:"clear_rating_if_untagged"` // pointer so null → default false
+	Username string `json:"username"`
+	// Per-user tristates are a string oneOf ("inherit"/"yes"/"no") in the config
+	// schema — JSONForms-Material has no renderer for ["boolean","null"] union
+	// types. parseTristateConfig maps the value to *bool ("inherit"/empty/absent → nil).
+	TriggerUserScan       string   `json:"trigger_user_scan"`
+	SkipAlreadyRated      string   `json:"skip_already_rated"`
+	ClearRatingIfUntagged string   `json:"clear_rating_if_untagged"`
 	RatingTagOrder        []string `json:"ratingTagOrder"`
 }
 
@@ -140,16 +143,18 @@ func loadConfigFrom(get configGetter) pluginConfig {
 	if v, ok := get("libraries"); ok && v != "" {
 		var rawLibs []jsonLibraryConfig
 		if err := json.Unmarshal([]byte(v), &rawLibs); err != nil {
-			logWarn("nd-rating-sync: failed to parse libraries config: " + err.Error())
+			// %q on err.Error() so a crafted config blob can't smuggle CR/LF
+			// or ANSI escapes through the json.Unmarshal echo into log sinks.
+			logWarn(fmt.Sprintf("nd-rating-sync: failed to parse libraries config: %q", err.Error()))
 		} else {
 			for _, rl := range rawLibs {
 				lc := libraryConfig{LibraryID: rl.LibraryID, LibraryName: rl.LibraryName}
 				for _, ru := range rl.Users {
 					uc := userConfig{
 						Username:              ru.Username,
-						TriggerUserScan:       resolveTristate(ru.TriggerUserScan, cfg.DefaultTriggerUserScan, false),
-						SkipAlreadyRated:      resolveTristate(ru.SkipAlreadyRated, cfg.DefaultSkipAlreadyRated, true),
-						ClearRatingIfUntagged: resolveTristate(ru.ClearRatingIfUntagged, cfg.DefaultClearRatingIfUntagged, false),
+						TriggerUserScan:       resolveTristate(parseTristateConfig(ru.TriggerUserScan), cfg.DefaultTriggerUserScan, false),
+						SkipAlreadyRated:      resolveTristate(parseTristateConfig(ru.SkipAlreadyRated), cfg.DefaultSkipAlreadyRated, true),
+						ClearRatingIfUntagged: resolveTristate(parseTristateConfig(ru.ClearRatingIfUntagged), cfg.DefaultClearRatingIfUntagged, false),
 						RatingTagOrder:        ru.RatingTagOrder,
 					}
 					if len(uc.RatingTagOrder) == 0 {

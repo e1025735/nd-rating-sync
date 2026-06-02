@@ -34,12 +34,14 @@ zip -j nd-rating-sync.ndp manifest.json plugin.wasm
 
 ### Manifest format (Navidrome ≥ v0.61)
 
-`manifest.json` is validated against `plugins/manifest-schema.json` in the Navidrome module (top-level and per-permission `additionalProperties:false`). Navidrome's `ParseManifest` does a plain `json.Unmarshal`, so **unknown keys are silently dropped** — a typo means the feature just doesn't take effect. Gotchas, all fixed in v0.10.0:
+`manifest.json` is validated against `plugins/manifest-schema.json` in the Navidrome module (top-level and per-permission `additionalProperties:false`). Navidrome's `ParseManifest` does a plain `json.Unmarshal`, so **unknown keys are silently dropped** — a typo means the feature just doesn't take effect. Gotchas (fixed across v0.9.1–v0.9.3):
 
 - **Permissions:** the library permission key is `library` (singular) with `filesystem:true` for disk reads — *not* `libraries`, and there is no `allowWrite`. Wrong key ⇒ no filesystem access. Mirror the `library-inspector-rs` example.
 - **No `capabilities` / `homepage` keys:** capabilities come from the exported functions registered in [main.go](main.go) (`lifecycle.Register`/`scheduler.Register`); the repo/URL field is `website`.
-- **Config UI is JSONForms:** `uiSchema` must use `VerticalLayout`/`Control` with `scope: "#/properties/<field>"` (object arrays via `options.detail` + `elementLabelProp`, scopes inside a detail are relative to the array's *item* schema). react-jsonschema-form `ui:widget`/`ui:placeholder`/`ui:enumNames` produce **"No applicable renderer found."** Reference: the `discord-rich-presence-rs` example.
-- **Tristate fields** use `oneOf` `const`/`title` (`null`/`true`/`false`) instead of `enum` + `ui:enumNames`, which keeps the `*bool`/`parseTristateConfig` model (null/absent = inherit) while showing friendly dropdown labels.
+- **Config UI is JSONForms-Material 2.5 + ajv v6** (renderers in Navidrome's `ui/src/plugin/`; `uiSchema` is passed through untransformed). The `uiSchema` must use `VerticalLayout`/`Control` with `scope: "#/properties/<field>"` (object arrays — including nested ones — via `options.detail` + `elementLabelProp`; scopes inside a detail are relative to the array's *item* schema). A react-jsonschema-form root (`ui:widget`/`ui:placeholder`/`ui:enumNames`) has no valid `type`, so the **whole** Configuration section shows **"No applicable renderer found."** Working reference manifests: `discord-rich-presence-rs` (in-repo) and [kgarner7/navidrome-listenbrainz-daily-playlist](https://github.com/kgarner7/navidrome-listenbrainz-daily-playlist).
+- **Stick to renderable constructs:** plain `boolean`/`integer`/`string`, nested object arrays, and `oneOf` of **string** `const`/`title`. Material has **no renderer/cell for `["type","null"]` union types or `const:null`** — avoid them.
+- **Tristate fields** (per-user `trigger_user_scan`/`skip_already_rated`/`clear_rating_if_untagged` + admin `default_*`) are a **string** `oneOf` (`"inherit"`/`"yes"`/`"no"`). They're plain `string` fields in [config.go](config.go), mapped to `*bool` by `parseTristateConfig` (`"inherit"`/empty/absent → nil), so `resolveTristate` is unchanged.
+- **Reloading:** Navidrome caches the manifest (read from the `.ndp`). After editing `manifest.json` you must **restart Navidrome** (or set `Plugins.AutoReload=true`, or bump `version`/reinstall) for changes to show — otherwise the UI keeps rendering the *old* manifest. Confirm via the plugin's Manifest panel. A `config.go` change also requires rebuilding `plugin.wasm`.
 
 Validate after edits: the manifest against `manifest-schema.json` and the inner `config.schema` as draft-07 (e.g. `npx ajv-cli@5 validate -s <schema> -d manifest.json --spec=draft2020 --strict=false`).
 
@@ -48,10 +50,10 @@ Validate after edits: the manifest against `manifest-schema.json` and the inner 
 Config is a hierarchical JSON Schema (not a flat key-value list):
 
 - Top-level admin scalars read via `pdk.GetConfig`: `sync_schedule`, `user_scan_cooldown_hours`, `max_songs_per_run`, `dry_run`
-- Top-level admin tristate defaults (also via `pdk.GetConfig`): `default_trigger_user_scan`, `default_skip_already_rated`, `default_clear_rating_if_untagged` — each a `*bool` in `pluginConfig`; `nil` = no admin default
+- Top-level admin tristate defaults (also via `pdk.GetConfig`): `default_trigger_user_scan`, `default_skip_already_rated`, `default_clear_rating_if_untagged` — the schema sends `"inherit"`/`"yes"`/`"no"`; `parseTristateConfig` maps them to a `*bool` in `pluginConfig` (`nil` = no admin default)
 - `libraries` array read via `pdk.GetConfig("libraries")` as a JSON string, then unmarshaled:
   - Each library: `libraryId`, `libraryName`, `users[]`
-  - Each user: `username`, `trigger_user_scan` / `skip_already_rated` / `clear_rating_if_untagged` (all tristate `*bool`); resolved via `resolveTristate(user, adminDefault, pluginFallback)`, `ratingTagOrder`
+  - Each user: `username`, `trigger_user_scan` / `skip_already_rated` / `clear_rating_if_untagged` (string `"inherit"`/`"yes"`/`"no"` in JSON, mapped to `*bool` by `parseTristateConfig`); resolved via `resolveTristate(user, adminDefault, pluginFallback)`, `ratingTagOrder`
 
 ## Supported tag formats
 
