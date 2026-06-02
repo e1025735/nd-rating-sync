@@ -64,7 +64,7 @@ jobs:
           git push origin "${{ steps.version.outputs.tag }}"
 
       - name: Set up TinyGo
-        uses: tinygo-org/setup-tinygo@v1
+        uses: acifani/setup-tinygo@v3
         with:
           # check https://github.com/tinygo-org/tinygo/releases for the latest version
           tinygo-version: '0.41.1'
