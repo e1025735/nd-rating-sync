@@ -263,10 +263,6 @@
         },
         {
           "type": "Control",
-          "scope": "#/properties/max_songs_per_run"
-        },
-        {
-          "type": "Control",
           "scope": "#/properties/incremental_sync"
         },
         {
