@@ -34,13 +34,6 @@
           "description": "Cron expression for automatic recurring scans. Examples: '0 * * * *' = every houra, '0 2 * * *' = daily at 02:00. Changes take effect after the plugin is reloaded.",
           "default": "0 * * * *"
         },
-        "user_scan_cooldown_hours": {
-          "type": "integer",
-          "title": "User-scan cooldown (hours)",
-          "description": "Minimum number of hours a user must wait between manual scan requests. Set to 0 to disable the cooldown.",
-          "default": 24,
-          "minimum": 0
-        },
         "incremental_sync": {
           "type": "boolean",
           "title": "Incremental sync",
@@ -52,26 +45,6 @@
           "title": "Dry run",
           "description": "When true, the plugin executes the full scan pipeline (fetch songs, read files, parse tags, apply all skip logic) but does not call setRating. Every rating that would be written or cleared is logged with a [DRY RUN] prefix instead. The incremental-sync threshold is not updated, so the next real run will re-process the same files. Useful for verifying tag parsing before the first import. Default: false.",
           "default": false
-        },
-        "default_trigger_user_scan": {
-          "type": "string",
-          "title": "Default: trigger scan now",
-          "description": "Admin-level default for the per-user 'trigger_user_scan' flag. Applied when a user entry leaves that field as Inherit. 'No admin default' here means the plugin uses false.",
-          "oneOf": [
-            {
-              "const": "inherit",
-              "title": "No admin default (plugin: false)"
-            },
-            {
-              "const": "yes",
-              "title": "Yes"
-            },
-            {
-              "const": "no",
-              "title": "No"
-            }
-          ],
-          "default": "inherit"
         },
         "default_skip_already_rated": {
           "type": "string",
@@ -149,26 +122,6 @@
                       "type": "string",
                       "title": "Navidrome username",
                       "description": "Must match the Navidrome username exactly. Also add this user to 'User Access' in the plugin permissions panel."
-                    },
-                    "trigger_user_scan": {
-                      "type": "string",
-                      "title": "Trigger scan now",
-                      "description": "Set to Yes to enable on-demand rating scans for this user. The plugin checks for this flag every 15 minutes and runs a scan when the cooldown has elapsed; the flag is NOT reset automatically — to stop further runs, set it back to No (or Inherit) yourself. Subject to the cooldown period configured above. Inherit = use default_trigger_user_scan; if that is also unset, the plugin uses false.",
-                      "oneOf": [
-                        {
-                          "const": "inherit",
-                          "title": "Inherit from admin default"
-                        },
-                        {
-                          "const": "yes",
-                          "title": "Yes"
-                        },
-                        {
-                          "const": "no",
-                          "title": "No"
-                        }
-                      ],
-                      "default": "inherit"
                     },
                     "skip_already_rated": {
                       "type": "string",
@@ -271,10 +224,6 @@
         },
         {
           "type": "Control",
-          "scope": "#/properties/default_trigger_user_scan"
-        },
-        {
-          "type": "Control",
           "scope": "#/properties/default_skip_already_rated"
         },
         {
@@ -308,10 +257,6 @@
                         {
                           "type": "Control",
                           "scope": "#/properties/username"
-                        },
-                        {
-                          "type": "Control",
-                          "scope": "#/properties/trigger_user_scan"
                         },
                         {
                           "type": "Control",

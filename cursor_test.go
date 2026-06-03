@@ -13,7 +13,7 @@ func TestParseCursor_EmptyPayloadIsFreshSweep(t *testing.T) {
 }
 
 func TestParseCursor_RoundTrip(t *testing.T) {
-	want := syncCursor{Lib: 2, User: 1, Offset: 1500, PairStart: "2026-06-02T18:00:00Z", Single: true}
+	want := syncCursor{Lib: 2, User: 1, Offset: 1500, PairStart: "2026-06-02T18:00:00Z"}
 	cur, resumed := parseCursor(want.marshal())
 	assert.True(t, resumed)
 	assert.Equal(t, want, cur)
@@ -25,11 +25,11 @@ func TestParseCursor_MalformedPayloadFallsBackToFreshSweep(t *testing.T) {
 	assert.Equal(t, syncCursor{}, cur)
 }
 
-// TestSyncCursorMarshal_OmitsSingleWhenFalse keeps the common full-sweep
-// continuation payload compact and pins the exact wire form other tests assert.
-func TestSyncCursorMarshal_OmitsSingleWhenFalse(t *testing.T) {
+// TestSyncCursorMarshal pins the exact continuation-payload wire form that
+// other tests assert against.
+func TestSyncCursorMarshal(t *testing.T) {
 	assert.Equal(t, `{"lib":0,"user":0,"off":0,"start":""}`, syncCursor{}.marshal())
 	assert.Equal(t,
-		`{"lib":1,"user":0,"off":0,"start":"","single":true}`,
-		syncCursor{Lib: 1, Single: true}.marshal())
+		`{"lib":1,"user":2,"off":500,"start":"2026-06-02T18:00:00Z"}`,
+		syncCursor{Lib: 1, User: 2, Offset: 500, PairStart: "2026-06-02T18:00:00Z"}.marshal())
 }

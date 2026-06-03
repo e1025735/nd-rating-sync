@@ -12,7 +12,6 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	cfg := loadConfigFrom(mapGetter(map[string]string{}))
 
 	assert.Equal(t, "0 * * * *", cfg.SyncSchedule)
-	assert.Equal(t, 24, cfg.UserScanCooldownHours)
 	assert.True(t, cfg.IncrementalSync, "IncrementalSync should default to true")
 	assert.Empty(t, cfg.Libraries)
 }
@@ -41,16 +40,6 @@ func TestLoadConfig_SyncSchedule(t *testing.T) {
 func TestLoadConfig_SyncScheduleWhitespaceOnlyUsesDefault(t *testing.T) {
 	cfg := loadConfigFrom(mapGetter(map[string]string{"sync_schedule": "   "}))
 	assert.Equal(t, "0 * * * *", cfg.SyncSchedule)
-}
-
-func TestLoadConfig_CooldownHours(t *testing.T) {
-	cfg := loadConfigFrom(mapGetter(map[string]string{"user_scan_cooldown_hours": "12"}))
-	assert.Equal(t, 12, cfg.UserScanCooldownHours)
-}
-
-func TestLoadConfig_CooldownZeroDisablesCooldown(t *testing.T) {
-	cfg := loadConfigFrom(mapGetter(map[string]string{"user_scan_cooldown_hours": "0"}))
-	assert.Equal(t, 0, cfg.UserScanCooldownHours)
 }
 
 func TestLoadConfig_Libraries(t *testing.T) {
@@ -113,7 +102,6 @@ func TestLoadConfig_TristateStringValues(t *testing.T) {
 	cfg := loadConfigFrom(mapGetter(map[string]string{"libraries": string(raw)}))
 	u := cfg.Libraries[0].Users[0]
 	assert.False(t, u.SkipAlreadyRated, `"no" → false`)
-	assert.True(t, u.TriggerUserScan, `"yes" → true`)
 	assert.True(t, u.ClearRatingIfUntagged, `"yes" → true`)
 }
 

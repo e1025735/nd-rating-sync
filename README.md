@@ -122,10 +122,8 @@ the same example. You enter these settings via the Navidrome UI:
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `sync_schedule` | `0 * * * *` | Cron expression for the recurring background scan. The default runs **hourly**. A run whose libraries Navidrome hasn't rescanned since the last sync is skipped cheaply (one metadata call per library, no song listing), so a frequent schedule is inexpensive — use `*/15 * * * *` for near-real-time pickup. See **[Change-detection gate](#change-detection-gate)**. |
-| `user_scan_cooldown_hours` | `24` | Minimum hours between two manual user-triggered scans for the same user. Set to `0` to disable the cooldown. |
 | `incremental_sync` | `true` | When enabled, recurring scans skip files whose mtime hasn't changed since the previous successful run. See **[Incremental sync](#incremental-sync)** below. |
 | `dry_run` | `false` | When true, the full scan pipeline runs but no `setRating` calls are made. Every rating that would be written or cleared is logged with a `[DRY RUN]` prefix. The incremental-sync threshold is not updated. Use this to verify tag parsing before the first real import. |
-| `default_trigger_user_scan` | `null` | Admin-level default for `trigger_user_scan`. Applied to any user whose per-user setting is `null`. `null` here means no admin default — the plugin falls back to `false`. |
 | `default_skip_already_rated` | `null` | Admin-level default for `skip_already_rated`. Applied to any user whose per-user setting is `null`. `null` here means no admin default — the plugin falls back to `true`. |
 | `default_clear_rating_if_untagged` | `null` | Admin-level default for `clear_rating_if_untagged`. Applied to any user whose per-user setting is `null`. `null` here means no admin default — the plugin falls back to `false`. |
 
@@ -148,7 +146,6 @@ libraries while Bob is only in the main one.
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `username` | (required) | Must exactly match the Navidrome username. The same user must also be listed under the plugin's *User Access* permissions panel — Navidrome enforces this independently. |
-| `trigger_user_scan` | `null` | Accepts `true`, `false`, or `null`. Set to `true` to enable on-demand rating scans for this user. The plugin checks every 15 minutes and runs a scan once the cooldown has elapsed; the flag is **not** reset automatically, so leaving it `true` causes the scan to repeat each cooldown window. Set it back to `false` (or `null`) when you no longer want the scans. Subject to `user_scan_cooldown_hours`. `null` = inherit from `default_trigger_user_scan`, then plugin default (`false`). |
 | `skip_already_rated` | `null` | Accepts `true`, `false`, or `null`. When `true`, songs that already have a Navidrome user rating are left untouched. Set `false` to let file tags overwrite existing Navidrome ratings — useful for one-off bulk imports. `null` = inherit from `default_skip_already_rated`, then plugin default (`true`). |
 | `clear_rating_if_untagged` | `null` | Accepts `true`, `false`, or `null`. When `true`, songs whose audio file contains no recognised rating tag will have their Navidrome rating set to 0 (removed). Requires `skip_already_rated: false` to also clear ratings on songs that were previously rated in Navidrome — otherwise already-rated songs are skipped before the file is read and their ratings will not be cleared. `null` = inherit from `default_clear_rating_if_untagged`, then plugin default (`false`). |
 | `ratingTagOrder` | `["WMP", "iTunes", "MediaMonkey", "foobar2000"]` | Ordered list of source applications to try. The first match found in a given file wins. Trim or reorder the list to match the workflow you actually use; sources you don't use can stay in the list (they just never match) or be removed for clarity. |
@@ -210,13 +207,11 @@ per run no matter how large it is. That's what makes a frequent
 
 Notes:
 - The gate is part of incremental sync — it's active only when
-  `incremental_sync = true`, and is bypassed by manual user-triggered scans
-  (so an explicit "scan now" always re-reads).
+  `incremental_sync = true`.
 - It aligns the plugin to Navidrome's own scans. If you edit a tag on a file
   that's **already** in the library, the new rating is applied after
   Navidrome's next library scan picks up the change. To apply it immediately,
-  trigger a user scan (`trigger_user_scan`) or run one pass with
-  `incremental_sync = false`.
+  run one pass with `incremental_sync = false`.
 - It never *loses* work: any uncertainty (e.g. a library Navidrome reports as
   never-scanned) falls back to a normal full listing.
 
@@ -236,15 +231,8 @@ Navidrome startup
 plugin OnInit
       │  schedules recurring sync (cron)
       │  schedules one-shot immediate sync
-      │  schedules trigger-check (every 15 min)
       │
-      ├──── recurring / immediate sync ─────────────────────────┐
-      │                                                          │
-      └──── trigger-check (every 15 min) ──────────────┐         │
-                                                       ▼         │
-                              for each user with trigger_user_scan = true,
-                              if cooldown elapsed: enqueue a one-time
-                              single-user continuation (returns immediately)
+      └──── recurring / immediate sync ─────────────────────────┐
                                                                  │
                                                                  ▼
                                               process one time-budgeted chunk
@@ -409,7 +397,7 @@ The counters tell you what happened:
 | `cannot open "/path/to/song.mp3": permission denied` | The plugin lacks *Library Access* for the library containing this song. |
 | `skipping "/path/to/song.flac" – size NNN exceeds cap …` | The file is larger than the 64 MiB read cap (typically a misreported path or a sample-rate-extreme archival rip). Counted under `skipped_unreadable`; the existing Navidrome rating is left untouched. |
 | `skipping … – supported formats are MP3, FLAC, Ogg, Opus, WAV, DSF, M4A/AAC and WMA (got .aiff)` | The file is in a container the plugin does not support. The song is silently passed over. |
-| Ratings not updating after I edited a tag | Two layers gate this. (1) The change-detection gate waits for Navidrome to rescan the library — until then an already-indexed file isn't revisited. (2) Incremental sync then only re-reads files whose mtime moved (confirm with `ls -l`). To apply an edit immediately, set `trigger_user_scan = true` for the user (bypasses the gate) or run one pass with `incremental_sync = false`. |
+| Ratings not updating after I edited a tag | Two layers gate this. (1) The change-detection gate waits for Navidrome to rescan the library — until then an already-indexed file isn't revisited. (2) Incremental sync then only re-reads files whose mtime moved (confirm with `ls -l`). To apply an edit immediately, run one pass with `incremental_sync = false`. |
 | Log says `skipping … – library unchanged since last sync` | Normal and expected — the change-detection gate short-circuited a run because Navidrome hasn't rescanned that library since the last sync. This is what keeps frequent schedules cheap. |
 | First run took forever, second run was fast | Working as designed — that's the whole point of incremental sync and the change-detection gate. |
 | `KVStoreGet … failed – falling back to full scan` (warning) | The Navidrome KV store is unreachable for some reason. The current scan still works (as a full scan); investigate the underlying error. |

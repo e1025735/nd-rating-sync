@@ -34,9 +34,8 @@ func main() {}
 // ─── Scheduler IDs ────────────────────────────────────────────────────────────
 
 const (
-	scheduleID             = "nd-rating-sync-recurring"
-	scheduleIDImmediate    = "nd-rating-sync-immediate"
-	scheduleIDTriggerCheck = "nd-rating-sync-trigger-check"
+	scheduleID          = "nd-rating-sync-recurring"
+	scheduleIDImmediate = "nd-rating-sync-immediate"
 )
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
@@ -51,7 +50,7 @@ func (ratingPlugin) OnInit() error {
 }
 
 // registerSchedules is the testable half of OnInit. It takes the resolved
-// config and registers the three scheduler entries with the host.
+// config and registers the two scheduler entries with the host.
 func registerSchedules(cfg pluginConfig) error {
 	cronExpr := cfg.SyncSchedule
 
@@ -64,24 +63,14 @@ func registerSchedules(cfg pluginConfig) error {
 		return fmt.Errorf("failed to queue immediate scan: %w", err)
 	}
 
-	if _, err := host.SchedulerScheduleRecurring("*/15 * * * *", "", scheduleIDTriggerCheck); err != nil {
-		return fmt.Errorf("failed to register trigger-check: %w", err)
-	}
-	logInfo("nd-rating-sync: registered user-trigger check (every 15 min)")
-
 	return nil
 }
 
 // ─── Scheduler callback ───────────────────────────────────────────────────────
 
 func (ratingPlugin) OnCallback(req scheduler.SchedulerCallbackRequest) error {
-	switch req.ScheduleID {
-	case scheduleIDTriggerCheck:
-		return checkAndRunUserTriggeredScan()
-	default:
-		logInfo(fmt.Sprintf("nd-rating-sync: running scheduled rating sync (scheduleId=%q)", req.ScheduleID))
-		return runSyncStep(loadConfig(), req.Payload)
-	}
+	logInfo(fmt.Sprintf("nd-rating-sync: running scheduled rating sync (scheduleId=%q)", req.ScheduleID))
+	return runSyncStep(loadConfig(), req.Payload)
 }
 
 // runSyncStep runs one budgeted slice of a sync. payload is the scheduler
@@ -101,10 +90,9 @@ func runSyncStep(cfg pluginConfig, payload string) error {
 // runSyncStepUntil is the deadline-injectable core of runSyncStep, split out so
 // tests can force the budget-reached/continuation path without waiting 20s.
 //
-// Full sweeps record an in-progress heartbeat so a freshly-triggered sweep
+// Every sweep records an in-progress heartbeat so a freshly-triggered sweep
 // (e.g. the hourly cron firing while a big first import is still chaining) does
-// not start a second concurrent sweep. Single (user-triggered) scans are one
-// bounded pair and intentional, so they bypass the guard.
+// not start a second concurrent sweep.
 func runSyncStepUntil(cfg pluginConfig, payload string, deadline time.Time) error {
 	if len(cfg.Libraries) == 0 {
 		return errors.New("no libraries configured – add at least one library with users in the plugin settings")
@@ -112,19 +100,16 @@ func runSyncStepUntil(cfg pluginConfig, payload string, deadline time.Time) erro
 
 	cur, resumed := parseCursor(payload)
 
-	fullSweep := !cur.Single
-	if fullSweep {
-		if !resumed && sweepInProgress() {
-			logInfo("nd-rating-sync: a full sweep is already in progress – skipping this trigger")
-			return nil
-		}
-		markSweepActive() // set on a fresh start; refresh on every continuation
+	if !resumed && sweepInProgress() {
+		logInfo("nd-rating-sync: a sweep is already in progress – skipping this trigger")
+		return nil
 	}
+	markSweepActive() // set on a fresh start; refresh on every continuation
 
 	if resumed {
 		logInfo(fmt.Sprintf(
-			"nd-rating-sync: resuming sync at library#%d user#%d offset=%d (single=%v)",
-			cur.Lib, cur.User, cur.Offset, cur.Single))
+			"nd-rating-sync: resuming sync at library#%d user#%d offset=%d",
+			cur.Lib, cur.User, cur.Offset))
 	} else {
 		logInfo(fmt.Sprintf(
 			"nd-rating-sync: starting sync – libraries=%d incremental=%v dry_run=%v budget=%s",
@@ -133,9 +118,7 @@ func runSyncStepUntil(cfg pluginConfig, payload string, deadline time.Time) erro
 
 	next, done := runSyncChunk(cfg, cur, deadline)
 	if done {
-		if fullSweep {
-			clearSweepActive()
-		}
+		clearSweepActive()
 		logInfo("nd-rating-sync: sync complete")
 		return nil
 	}

@@ -8,7 +8,6 @@ import (
 
 type userConfig struct {
 	Username              string
-	TriggerUserScan       bool
 	SkipAlreadyRated      bool
 	ClearRatingIfUntagged bool
 	RatingTagOrder        []string
@@ -22,11 +21,9 @@ type libraryConfig struct {
 
 type pluginConfig struct {
 	SyncSchedule                 string
-	UserScanCooldownHours        int
 	MaxSongsPerRun               int
 	IncrementalSync              bool
 	DryRun                       bool
-	DefaultTriggerUserScan       *bool
 	DefaultSkipAlreadyRated      *bool
 	DefaultClearRatingIfUntagged *bool
 	Libraries                    []libraryConfig
@@ -34,7 +31,6 @@ type pluginConfig struct {
 
 type jsonUserConfig struct {
 	Username              string   `json:"username"`
-	TriggerUserScan       string   `json:"trigger_user_scan"`
 	SkipAlreadyRated      string   `json:"skip_already_rated"`
 	ClearRatingIfUntagged string   `json:"clear_rating_if_untagged"`
 	RatingTagOrder        []string `json:"ratingTagOrder"`
@@ -84,20 +80,13 @@ func loadConfig() pluginConfig { return loadConfigFrom(getConfig) }
 
 func loadConfigFrom(get configGetter) pluginConfig {
 	cfg := pluginConfig{
-		SyncSchedule:          "0 * * * *",
-		UserScanCooldownHours: 24,
-		IncrementalSync:       true,
+		SyncSchedule:    "0 * * * *",
+		IncrementalSync: true,
 	}
 
 	if v, ok := get("sync_schedule"); ok {
 		if s := strings.TrimSpace(v); s != "" {
 			cfg.SyncSchedule = s
-		}
-	}
-	if v, ok := get("user_scan_cooldown_hours"); ok {
-		var n int
-		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n >= 0 {
-			cfg.UserScanCooldownHours = n
 		}
 	}
 	if v, ok := get("incremental_sync"); ok {
@@ -117,9 +106,6 @@ func loadConfigFrom(get configGetter) pluginConfig {
 			cfg.DryRun = true
 		}
 	}
-	if v, ok := get("default_trigger_user_scan"); ok {
-		cfg.DefaultTriggerUserScan = parseTristateConfig(v)
-	}
 	if v, ok := get("default_skip_already_rated"); ok {
 		cfg.DefaultSkipAlreadyRated = parseTristateConfig(v)
 	}
@@ -138,7 +124,6 @@ func loadConfigFrom(get configGetter) pluginConfig {
 				for _, ru := range rl.Users {
 					uc := userConfig{
 						Username:              ru.Username,
-						TriggerUserScan:       resolveTristate(parseTristateConfig(ru.TriggerUserScan), cfg.DefaultTriggerUserScan, false),
 						SkipAlreadyRated:      resolveTristate(parseTristateConfig(ru.SkipAlreadyRated), cfg.DefaultSkipAlreadyRated, true),
 						ClearRatingIfUntagged: resolveTristate(parseTristateConfig(ru.ClearRatingIfUntagged), cfg.DefaultClearRatingIfUntagged, false),
 						RatingTagOrder:        ru.RatingTagOrder,

@@ -1,80 +1,13 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
-
-	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 )
-
-// ─── User-triggered scan ──────────────────────────────────────────────────────
-
-var (
-	lastUserScanMu    sync.Mutex
-	lastUserScanTimes = map[string]time.Time{} // key: username
-)
-
-// checkAndRunUserTriggeredScan is called every 15 minutes.
-func checkAndRunUserTriggeredScan() error {
-	return checkAndRunUserTriggeredScanWith(loadConfig())
-}
-
-// checkAndRunUserTriggeredScanWith enqueues a single-pair sync for every user
-// whose trigger_user_scan flag is set and whose cooldown has elapsed. It does
-// NOT scan inline: the 15-minute trigger-check callback is bound by the same
-// 30s host limit as any other call, so each due user instead gets a one-time
-// continuation (Single cursor) that the budgeted chunk engine drives to
-// completion. This keeps the trigger-check itself fast regardless of how many
-// users are due or how large their libraries are.
-func checkAndRunUserTriggeredScanWith(cfg pluginConfig) error {
-	var errMsgs []string
-	for li, lib := range cfg.Libraries {
-		for ui, u := range lib.Users {
-			if !u.TriggerUserScan {
-				continue
-			}
-
-			lastUserScanMu.Lock()
-			last := lastUserScanTimes[u.Username]
-			lastUserScanMu.Unlock()
-
-			if cfg.UserScanCooldownHours > 0 && !last.IsZero() {
-				cooldown := time.Duration(cfg.UserScanCooldownHours) * time.Hour
-				remaining := cooldown - time.Since(last)
-				if remaining > 0 {
-					logInfo(fmt.Sprintf(
-						"nd-rating-sync: user scan requested for %q but cooldown active (%.0f min remaining)",
-						u.Username, remaining.Minutes()))
-					continue
-				}
-			}
-
-			logInfo(fmt.Sprintf(
-				"nd-rating-sync: queuing user-triggered rating sync for %q (library=%q)",
-				u.Username, lib.LibraryID))
-
-			lastUserScanMu.Lock()
-			lastUserScanTimes[u.Username] = time.Now()
-			lastUserScanMu.Unlock()
-
-			cur := syncCursor{Lib: li, User: ui, Single: true}
-			if _, err := host.SchedulerScheduleOneTime(0, cur.marshal(), ""); err != nil {
-				errMsgs = append(errMsgs, fmt.Sprintf("user=%q lib=%q: %v", u.Username, lib.LibraryID, err))
-			}
-		}
-	}
-
-	if len(errMsgs) > 0 {
-		return fmt.Errorf("user-triggered scan scheduling errors: %s", strings.Join(errMsgs, "; "))
-	}
-	return nil
-}
 
 // ─── Sync ─────────────────────────────────────────────────────────────────────
 
@@ -82,9 +15,9 @@ func checkAndRunUserTriggeredScanWith(cfg pluginConfig) error {
 // cur, and returns the position to resume at plus whether the whole sweep is
 // finished. It walks (library, user) pairs in order: for each fresh pair it
 // stamps PairStart (the eventual incremental threshold) and, once the pair is
-// fully processed, persists that threshold. A Single cursor stops after one
-// pair. When the deadline is reached mid-sweep it returns allDone=false with a
-// cursor the caller hands to a continuation callback.
+// fully processed, persists that threshold. When the deadline is reached
+// mid-sweep it returns allDone=false with a cursor the caller hands to a
+// continuation callback.
 //
 // Forward progress is guaranteed: the budget is only checked at pair
 // boundaries here and after each song in processPairChunk, so every invocation
@@ -134,11 +67,10 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 
 		// LastScanAt gate: when starting a fresh pair, skip the whole pair if
 		// Navidrome has not rescanned the library since our last completed sweep
-		// — no song paging at all. Single (user-triggered) scans bypass the gate
-		// so an explicit request always re-pages. A gated skip must NOT save the
-		// threshold: nothing was processed, so it stays pinned to the last real
-		// sweep and a later scan still re-processes the files that changed in it.
-		if cur.Offset == 0 && cur.PairStart == "" && cfg.IncrementalSync && !cur.Single && !threshold.IsZero() {
+		// — no song paging at all. A gated skip must NOT save the threshold:
+		// nothing was processed, so it stays pinned to the last real sweep and a
+		// later scan still re-processes the files that changed in it.
+		if cur.Offset == 0 && cur.PairStart == "" && cfg.IncrementalSync && !threshold.IsZero() {
 			if scanned, ok := cachedLibraryLastScan(libCache, lib.LibraryID); ok && scanned.Before(threshold) {
 				logInfo(fmt.Sprintf(
 					"nd-rating-sync: skipping user=%q library=%q – library unchanged since last sync (last_scan=%s threshold=%s)",
@@ -165,10 +97,6 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 			if ps, err := time.Parse(time.RFC3339Nano, cur.PairStart); err == nil {
 				saveLastSynced(lib.LibraryID, u.Username, ps)
 			}
-		}
-
-		if cur.Single {
-			return cur, true
 		}
 
 		cur.User++
@@ -331,27 +259,6 @@ func processSong(u userConfig, cfg pluginConfig, s subsonicSong, threshold time.
 	}
 	logDebug(fmt.Sprintf("nd-rating-sync: rated %q → %d stars", s.Title, stars))
 	tally.rated++
-}
-
-// runSyncForUser fetches and processes every song for a single (library, user)
-// pair to completion, ignoring the time budget. The scheduled paths use
-// runSyncChunk so they stay inside the host's per-call time limit; this helper
-// is retained for direct callers and tests that want one pair processed
-// synchronously. It runs the pair through the same engine via a single-pair
-// config and a Single cursor, so threshold handling stays identical.
-func runSyncForUser(lib libraryConfig, u userConfig, cfg pluginConfig) error {
-	if u.Username == "" {
-		return errors.New("username is empty – check plugin configuration")
-	}
-	single := cfg
-	single.Libraries = []libraryConfig{{
-		LibraryID:   lib.LibraryID,
-		LibraryName: lib.LibraryName,
-		Users:       []userConfig{u},
-	}}
-	// A deadline far in the future means the pair always runs to completion.
-	runSyncChunk(single, syncCursor{Single: true}, time.Now().Add(24*time.Hour))
-	return nil
 }
 
 // formatThreshold renders a threshold timestamp for log output, with a

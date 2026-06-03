@@ -114,46 +114,6 @@ func TestExtractStarsFromFile_SuffixOverridesPathExtension(t *testing.T) {
 	assert.Equal(t, 4, stars)
 }
 
-// ─── checkAndRunUserTriggeredScanWith ─────────────────────────────────────────
-
-func TestCheckAndRunUserTriggeredScanWith_NoTriggerUsers(t *testing.T) {
-	resetSubsonicMock(t)
-	err := checkAndRunUserTriggeredScanWith(pluginConfig{})
-	assert.NoError(t, err)
-	host.SubsonicAPIMock.AssertNotCalled(t, "Call")
-}
-
-func TestCheckAndRunUserTriggeredScanWith_CooldownSkipsUser(t *testing.T) {
-	resetSubsonicMock(t)
-
-	const username = "alice"
-	lastUserScanMu.Lock()
-	lastUserScanTimes[username] = time.Now()
-	lastUserScanMu.Unlock()
-	t.Cleanup(func() {
-		lastUserScanMu.Lock()
-		delete(lastUserScanTimes, username)
-		lastUserScanMu.Unlock()
-	})
-
-	cfg := pluginConfig{
-		UserScanCooldownHours: 24,
-		Libraries: []libraryConfig{{
-			LibraryID: "lib1",
-			Users: []userConfig{{
-				Username:        username,
-				TriggerUserScan: true,
-				RatingTagOrder:  defaultTagOrder,
-			}},
-		}},
-	}
-
-	err := checkAndRunUserTriggeredScanWith(cfg)
-	assert.NoError(t, err)
-	// The actual invariant: cooldown means no Subsonic traffic at all.
-	host.SubsonicAPIMock.AssertNotCalled(t, "Call")
-}
-
 // ─── runSyncStep ─────────────────────────────────────────────────────────────
 
 func TestRunSyncStep_NoLibraries(t *testing.T) {
@@ -162,18 +122,18 @@ func TestRunSyncStep_NoLibraries(t *testing.T) {
 	assert.Contains(t, err.Error(), "no libraries configured")
 }
 
-// ─── runSyncForUser happy path (integration) ─────────────────────────────────
+// ─── Per-pair sync (integration) ─────────────────────────────────────────────
 
-// TestRunSyncForUser_HappyPath wires the full pipeline together: SubsonicAPI
-// returns one song pointing at a real ID3-tagged temp file, the scanner reads
-// the rating, and setRating is called with the correct star count.
-func TestRunSyncForUser_HappyPath(t *testing.T) {
+// TestSyncPair_HappyPath wires the full pipeline together: SubsonicAPI returns
+// one song pointing at a real ID3-tagged temp file, the scanner reads the
+// rating, and setRating is called with the correct star count.
+func TestSyncPair_HappyPath(t *testing.T) {
 	resetSubsonicMock(t)
 
 	// 1. Real ID3 file with FMPS_Rating=0.6 (→ 3 stars).
 	path := writeFMPSFile(t, "0.6")
 
-	// 2. fetchAllSongs returns one song pointing at that path.
+	// 2. fetchSongPage returns one song pointing at that path.
 	songs := []subsonicSong{{ID: "song-1", Title: "Test", Path: path, Suffix: "mp3"}}
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=lib1`,
@@ -183,25 +143,26 @@ func TestRunSyncForUser_HappyPath(t *testing.T) {
 	host.SubsonicAPIMock.On("Call", "setRating?id=song-1&rating=3&u=alice").
 		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
 
-	lib := libraryConfig{LibraryID: "lib1"}
-	user := userConfig{
-		Username:         "alice",
-		SkipAlreadyRated: true,
-		RatingTagOrder:   []string{"MediaMonkey"},
-	}
+	cfg := pluginConfig{Libraries: []libraryConfig{{
+		LibraryID: "lib1",
+		Users: []userConfig{{
+			Username:         "alice",
+			SkipAlreadyRated: true,
+			RatingTagOrder:   []string{"MediaMonkey"},
+		}},
+	}}}
 
-	err := runSyncForUser(lib, user, pluginConfig{})
-	require.NoError(t, err)
+	runSyncChunk(cfg, syncCursor{}, time.Now().Add(time.Hour))
 	host.SubsonicAPIMock.AssertExpectations(t)
 }
 
 // ─── Regression: read failures must not trigger clear ────────────────────────
 
-// TestRunSyncForUser_UnreadableFileWithClear_DoesNotClearRating proves that a
+// TestSyncPair_UnreadableFileWithClear_DoesNotClearRating proves that a
 // transient read failure (here: missing file) is NOT treated as "no tag found"
 // when clear_rating_if_untagged=true. Conflating the two would wipe the user's
 // existing Navidrome rating on the next I/O hiccup.
-func TestRunSyncForUser_UnreadableFileWithClear_DoesNotClearRating(t *testing.T) {
+func TestSyncPair_UnreadableFileWithClear_DoesNotClearRating(t *testing.T) {
 	resetSubsonicMock(t)
 
 	// Song points at a path that doesn't exist — extractStarsFromFile must
@@ -214,21 +175,22 @@ func TestRunSyncForUser_UnreadableFileWithClear_DoesNotClearRating(t *testing.T)
 	// expectation registered for it, and AssertNotCalled below makes the
 	// invariant explicit.
 
-	lib := libraryConfig{LibraryID: "lib1"}
-	user := userConfig{
-		Username:              "alice",
-		ClearRatingIfUntagged: true,
-		RatingTagOrder:        []string{"MediaMonkey"},
-	}
+	cfg := pluginConfig{Libraries: []libraryConfig{{
+		LibraryID: "lib1",
+		Users: []userConfig{{
+			Username:              "alice",
+			ClearRatingIfUntagged: true,
+			RatingTagOrder:        []string{"MediaMonkey"},
+		}},
+	}}}
 
-	err := runSyncForUser(lib, user, pluginConfig{})
-	require.NoError(t, err)
+	runSyncChunk(cfg, syncCursor{}, time.Now().Add(time.Hour))
 	host.SubsonicAPIMock.AssertNotCalled(t, "Call", "setRating?id=song-1&rating=0&u=alice")
 }
 
 // ─── Incremental sync ─────────────────────────────────────────────────────────
 
-func TestRunSyncForUser_IncrementalFirstRun_ProcessesAllAndSavesThreshold(t *testing.T) {
+func TestSyncPair_IncrementalFirstRun_ProcessesAllAndSavesThreshold(t *testing.T) {
 	resetSubsonicMock(t)
 	resetKVStoreMock(t)
 
@@ -248,16 +210,17 @@ func TestRunSyncForUser_IncrementalFirstRun_ProcessesAllAndSavesThreshold(t *tes
 	host.KVStoreMock.On("Set", "last-synced:lib1:alice", mock.Anything).
 		Return(nil).Once()
 
-	lib := libraryConfig{LibraryID: "lib1"}
-	user := userConfig{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}
+	cfg := pluginConfig{IncrementalSync: true, Libraries: []libraryConfig{{
+		LibraryID: "lib1",
+		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
+	}}}
 
-	err := runSyncForUser(lib, user, pluginConfig{IncrementalSync: true})
-	require.NoError(t, err)
+	runSyncChunk(cfg, syncCursor{}, time.Now().Add(time.Hour))
 	host.SubsonicAPIMock.AssertExpectations(t)
 	host.KVStoreMock.AssertExpectations(t)
 }
 
-func TestRunSyncForUser_IncrementalSkipsUnchangedFile(t *testing.T) {
+func TestSyncPair_IncrementalSkipsUnchangedFile(t *testing.T) {
 	resetSubsonicMock(t)
 	resetKVStoreMock(t)
 
@@ -279,17 +242,18 @@ func TestRunSyncForUser_IncrementalSkipsUnchangedFile(t *testing.T) {
 	host.KVStoreMock.On("Set", "last-synced:lib1:alice", mock.Anything).
 		Return(nil).Once()
 
-	lib := libraryConfig{LibraryID: "lib1"}
-	user := userConfig{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}
+	cfg := pluginConfig{IncrementalSync: true, Libraries: []libraryConfig{{
+		LibraryID: "lib1",
+		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
+	}}}
 
-	err := runSyncForUser(lib, user, pluginConfig{IncrementalSync: true})
-	require.NoError(t, err)
+	runSyncChunk(cfg, syncCursor{}, time.Now().Add(time.Hour))
 	host.SubsonicAPIMock.AssertExpectations(t)
 	host.SubsonicAPIMock.AssertNotCalled(t, "Call", "setRating?id=song-1&rating=3&u=alice")
 	host.KVStoreMock.AssertExpectations(t)
 }
 
-func TestRunSyncForUser_IncrementalProcessesNewerFile(t *testing.T) {
+func TestSyncPair_IncrementalProcessesNewerFile(t *testing.T) {
 	resetSubsonicMock(t)
 	resetKVStoreMock(t)
 
@@ -311,16 +275,17 @@ func TestRunSyncForUser_IncrementalProcessesNewerFile(t *testing.T) {
 	host.KVStoreMock.On("Set", "last-synced:lib1:alice", mock.Anything).
 		Return(nil).Once()
 
-	lib := libraryConfig{LibraryID: "lib1"}
-	user := userConfig{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}
+	cfg := pluginConfig{IncrementalSync: true, Libraries: []libraryConfig{{
+		LibraryID: "lib1",
+		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
+	}}}
 
-	err := runSyncForUser(lib, user, pluginConfig{IncrementalSync: true})
-	require.NoError(t, err)
+	runSyncChunk(cfg, syncCursor{}, time.Now().Add(time.Hour))
 	host.SubsonicAPIMock.AssertExpectations(t)
 	host.KVStoreMock.AssertExpectations(t)
 }
 
-func TestRunSyncForUser_IncrementalDisabled_BypassesKV(t *testing.T) {
+func TestSyncPair_IncrementalDisabled_BypassesKV(t *testing.T) {
 	resetSubsonicMock(t)
 	resetKVStoreMock(t)
 
@@ -335,11 +300,12 @@ func TestRunSyncForUser_IncrementalDisabled_BypassesKV(t *testing.T) {
 	host.SubsonicAPIMock.On("Call", "setRating?id=song-1&rating=3&u=alice").
 		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
 
-	lib := libraryConfig{LibraryID: "lib1"}
-	user := userConfig{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}
+	cfg := pluginConfig{IncrementalSync: false, Libraries: []libraryConfig{{
+		LibraryID: "lib1",
+		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
+	}}}
 
-	err := runSyncForUser(lib, user, pluginConfig{IncrementalSync: false})
-	require.NoError(t, err)
+	runSyncChunk(cfg, syncCursor{}, time.Now().Add(time.Hour))
 	host.SubsonicAPIMock.AssertExpectations(t)
 	// Confirm KV is never touched when incremental is off.
 	host.KVStoreMock.AssertNotCalled(t, "Get", mock.Anything)
@@ -400,30 +366,6 @@ func TestRunSyncChunk_AdvancesAcrossPairsToCompletion(t *testing.T) {
 	host.SubsonicAPIMock.AssertExpectations(t)
 }
 
-// TestRunSyncChunk_SingleProcessesOnlyOnePair proves a Single cursor (used by
-// the user-triggered path) stops after its one pair and never touches the next.
-func TestRunSyncChunk_SingleProcessesOnlyOnePair(t *testing.T) {
-	resetSubsonicMock(t)
-
-	host.SubsonicAPIMock.On("Call",
-		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=lib1`,
-	).Return(subsonicOK([]subsonicSong{{ID: "a1", UserRating: 5}}), nil)
-
-	cfg := pluginConfig{Libraries: []libraryConfig{{
-		LibraryID: "lib1",
-		Users: []userConfig{
-			{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder},
-			{Username: "bob", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder},
-		},
-	}}}
-
-	_, done := runSyncChunk(cfg, syncCursor{Single: true}, time.Now().Add(time.Hour))
-	assert.True(t, done, "single-pair cursor completes after one pair")
-	host.SubsonicAPIMock.AssertExpectations(t)
-	host.SubsonicAPIMock.AssertNotCalled(t, "Call",
-		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=bob&musicFolderId=lib1`)
-}
-
 // TestRunSyncStepUntil_ReschedulesWhenBudgetExceeded proves an unfinished sweep
 // persists its cursor into a fresh one-time callback (empty scheduleID → host
 // mints a unique one).
@@ -476,41 +418,6 @@ func TestRunSyncStepUntil_NoRescheduleWhenComplete(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, host.SchedulerMock.Calls, "a completed sweep schedules no continuation")
 	host.KVStoreMock.AssertExpectations(t)
-}
-
-// TestCheckAndRunUserTriggeredScanWith_DueUserEnqueuesSinglePairScan proves the
-// 15-minute trigger-check enqueues a Single-cursor continuation for a due user
-// instead of scanning inline (which would risk the host's 30s call limit).
-func TestCheckAndRunUserTriggeredScanWith_DueUserEnqueuesSinglePairScan(t *testing.T) {
-	resetSubsonicMock(t)
-	resetSchedulerMock(t)
-
-	const username = "alice"
-	t.Cleanup(func() {
-		lastUserScanMu.Lock()
-		delete(lastUserScanTimes, username)
-		lastUserScanMu.Unlock()
-	})
-
-	cfg := pluginConfig{
-		Libraries: []libraryConfig{{
-			LibraryID: "lib1",
-			Users: []userConfig{{
-				Username:        username,
-				TriggerUserScan: true,
-				RatingTagOrder:  defaultTagOrder,
-			}},
-		}},
-	}
-
-	host.SchedulerMock.On("ScheduleOneTime", int32(0),
-		`{"lib":0,"user":0,"off":0,"start":"","single":true}`, "").
-		Return("trigger-cont-id", nil)
-
-	err := checkAndRunUserTriggeredScanWith(cfg)
-	require.NoError(t, err)
-	host.SchedulerMock.AssertExpectations(t)
-	assert.Empty(t, host.SubsonicAPIMock.Calls, "trigger-check must not scan inline")
 }
 
 // ─── LastScanAt gate ──────────────────────────────────────────────────────────
@@ -573,32 +480,6 @@ func TestRunSyncChunk_GateProcessesRescannedLibrary(t *testing.T) {
 	host.SubsonicAPIMock.AssertExpectations(t)
 	host.LibraryMock.AssertExpectations(t)
 	host.KVStoreMock.AssertExpectations(t)
-}
-
-// TestRunSyncChunk_GateBypassedBySingle proves a Single (user-triggered) scan
-// re-pages even when the library is unchanged, and never consults LibraryGetLibrary.
-func TestRunSyncChunk_GateBypassedBySingle(t *testing.T) {
-	resetSubsonicMock(t)
-	resetKVStoreMock(t)
-	resetLibraryMock(t)
-
-	threshold := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	host.KVStoreMock.On("Get", "last-synced:1:alice").
-		Return([]byte(threshold.Format(time.RFC3339Nano)), true, nil)
-	host.SubsonicAPIMock.On("Call",
-		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
-	).Return(subsonicOK([]subsonicSong{{ID: "a1", UserRating: 5}}), nil)
-	host.KVStoreMock.On("Set", "last-synced:1:alice", mock.Anything).Return(nil)
-
-	cfg := pluginConfig{IncrementalSync: true, Libraries: []libraryConfig{{
-		LibraryID: "1",
-		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
-	}}}
-
-	_, done := runSyncChunk(cfg, syncCursor{Single: true}, time.Now().Add(time.Hour))
-	assert.True(t, done)
-	host.SubsonicAPIMock.AssertExpectations(t)
-	host.LibraryMock.AssertNotCalled(t, "GetLibrary", mock.Anything)
 }
 
 // ─── In-progress guard ────────────────────────────────────────────────────────

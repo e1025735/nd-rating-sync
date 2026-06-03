@@ -6,10 +6,10 @@ Navidrome plugin (WASM) that reads embedded star-rating tags from MP3, FLAC, Ogg
 
 | File | Responsibility |
 |------|---------------|
-| `main.go` | Entry points — lifecycle init (`OnInit` clears the in-progress guard on load), scheduler callback registration, and `runSyncStep` / `runSyncStepUntil` (one budgeted slice of a sync; checks/refreshes the `sweep-active` overlap guard for full sweeps, reschedules a continuation when the budget is hit) via `ratingPlugin` |
+| `main.go` | Entry points — lifecycle init (`OnInit` clears the in-progress guard on load), scheduler callback registration, and `runSyncStep` / `runSyncStepUntil` (one budgeted slice of a sync; checks/refreshes the `sweep-active` overlap guard, reschedules a continuation when the budget is hit) via `ratingPlugin` |
 | `config.go` | Config types (`pluginConfig`, `libraryConfig`, `userConfig`) and `loadConfig()` |
 | `cursor.go` | `syncCursor` (resumable position carried in the scheduler payload), `parseCursor` / `marshal`, and `callBudget` (20 s — the per-callback wall-clock budget, well under Navidrome's hardcoded 30 s plugin-call limit) |
-| `scanner.go` | Sync engine — `runSyncChunk` (walks library/user pairs until the deadline; loads each pair's threshold and applies the **LastScanAt gate** — skips a fresh, non-Single pair whose library has not been rescanned since the stored threshold, without saving), `processPairChunk` (one pair from a song offset, takes the threshold as a param, checks the deadline after each song), `processSong`, `checkAndRunUserTriggeredScan` (enqueues a single-pair continuation per due user — never scans inline), and a thin `runSyncForUser` wrapper. `extractStarsFromFile` returns a `fileReadResult` (`tagFound` / `tagAbsent` / `fileUnreadable`) so I/O failures, oversize files (`maxAudioFileBytes` = 64 MiB), unsupported extensions, and parser panics never trigger `clear_rating_if_untagged`. `readAudioFile` enforces the size cap; `dispatchParser` recovers panics from any container parser so one hostile file can't kill the whole sync. |
+| `scanner.go` | Sync engine — `runSyncChunk` (walks library/user pairs until the deadline; loads each pair's threshold and applies the **LastScanAt gate** — skips a fresh pair whose library has not been rescanned since the stored threshold, without saving), `processPairChunk` (one pair from a song offset, takes the threshold as a param, checks the deadline after each song), and `processSong`. `extractStarsFromFile` returns a `fileReadResult` (`tagFound` / `tagAbsent` / `fileUnreadable`) so I/O failures, oversize files (`maxAudioFileBytes` = 64 MiB), unsupported extensions, and parser panics never trigger `clear_rating_if_untagged`. `readAudioFile` enforces the size cap; `dispatchParser` recovers panics from any container parser so one hostile file can't kill the whole sync. |
 | `state.go` | KV-backed state — `loadLastSynced` / `saveLastSynced` (incremental threshold; KV key `"last-synced:" + url.QueryEscape(libraryID) + ":" + url.QueryEscape(username)` so a `:` in either component can't collide with a different tuple), plus the overlap-guard helpers `sweepInProgress` / `markSweepActive` / `clearSweepActive` (`sweep-active` heartbeat key, `sweepStaleAfter` = 2 min). All KV failures fail open. |
 | `subsonic.go` | Subsonic API domain — response types, `fetchSongPage` (single lazy page), `fetchAllSongs` (wrapper that loops it), `setRating` |
 | `library.go` | `libraryLastScan` — wraps `host.LibraryGetLibrary` (empty libraryID → `LibraryGetAllLibraries`, newest `LastScanAt`) for the change-detection gate; returns `(zero,false)` on any uncertainty so the gate fails open. `cachedLibraryLastScan` memoises it per `runSyncChunk` call. |
@@ -38,11 +38,11 @@ zip -j nd-rating-sync.ndp manifest.json plugin.wasm
 
 Config is a hierarchical JSON Schema (not a flat key-value list):
 
-- Top-level admin scalars read via `pdk.GetConfig`: `sync_schedule` (defaults to hourly `0 * * * *` — idle runs are cheap thanks to the LastScanAt gate, so a frequent schedule is fine), `user_scan_cooldown_hours`, `incremental_sync`, `dry_run` (there is no song cap — chunking + the `callBudget` keep runs safe; see **Sync execution**)
-- Top-level admin tristate defaults (also via `pdk.GetConfig`): `default_trigger_user_scan`, `default_skip_already_rated`, `default_clear_rating_if_untagged` — each a `*bool` in `pluginConfig`; `nil` = no admin default
+- Top-level admin scalars read via `pdk.GetConfig`: `sync_schedule` (defaults to hourly `0 * * * *` — idle runs are cheap thanks to the LastScanAt gate, so a frequent schedule is fine), `incremental_sync`, `dry_run` (there is no song cap — chunking + the `callBudget` keep runs safe; see **Sync execution**)
+- Top-level admin tristate defaults (also via `pdk.GetConfig`): `default_skip_already_rated`, `default_clear_rating_if_untagged` — each a `*bool` in `pluginConfig`; `nil` = no admin default
 - `libraries` array read via `pdk.GetConfig("libraries")` as a JSON string, then unmarshaled:
   - Each library: `libraryId`, `libraryName`, `users[]`
-  - Each user: `username`, `trigger_user_scan` / `skip_already_rated` / `clear_rating_if_untagged` (all tristate `*bool`); resolved via `resolveTristate(user, adminDefault, pluginFallback)`, `ratingTagOrder`
+  - Each user: `username`, `skip_already_rated` / `clear_rating_if_untagged` (both tristate `*bool`); resolved via `resolveTristate(user, adminDefault, pluginFallback)`, `ratingTagOrder`
 
 ## Supported tag formats
 
@@ -73,7 +73,7 @@ When `incremental_sync` is true (default), each (library, user) tuple records th
 
 Incremental sync skips per-*file* work but still pages the whole `search3` listing. The gate (in `runSyncChunk`, helper in `library.go`) eliminates the listing too: when starting a **fresh** pair, it compares the library's `LastScanAt` (`host.LibraryGetLibrary`, unix seconds) against the stored `last-synced` threshold and, if `lastScan.Before(threshold)` (Navidrome hasn't rescanned since our last sweep), **skips the entire pair** with no paging.
 
-- Gate condition: `cur.Offset == 0 && cur.PairStart == "" && cfg.IncrementalSync && !cur.Single && !threshold.IsZero()`. Single (user-triggered) scans and `incremental_sync=false` bypass it.
+- Gate condition: `cur.Offset == 0 && cur.PairStart == "" && cfg.IncrementalSync && !threshold.IsZero()`. `incremental_sync=false` bypasses it.
 - A gated skip **must not save** the threshold — it stays pinned to the last *real* sweep, so when Navidrome eventually rescans, the per-file mtime path still re-processes the files that changed. Reuses the existing `last-synced` value; both `LastScanAt` and `PairStart` are host-clock so comparable. No new KV key.
 - `libraryLastScan` fails **open** (returns `(zero,false)` → page) on a non-numeric library ID, host error, or `LastScanAt==0`. Library IDs must be numeric (Navidrome's internal IDs are) for the gate to engage. `cachedLibraryLastScan` memoises per call so N users of one library cost one host call.
 - Requires the `library` permission (also what grants the filesystem reads) — the host registers the Library service only when `Permissions.Library != nil`.
@@ -84,8 +84,7 @@ Incremental sync skips per-*file* work but still pages the whole `search3` listi
 |----|---------|
 | `nd-rating-sync-recurring` | Cron-based full sync |
 | `nd-rating-sync-immediate` | One-shot at plugin init |
-| `nd-rating-sync-trigger-check` | Every 15 min — enqueues a single-pair continuation per `trigger_user_scan=true` user (does not scan inline) |
-| *(host-minted, empty ID)* | Sync continuation — scheduled by `runSyncStep` when `callBudget` is hit, payload carries the `syncCursor`. Falls through `OnCallback`'s `default` case back into `runSyncStep`. |
+| *(host-minted, empty ID)* | Sync continuation — scheduled by `runSyncStep` when `callBudget` is hit, payload carries the `syncCursor`. `OnCallback` routes every schedule ID into `runSyncStep`. |
 
 ## Sync execution (30s host limit)
 
@@ -93,7 +92,7 @@ Navidrome force-closes any plugin call exceeding **30 s** (`extism.Manifest.Time
 
 - `runSyncStep` runs one `callBudget` (20 s) slice via `runSyncChunk`, then either finishes (`sync complete`) or reschedules a one-time continuation carrying the `syncCursor` and returns.
 - The continuation uses an **empty** `scheduleID` so the host mints a unique one — reusing the firing entry's own ID would be rejected as a duplicate (the one-time entry is still registered during its own callback).
-- **Each callback is a fresh WASM instance** — Go package globals do NOT persist across calls. All cross-call state must live in the scheduler payload (`syncCursor`) or the KV store. (Consequence: the in-memory `lastUserScanTimes` cooldown map resets every call — a known limitation, not yet moved to KV.)
+- **Each callback is a fresh WASM instance** — Go package globals do NOT persist across calls. All cross-call state must live in the scheduler payload (`syncCursor`) or the KV store.
 - Forward progress is guaranteed: `processPairChunk` checks the deadline *after* each song, so every callback advances the cursor by ≥1 song; a continuation chain always terminates. `setRating` idempotency makes a re-processed song on resume harmless.
 - **Continuations fire immediately.** `SchedulerScheduleOneTime(0, …)` runs as `time.AfterFunc(0, …)` host-side, so the next slice starts at once — a big first import is a *continuous back-to-back chain* (minutes), **not** gated by the cron. The cron interval only governs how often a *fresh* sweep starts; convergence speed comes from the chain.
-- **Overlap guard.** A full sweep records/refreshes the `sweep-active` heartbeat (`markSweepActive`) on every callback; a *fresh* full sweep (`!resumed && !Single`) bows out via `sweepInProgress()` if a heartbeat is younger than `sweepStaleAfter` (2 min). On `done` it calls `clearSweepActive`; `OnInit` also clears it (a reload kills the chain). Continuations refresh but never run the in-progress check (so a chain can't block itself). Best-effort (no KV CAS) — idempotency covers the residual fresh-vs-fresh race. Single scans bypass the guard entirely.
+- **Overlap guard.** Every sweep records/refreshes the `sweep-active` heartbeat (`markSweepActive`) on every callback; a *fresh* sweep (`!resumed`) bows out via `sweepInProgress()` if a heartbeat is younger than `sweepStaleAfter` (2 min; a future-dated heartbeat from a backward clock step is clamped to "stale" too). On `done` it calls `clearSweepActive`; `OnInit` also clears it (a reload kills the chain). Continuations refresh but never run the in-progress check (so a chain can't block itself). Best-effort (no KV CAS) — idempotency covers the residual fresh-vs-fresh race.

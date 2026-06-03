@@ -14,8 +14,6 @@ its own; this plugin bridges file tags and the UI.
 |---------|---------|
 | Immediate on load | One-shot scan runs as soon as the plugin initialises |
 | Recurring (cron) | Configurable cron expression, **default hourly**; idle runs are cheap (see *Change-detection gate*), so a frequent schedule is inexpensive |
-| User-triggered | `trigger_user_scan=true` flag checked every 15 min; one-shot scan per user (bypasses the change-detection gate) |
-| Cooldown guard | Configurable minimum gap between user-triggered scans (default 24 h) |
 
 ---
 
@@ -35,8 +33,8 @@ Incremental sync skips the per-*file* work, but a naive sweep still pages the en
 
 - The gate reuses the existing `last-synced` timestamp; no extra state. A gated skip never advances that timestamp, so when Navidrome eventually rescans, the per-file incremental path still re-processes exactly the files that changed.
 - Fails **open**: any uncertainty (non-numeric library ID, host error, never-scanned library) falls back to paging — the gate can only *save* work, never skip work that should happen.
-- Bypassed by user-triggered (Single) scans and by `incremental_sync=false`, so an explicit "sync now" or a forced full scan always re-pages.
-- Because it aligns the plugin's work to Navidrome's own scans, a tag edit on an *existing* file is applied after Navidrome's next library scan (use a user-triggered scan to pick it up immediately).
+- Bypassed by `incremental_sync=false`, so a forced full scan always re-pages.
+- Because it aligns the plugin's work to Navidrome's own scans, a tag edit on an *existing* file is applied after Navidrome's next library scan (run one pass with `incremental_sync=false` to pick it up immediately).
 
 ---
 
@@ -71,7 +69,6 @@ Incremental sync skips the per-*file* work, but a naive sweep still pages the en
 - **Tag priority order** — `ratingTagOrder` list; first tag *found in the file* wins
 - **Skip already-rated** — songs with an existing Navidrome rating are left untouched (default on; can be disabled to allow overwrites)
 - **Clear rating if untagged** — when enabled, songs whose file contains no recognised rating tag have their Navidrome rating removed (set to 0); requires `skip_already_rated=false` to also affect previously-rated songs. Files the plugin cannot read (I/O error, permission denied, unsupported extension, unparseable container) are **never** cleared — they're counted under `skipped_unreadable` so a transient read failure cannot wipe a user's rating.
-- **Trigger scan flag** — set per user to request an on-demand scan without touching the cron schedule
 
 ---
 
@@ -99,7 +96,6 @@ Incremental sync skips the per-*file* work, but a naive sweep still pages the en
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `sync_schedule` | `0 * * * *` | Cron expression for recurring sync (hourly default; idle runs are cheap via the change-detection gate, so a frequent schedule is fine) |
-| `user_scan_cooldown_hours` | `24` | Minimum hours between user-triggered scans |
 | `incremental_sync` | `true` | Skip files whose mtime predates the last successful scan; set false to force a full rescan every run |
 | `dry_run` | `false` | Run the full scan pipeline without writing any ratings; logs `[DRY RUN] would_rate / would_clear` instead of calling `setRating`; does not advance the incremental-sync threshold |
 
@@ -122,7 +118,6 @@ Incremental sync skips the per-*file* work, but a naive sweep still pages the en
 - Continuations are rescheduled with **zero delay**, which the host runs as `time.AfterFunc(0, …)` — so the next slice fires immediately. A large first import runs as a *continuous, back-to-back* chain of quick callbacks (`… time budget reached – rescheduled continuation …` → `sync complete`), completing in minutes. **Convergence speed is driven by this chain, not by the cron** — the cron interval only governs how often a *fresh* sweep starts
 - **Overlap guard:** a full sweep records a short-lived heartbeat (`sweep-active` KV key) refreshed on every continuation; a freshly-triggered sweep skips if one is already running, so a frequent cron firing mid-import can't start a second concurrent chain. The heartbeat goes stale (≈2 min) so a crashed chain self-heals, and `OnInit` clears it on reload. Best-effort — `setRating` idempotency covers any residual race
 - Progress lives only in the scheduler payload + KV store — package globals do **not** survive between callbacks (fresh WASM instance per call)
-- The 15-minute user-trigger check **enqueues** a single-pair continuation per due user instead of scanning inline, so it too stays under the limit
 - The incremental-sync threshold for a `(library, user)` is saved only once that pair is fully processed, so an interrupted/continued sweep never advances the threshold past unprocessed songs
 
 ---

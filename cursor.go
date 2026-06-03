@@ -27,11 +27,10 @@ const callBudget = 20 * time.Second
 // continuations, and because setRating is idempotent a re-processed song is
 // harmless if it ever shifts.
 type syncCursor struct {
-	Lib       int    `json:"lib"`              // index into cfg.Libraries
-	User      int    `json:"user"`             // index into cfg.Libraries[Lib].Users
-	Offset    int    `json:"off"`              // next song index to process within this (lib,user)
-	PairStart string `json:"start"`            // RFC3339Nano scan-start for the current pair; saved as the incremental threshold when the pair completes
-	Single    bool   `json:"single,omitempty"` // when true, process only the current pair then stop (used by the user-triggered scan)
+	Lib       int    `json:"lib"`   // index into cfg.Libraries
+	User      int    `json:"user"`  // index into cfg.Libraries[Lib].Users
+	Offset    int    `json:"off"`   // next song index to process within this (lib,user)
+	PairStart string `json:"start"` // RFC3339Nano scan-start for the current pair; saved as the incremental threshold when the pair completes
 }
 
 // parseCursor decodes a scheduler payload into a syncCursor. An empty payload
