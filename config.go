@@ -23,6 +23,7 @@ type libraryConfig struct {
 type pluginConfig struct {
 	SyncSchedule                 string
 	UserScanCooldownHours        int
+	MaxSongsPerRun               int
 	IncrementalSync              bool
 	DryRun                       bool
 	DefaultTriggerUserScan       *bool
@@ -33,9 +34,9 @@ type pluginConfig struct {
 
 type jsonUserConfig struct {
 	Username              string   `json:"username"`
-	TriggerUserScan       *bool    `json:"trigger_user_scan"`       // pointer so null → default false
-	SkipAlreadyRated      *bool    `json:"skip_already_rated"`      // pointer so null/absent → default true
-	ClearRatingIfUntagged *bool    `json:"clear_rating_if_untagged"` // pointer so null → default false
+	TriggerUserScan       string   `json:"trigger_user_scan"`
+	SkipAlreadyRated      string   `json:"skip_already_rated"`
+	ClearRatingIfUntagged string   `json:"clear_rating_if_untagged"`
 	RatingTagOrder        []string `json:"ratingTagOrder"`
 }
 
@@ -137,9 +138,9 @@ func loadConfigFrom(get configGetter) pluginConfig {
 				for _, ru := range rl.Users {
 					uc := userConfig{
 						Username:              ru.Username,
-						TriggerUserScan:       resolveTristate(ru.TriggerUserScan, cfg.DefaultTriggerUserScan, false),
-						SkipAlreadyRated:      resolveTristate(ru.SkipAlreadyRated, cfg.DefaultSkipAlreadyRated, true),
-						ClearRatingIfUntagged: resolveTristate(ru.ClearRatingIfUntagged, cfg.DefaultClearRatingIfUntagged, false),
+						TriggerUserScan:       resolveTristate(parseTristateConfig(ru.TriggerUserScan), cfg.DefaultTriggerUserScan, false),
+						SkipAlreadyRated:      resolveTristate(parseTristateConfig(ru.SkipAlreadyRated), cfg.DefaultSkipAlreadyRated, true),
+						ClearRatingIfUntagged: resolveTristate(parseTristateConfig(ru.ClearRatingIfUntagged), cfg.DefaultClearRatingIfUntagged, false),
 						RatingTagOrder:        ru.RatingTagOrder,
 					}
 					if len(uc.RatingTagOrder) == 0 {

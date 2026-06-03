@@ -89,15 +89,54 @@ func TestLoadConfig_SkipAlreadyRatedDefaultsTrue(t *testing.T) {
 }
 
 func TestLoadConfig_SkipAlreadyRatedCanBeDisabled(t *testing.T) {
-	falseVal := false
 	libs := []map[string]any{
 		{
 			"libraryId": "lib1",
-			"users":     []map[string]any{{"username": "carol", "skip_already_rated": falseVal}},
+			"users":     []map[string]any{{"username": "carol", "skip_already_rated": "no"}},
 		},
 	}
 	raw, _ := json.Marshal(libs)
 	cfg := loadConfigFrom(mapGetter(map[string]string{"libraries": string(raw)}))
+	assert.False(t, cfg.Libraries[0].Users[0].SkipAlreadyRated)
+}
+
+func TestLoadConfig_TristateStringValues(t *testing.T) {
+	libs := []map[string]any{
+		{
+			"libraryId": "lib1",
+			"users": []map[string]any{
+				{"username": "carol", "skip_already_rated": "no", "trigger_user_scan": "yes", "clear_rating_if_untagged": "yes"},
+			},
+		},
+	}
+	raw, _ := json.Marshal(libs)
+	cfg := loadConfigFrom(mapGetter(map[string]string{"libraries": string(raw)}))
+	u := cfg.Libraries[0].Users[0]
+	assert.False(t, u.SkipAlreadyRated, `"no" → false`)
+	assert.True(t, u.TriggerUserScan, `"yes" → true`)
+	assert.True(t, u.ClearRatingIfUntagged, `"yes" → true`)
+}
+
+func TestLoadConfig_TristateInheritUsesPluginFallback(t *testing.T) {
+	libs := []map[string]any{
+		{"libraryId": "lib1", "users": []map[string]any{{"username": "carol", "skip_already_rated": "inherit"}}},
+	}
+	raw, _ := json.Marshal(libs)
+	// No admin default set → "inherit" resolves to the plugin fallback (true).
+	cfg := loadConfigFrom(mapGetter(map[string]string{"libraries": string(raw)}))
+	assert.True(t, cfg.Libraries[0].Users[0].SkipAlreadyRated)
+}
+
+func TestLoadConfig_AdminDefaultStringAppliesToInheritUser(t *testing.T) {
+	libs := []map[string]any{
+		{"libraryId": "lib1", "users": []map[string]any{{"username": "carol"}}},
+	}
+	raw, _ := json.Marshal(libs)
+	// User leaves skip_already_rated unset → admin default "no" applies.
+	cfg := loadConfigFrom(mapGetter(map[string]string{
+		"libraries":                  string(raw),
+		"default_skip_already_rated": "no",
+	}))
 	assert.False(t, cfg.Libraries[0].Users[0].SkipAlreadyRated)
 }
 
