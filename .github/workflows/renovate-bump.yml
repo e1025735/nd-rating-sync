@@ -56,7 +56,7 @@ jobs:
         run: go test ./...
 
       - name: Set up TinyGo
-        uses: tinygo-org/setup-tinygo@v1
+        uses: acifani/setup-tinygo@v3
         with:
           tinygo-version: '0.41.1'
 
