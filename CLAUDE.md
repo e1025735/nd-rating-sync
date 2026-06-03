@@ -6,11 +6,13 @@ Navidrome plugin (WASM) that reads embedded star-rating tags from MP3, FLAC, Ogg
 
 | File | Responsibility |
 |------|---------------|
-| `main.go` | Entry points — lifecycle init, scheduler callback registration via `ratingPlugin` |
+| `main.go` | Entry points — lifecycle init (`OnInit` clears the in-progress guard on load), scheduler callback registration, and `runSyncStep` / `runSyncStepUntil` (one budgeted slice of a sync; checks/refreshes the `sweep-active` overlap guard for full sweeps, reschedules a continuation when the budget is hit) via `ratingPlugin` |
 | `config.go` | Config types (`pluginConfig`, `libraryConfig`, `userConfig`) and `loadConfig()` |
-| `scanner.go` | Sync orchestration — `runSync`, `runSyncForUser`, `checkAndRunUserTriggeredScan`, `extractStarsFromFile` returning a `fileReadResult` (`tagFound` / `tagAbsent` / `fileUnreadable`) so I/O failures, oversize files (`maxAudioFileBytes` = 64 MiB), unsupported extensions, and parser panics never trigger `clear_rating_if_untagged`. `readAudioFile` enforces the size cap; `dispatchParser` recovers panics from any container parser so one hostile file can't kill the whole sync. |
-| `state.go` | Incremental-sync state — `loadLastSynced` / `saveLastSynced` backed by `host.KVStore`. KV key is `"last-synced:" + url.QueryEscape(libraryID) + ":" + url.QueryEscape(username)` so a `:` in either component can't collide with a different tuple. |
-| `subsonic.go` | Subsonic API domain — response types, `fetchAllSongs`, `setRating` |
+| `cursor.go` | `syncCursor` (resumable position carried in the scheduler payload), `parseCursor` / `marshal`, and `callBudget` (20 s — the per-callback wall-clock budget, well under Navidrome's hardcoded 30 s plugin-call limit) |
+| `scanner.go` | Sync engine — `runSyncChunk` (walks library/user pairs until the deadline; loads each pair's threshold and applies the **LastScanAt gate** — skips a fresh, non-Single pair whose library has not been rescanned since the stored threshold, without saving), `processPairChunk` (one pair from a song offset, takes the threshold as a param, checks the deadline after each song), `processSong`, `checkAndRunUserTriggeredScan` (enqueues a single-pair continuation per due user — never scans inline), and a thin `runSyncForUser` wrapper. `extractStarsFromFile` returns a `fileReadResult` (`tagFound` / `tagAbsent` / `fileUnreadable`) so I/O failures, oversize files (`maxAudioFileBytes` = 64 MiB), unsupported extensions, and parser panics never trigger `clear_rating_if_untagged`. `readAudioFile` enforces the size cap; `dispatchParser` recovers panics from any container parser so one hostile file can't kill the whole sync. |
+| `state.go` | KV-backed state — `loadLastSynced` / `saveLastSynced` (incremental threshold; KV key `"last-synced:" + url.QueryEscape(libraryID) + ":" + url.QueryEscape(username)` so a `:` in either component can't collide with a different tuple), plus the overlap-guard helpers `sweepInProgress` / `markSweepActive` / `clearSweepActive` (`sweep-active` heartbeat key, `sweepStaleAfter` = 2 min). All KV failures fail open. |
+| `subsonic.go` | Subsonic API domain — response types, `fetchSongPage` (single lazy page), `fetchAllSongs` (wrapper that loops it), `setRating` |
+| `library.go` | `libraryLastScan` — wraps `host.LibraryGetLibrary` (empty libraryID → `LibraryGetAllLibraries`, newest `LastScanAt`) for the change-detection gate; returns `(zero,false)` on any uncertainty so the gate fails open. `cachedLibraryLastScan` memoises it per `runSyncChunk` call. |
 | `id3.go` | ID3v2 tag parsing (`parseID3v2Rating`) — dispatches by per-user `tagOrder` |
 | `flac.go` | FLAC + Vorbis comment parsing (`parseFLACVorbisComments`, `parseFLACRating`) plus the shared `ratingFromVorbisComments` resolver — hand-rolled, no external dep. Comment count is clamped to `maxVorbisComments` (1024) so a crafted block declaring `count = 2^32` can't burn millions of allocations before the byte budget runs out. |
 | `ogg.go` | Ogg page walker (`extractOggPackets`) and Vorbis/Opus comment dispatch (`parseOggVorbisRating`) — hand-rolled, no external dep |
@@ -19,7 +21,7 @@ Navidrome plugin (WASM) that reads embedded star-rating tags from MP3, FLAC, Ogg
 | `m4a.go` | MP4 atom walker (`walkAtoms`, `findAtom`, `parseM4ARating`) — resolves freeform `----` atoms for FMPS_Rating, RATING, and rating |
 | `wma.go` | ASF header walker (`parseWMARating`, `parseASFExtContentDesc`, `decodeUTF16LE`) — reads `WM/SharedUserRating` and `FMPS_Rating` from Extended Content Description Object |
 | `rating.go` | Pure converters: `fmpsToStars`, `ratingIntToStars`, `popmWMPToStars`, `popmITunesToStars` |
-| `manifest.json` | Plugin metadata, `permissions`, and `config` (draft-07 JSON Schema + **JSONForms** `uiSchema`). Permission key is `library` (singular) + `filesystem:true`; capabilities are auto-detected from exported WASM functions, **not** declared here. See the manifest-format note under Build. |
+| `manifest.json` | Plugin metadata, capabilities, JSON Schema config definition |
 
 ## Build
 
@@ -32,29 +34,15 @@ zip -j nd-rating-sync.ndp manifest.json plugin.wasm
 
 `go test ./...` and `go vet ./...` work on the regular toolchain (CI runs both). `pdk_stub.go` is `//go:build !wasip1` and provides no-op stand-ins for `logInfo`/`logDebug`/`logWarn`/`getConfig`; the Navidrome PDK ships matching non-wasip1 stubs for `host.*`. Only `GOARCH=wasm GOOS=wasip1 go vet ./...` fails — host imports have no Go function bodies under wasip1; TinyGo wires them up at link time. That part is expected.
 
-### Manifest format (Navidrome ≥ v0.61)
-
-`manifest.json` is validated against `plugins/manifest-schema.json` in the Navidrome module (top-level and per-permission `additionalProperties:false`). Navidrome's `ParseManifest` does a plain `json.Unmarshal`, so **unknown keys are silently dropped** — a typo means the feature just doesn't take effect. Gotchas (fixed across v0.9.1–v0.9.4):
-
-- **Permissions:** the library permission key is `library` (singular) with `filesystem:true` for disk reads — *not* `libraries`, and there is no `allowWrite`. Wrong key ⇒ no filesystem access. Mirror the `library-inspector-rs` example.
-- **No `capabilities` / `homepage` keys:** capabilities come from the exported functions registered in [main.go](main.go) (`lifecycle.Register`/`scheduler.Register`); the repo/URL field is `website`.
-- **Config UI is JSONForms-Material 2.5 + ajv v6** (renderers in Navidrome's `ui/src/plugin/`; `uiSchema` is passed through untransformed). The `uiSchema` must use `VerticalLayout`/`Control` with `scope: "#/properties/<field>"` (object arrays — including nested ones — via `options.detail` + `elementLabelProp`; scopes inside a detail are relative to the array's *item* schema). A react-jsonschema-form root (`ui:widget`/`ui:placeholder`/`ui:enumNames`) has no valid `type`, so the **whole** Configuration section shows **"No applicable renderer found."** Working reference manifests: `discord-rich-presence-rs` (in-repo) and [kgarner7/navidrome-listenbrainz-daily-playlist](https://github.com/kgarner7/navidrome-listenbrainz-daily-playlist).
-- **Stick to renderable constructs:** plain `boolean`/`integer`/`string`, nested object arrays, and `oneOf` of **string** `const`/`title`. Material has **no renderer/cell for `["type","null"]` union types or `const:null`** — avoid them.
-- **Ordered vs multi-select arrays:** an enum array with `uniqueItems:true` renders as an **unordered** checkbox group (`MaterialEnumArrayRenderer`). For an **ordered** priority list (e.g. `ratingTagOrder`), omit `uniqueItems`, give `items` a primitive `type:"string"`+`enum`, and set the Control's `options.showSortButtons:true` so the list gets add/remove **and up/down** controls.
-- **Tristate fields** (per-user `trigger_user_scan`/`skip_already_rated`/`clear_rating_if_untagged` + admin `default_*`) are a **string** `oneOf` (`"inherit"`/`"yes"`/`"no"`). They're plain `string` fields in [config.go](config.go), mapped to `*bool` by `parseTristateConfig` (`"inherit"`/empty/absent → nil), so `resolveTristate` is unchanged.
-- **Reloading:** Navidrome caches the manifest (read from the `.ndp`). After editing `manifest.json` you must **restart Navidrome** (or set `Plugins.AutoReload=true`, or bump `version`/reinstall) for changes to show — otherwise the UI keeps rendering the *old* manifest. Confirm via the plugin's Manifest panel. A `config.go` change also requires rebuilding `plugin.wasm`.
-
-Validate after edits: the manifest against `manifest-schema.json` and the inner `config.schema` as draft-07 (e.g. `npx ajv-cli@5 validate -s <schema> -d manifest.json --spec=draft2020 --strict=false`).
-
 ## Config model (v0.3.0+)
 
 Config is a hierarchical JSON Schema (not a flat key-value list):
 
-- Top-level admin scalars read via `pdk.GetConfig`: `sync_schedule`, `user_scan_cooldown_hours`, `max_songs_per_run`, `dry_run`
-- Top-level admin tristate defaults (also via `pdk.GetConfig`): `default_trigger_user_scan`, `default_skip_already_rated`, `default_clear_rating_if_untagged` — the schema sends `"inherit"`/`"yes"`/`"no"`; `parseTristateConfig` maps them to a `*bool` in `pluginConfig` (`nil` = no admin default)
+- Top-level admin scalars read via `pdk.GetConfig`: `sync_schedule` (defaults to hourly `0 * * * *` — idle runs are cheap thanks to the LastScanAt gate, so a frequent schedule is fine), `user_scan_cooldown_hours`, `incremental_sync`, `dry_run` (there is no song cap — chunking + the `callBudget` keep runs safe; see **Sync execution**)
+- Top-level admin tristate defaults (also via `pdk.GetConfig`): `default_trigger_user_scan`, `default_skip_already_rated`, `default_clear_rating_if_untagged` — each a `*bool` in `pluginConfig`; `nil` = no admin default
 - `libraries` array read via `pdk.GetConfig("libraries")` as a JSON string, then unmarshaled:
   - Each library: `libraryId`, `libraryName`, `users[]`
-  - Each user: `username`, `trigger_user_scan` / `skip_already_rated` / `clear_rating_if_untagged` (string `"inherit"`/`"yes"`/`"no"` in JSON, mapped to `*bool` by `parseTristateConfig`); resolved via `resolveTristate(user, adminDefault, pluginFallback)`, `ratingTagOrder`
+  - Each user: `username`, `trigger_user_scan` / `skip_already_rated` / `clear_rating_if_untagged` (all tristate `*bool`); resolved via `resolveTristate(user, adminDefault, pluginFallback)`, `ratingTagOrder`
 
 ## Supported tag formats
 
@@ -76,10 +64,19 @@ Per-user `ratingTagOrder` controls priority; first match in the file wins. Sourc
 When `incremental_sync` is true (default), each (library, user) tuple records the wall-clock time of its last successful scan in the Navidrome KV store and skips songs whose file mtime predates it.
 
 - KV key: `last-synced:{libraryID}:{username}` (plugin-scoped by the host).
-- Value: scan-start timestamp (captured at function entry) as RFC3339Nano UTC.
+- Value: scan-start timestamp, captured when the pair *starts* (carried as `syncCursor.PairStart` across continuations) and written only when the pair is **fully** processed — so an interrupted/resumed sweep never advances the threshold past songs it hasn't reached yet. RFC3339Nano UTC.
 - Skip rule: `os.Stat(path).ModTime().Before(threshold)` — exact-equality files re-process, which keeps `setRating` idempotent and avoids drift if mtime resolution is coarser than expected.
 - Failure modes are non-fatal: a missing/malformed/unreadable KV value falls back to "no threshold" (full scan); a KV write failure means the next run does redundant work, never incorrect work.
 - Set `incremental_sync=false` to force a full scan every run — useful after a user changes `ratingTagOrder`, since tag-order changes don't auto-invalidate the threshold.
+
+### LastScanAt gate (skip unchanged libraries)
+
+Incremental sync skips per-*file* work but still pages the whole `search3` listing. The gate (in `runSyncChunk`, helper in `library.go`) eliminates the listing too: when starting a **fresh** pair, it compares the library's `LastScanAt` (`host.LibraryGetLibrary`, unix seconds) against the stored `last-synced` threshold and, if `lastScan.Before(threshold)` (Navidrome hasn't rescanned since our last sweep), **skips the entire pair** with no paging.
+
+- Gate condition: `cur.Offset == 0 && cur.PairStart == "" && cfg.IncrementalSync && !cur.Single && !threshold.IsZero()`. Single (user-triggered) scans and `incremental_sync=false` bypass it.
+- A gated skip **must not save** the threshold — it stays pinned to the last *real* sweep, so when Navidrome eventually rescans, the per-file mtime path still re-processes the files that changed. Reuses the existing `last-synced` value; both `LastScanAt` and `PairStart` are host-clock so comparable. No new KV key.
+- `libraryLastScan` fails **open** (returns `(zero,false)` → page) on a non-numeric library ID, host error, or `LastScanAt==0`. Library IDs must be numeric (Navidrome's internal IDs are) for the gate to engage. `cachedLibraryLastScan` memoises per call so N users of one library cost one host call.
+- Requires the `library` permission (also what grants the filesystem reads) — the host registers the Library service only when `Permissions.Library != nil`.
 
 ## Scheduler IDs
 
@@ -87,4 +84,16 @@ When `incremental_sync` is true (default), each (library, user) tuple records th
 |----|---------|
 | `nd-rating-sync-recurring` | Cron-based full sync |
 | `nd-rating-sync-immediate` | One-shot at plugin init |
-| `nd-rating-sync-trigger-check` | Every 15 min — polls `trigger_user_scan=true` per user |
+| `nd-rating-sync-trigger-check` | Every 15 min — enqueues a single-pair continuation per `trigger_user_scan=true` user (does not scan inline) |
+| *(host-minted, empty ID)* | Sync continuation — scheduled by `runSyncStep` when `callBudget` is hit, payload carries the `syncCursor`. Falls through `OnCallback`'s `default` case back into `runSyncStep`. |
+
+## Sync execution (30s host limit)
+
+Navidrome force-closes any plugin call exceeding **30 s** (`extism.Manifest.Timeout`, hardcoded in the host's `manager_loader.go`; not configurable by the plugin). So no callback may do unbounded work:
+
+- `runSyncStep` runs one `callBudget` (20 s) slice via `runSyncChunk`, then either finishes (`sync complete`) or reschedules a one-time continuation carrying the `syncCursor` and returns.
+- The continuation uses an **empty** `scheduleID` so the host mints a unique one — reusing the firing entry's own ID would be rejected as a duplicate (the one-time entry is still registered during its own callback).
+- **Each callback is a fresh WASM instance** — Go package globals do NOT persist across calls. All cross-call state must live in the scheduler payload (`syncCursor`) or the KV store. (Consequence: the in-memory `lastUserScanTimes` cooldown map resets every call — a known limitation, not yet moved to KV.)
+- Forward progress is guaranteed: `processPairChunk` checks the deadline *after* each song, so every callback advances the cursor by ≥1 song; a continuation chain always terminates. `setRating` idempotency makes a re-processed song on resume harmless.
+- **Continuations fire immediately.** `SchedulerScheduleOneTime(0, …)` runs as `time.AfterFunc(0, …)` host-side, so the next slice starts at once — a big first import is a *continuous back-to-back chain* (minutes), **not** gated by the cron. The cron interval only governs how often a *fresh* sweep starts; convergence speed comes from the chain.
+- **Overlap guard.** A full sweep records/refreshes the `sweep-active` heartbeat (`markSweepActive`) on every callback; a *fresh* full sweep (`!resumed && !Single`) bows out via `sweepInProgress()` if a heartbeat is younger than `sweepStaleAfter` (2 min). On `done` it calls `clearSweepActive`; `OnInit` also clears it (a reload kills the chain). Continuations refresh but never run the in-progress check (so a chain can't block itself). Best-effort (no KV CAS) — idempotency covers the residual fresh-vs-fresh race. Single scans bypass the guard entirely.

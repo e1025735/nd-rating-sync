@@ -21,25 +21,21 @@ type libraryConfig struct {
 }
 
 type pluginConfig struct {
-	SyncSchedule                string
-	UserScanCooldownHours       int
-	MaxSongsPerRun              int
-	IncrementalSync             bool
-	DryRun                      bool
-	DefaultTriggerUserScan      *bool
-	DefaultSkipAlreadyRated     *bool
+	SyncSchedule                 string
+	UserScanCooldownHours        int
+	IncrementalSync              bool
+	DryRun                       bool
+	DefaultTriggerUserScan       *bool
+	DefaultSkipAlreadyRated      *bool
 	DefaultClearRatingIfUntagged *bool
-	Libraries                   []libraryConfig
+	Libraries                    []libraryConfig
 }
 
 type jsonUserConfig struct {
-	Username string `json:"username"`
-	// Per-user tristates are a string oneOf ("inherit"/"yes"/"no") in the config
-	// schema — JSONForms-Material has no renderer for ["boolean","null"] union
-	// types. parseTristateConfig maps the value to *bool ("inherit"/empty/absent → nil).
-	TriggerUserScan       string   `json:"trigger_user_scan"`
-	SkipAlreadyRated      string   `json:"skip_already_rated"`
-	ClearRatingIfUntagged string   `json:"clear_rating_if_untagged"`
+	Username              string   `json:"username"`
+	TriggerUserScan       *bool    `json:"trigger_user_scan"`       // pointer so null → default false
+	SkipAlreadyRated      *bool    `json:"skip_already_rated"`      // pointer so null/absent → default true
+	ClearRatingIfUntagged *bool    `json:"clear_rating_if_untagged"` // pointer so null → default false
 	RatingTagOrder        []string `json:"ratingTagOrder"`
 }
 
@@ -87,9 +83,8 @@ func loadConfig() pluginConfig { return loadConfigFrom(getConfig) }
 
 func loadConfigFrom(get configGetter) pluginConfig {
 	cfg := pluginConfig{
-		SyncSchedule:          "0 */6 * * *",
+		SyncSchedule:          "0 * * * *",
 		UserScanCooldownHours: 24,
-		MaxSongsPerRun:        500,
 		IncrementalSync:       true,
 	}
 
@@ -130,16 +125,6 @@ func loadConfigFrom(get configGetter) pluginConfig {
 	if v, ok := get("default_clear_rating_if_untagged"); ok {
 		cfg.DefaultClearRatingIfUntagged = parseTristateConfig(v)
 	}
-	if v, ok := get("max_songs_per_run"); ok {
-		var n int
-		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n >= 0 {
-			cfg.MaxSongsPerRun = n
-		} else {
-			logWarn(fmt.Sprintf(
-				"nd-rating-sync: invalid max_songs_per_run=%q – using default %d", v, cfg.MaxSongsPerRun))
-		}
-	}
-
 	if v, ok := get("libraries"); ok && v != "" {
 		var rawLibs []jsonLibraryConfig
 		if err := json.Unmarshal([]byte(v), &rawLibs); err != nil {
@@ -152,9 +137,9 @@ func loadConfigFrom(get configGetter) pluginConfig {
 				for _, ru := range rl.Users {
 					uc := userConfig{
 						Username:              ru.Username,
-						TriggerUserScan:       resolveTristate(parseTristateConfig(ru.TriggerUserScan), cfg.DefaultTriggerUserScan, false),
-						SkipAlreadyRated:      resolveTristate(parseTristateConfig(ru.SkipAlreadyRated), cfg.DefaultSkipAlreadyRated, true),
-						ClearRatingIfUntagged: resolveTristate(parseTristateConfig(ru.ClearRatingIfUntagged), cfg.DefaultClearRatingIfUntagged, false),
+						TriggerUserScan:       resolveTristate(ru.TriggerUserScan, cfg.DefaultTriggerUserScan, false),
+						SkipAlreadyRated:      resolveTristate(ru.SkipAlreadyRated, cfg.DefaultSkipAlreadyRated, true),
+						ClearRatingIfUntagged: resolveTristate(ru.ClearRatingIfUntagged, cfg.DefaultClearRatingIfUntagged, false),
 						RatingTagOrder:        ru.RatingTagOrder,
 					}
 					if len(uc.RatingTagOrder) == 0 {
@@ -168,7 +153,7 @@ func loadConfigFrom(get configGetter) pluginConfig {
 	}
 
 	logDebug(fmt.Sprintf(
-		"nd-rating-sync: config – libraries=%d sync_schedule=%q max_songs_per_run=%d",
-		len(cfg.Libraries), cfg.SyncSchedule, cfg.MaxSongsPerRun))
+		"nd-rating-sync: config – libraries=%d sync_schedule=%q incremental=%v",
+		len(cfg.Libraries), cfg.SyncSchedule, cfg.IncrementalSync))
 	return cfg
 }

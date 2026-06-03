@@ -13,8 +13,8 @@ its own; this plugin bridges file tags and the UI.
 | Trigger | Details |
 |---------|---------|
 | Immediate on load | One-shot scan runs as soon as the plugin initialises |
-| Recurring (cron) | Configurable cron expression, default every 6 hours |
-| User-triggered | `trigger_user_scan="yes"` flag checked every 15 min; one-shot scan per user |
+| Recurring (cron) | Configurable cron expression, **default hourly**; idle runs are cheap (see *Change-detection gate*), so a frequent schedule is inexpensive |
+| User-triggered | `trigger_user_scan=true` flag checked every 15 min; one-shot scan per user (bypasses the change-detection gate) |
 | Cooldown guard | Configurable minimum gap between user-triggered scans (default 24 h) |
 
 ---
@@ -26,6 +26,17 @@ After a successful scan, the timestamp is persisted per `(library, user)` in Nav
 - Skip is decided by `os.Stat(path).ModTime()` vs the stored threshold — file mtime is the right signal because tag editors update it the moment the user saves a rating, regardless of whether Navidrome's own library scan has caught up.
 - KV failures are non-fatal: missing/corrupt state falls back to a full scan; failed writes mean the next run does redundant work, never incorrect work.
 - Disable with `incremental_sync=false` to force a full scan every run (useful after changing a user's `ratingTagOrder`).
+
+---
+
+## Change-detection gate (skip unchanged libraries)
+
+Incremental sync skips the per-*file* work, but a naive sweep still pages the entire `search3` listing every run. The change-detection gate eliminates that too: before paging a `(library, user)` pair, the plugin asks Navidrome for the library's `LastScanAt` (one `LibraryGetLibrary` metadata call). If Navidrome has **not** rescanned the library since our last completed sweep, the **whole pair is skipped** — no song paging at all. A fully-synced, unchanged library therefore costs ~one metadata call per library per run instead of hundreds of `search3` pages.
+
+- The gate reuses the existing `last-synced` timestamp; no extra state. A gated skip never advances that timestamp, so when Navidrome eventually rescans, the per-file incremental path still re-processes exactly the files that changed.
+- Fails **open**: any uncertainty (non-numeric library ID, host error, never-scanned library) falls back to paging — the gate can only *save* work, never skip work that should happen.
+- Bypassed by user-triggered (Single) scans and by `incremental_sync=false`, so an explicit "sync now" or a forced full scan always re-pages.
+- Because it aligns the plugin's work to Navidrome's own scans, a tag edit on an *existing* file is applied after Navidrome's next library scan (use a user-triggered scan to pick it up immediately).
 
 ---
 
@@ -59,7 +70,7 @@ After a successful scan, the timestamp is persisted per `(library, user)` in Nav
 
 - **Tag priority order** — `ratingTagOrder` list; first tag *found in the file* wins
 - **Skip already-rated** — songs with an existing Navidrome rating are left untouched (default on; can be disabled to allow overwrites)
-- **Clear rating if untagged** — when enabled, songs whose file contains no recognised rating tag have their Navidrome rating removed (set to 0); requires `skip_already_rated="no"` to also affect previously-rated songs. Files the plugin cannot read (I/O error, permission denied, unsupported extension, unparseable container) are **never** cleared — they're counted under `skipped_unreadable` so a transient read failure cannot wipe a user's rating.
+- **Clear rating if untagged** — when enabled, songs whose file contains no recognised rating tag have their Navidrome rating removed (set to 0); requires `skip_already_rated=false` to also affect previously-rated songs. Files the plugin cannot read (I/O error, permission denied, unsupported extension, unparseable container) are **never** cleared — they're counted under `skipped_unreadable` so a transient read failure cannot wipe a user's rating.
 - **Trigger scan flag** — set per user to request an on-demand scan without touching the cron schedule
 
 ---
@@ -87,9 +98,8 @@ After a successful scan, the timestamp is persisted per `(library, user)` in Nav
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `sync_schedule` | `0 */6 * * *` | Cron expression for recurring sync |
+| `sync_schedule` | `0 * * * *` | Cron expression for recurring sync (hourly default; idle runs are cheap via the change-detection gate, so a frequent schedule is fine) |
 | `user_scan_cooldown_hours` | `24` | Minimum hours between user-triggered scans |
-| `max_songs_per_run` | `500` | Song cap per scheduled run (0 = unlimited) |
 | `incremental_sync` | `true` | Skip files whose mtime predates the last successful scan; set false to force a full rescan every run |
 | `dry_run` | `false` | Run the full scan pipeline without writing any ratings; logs `[DRY RUN] would_rate / would_clear` instead of calling `setRating`; does not advance the incremental-sync threshold |
 
@@ -97,9 +107,23 @@ After a successful scan, the timestamp is persisted per `(library, user)` in Nav
 
 ## Subsonic API usage
 
-- Paginates `search3` (500 songs/page) to fetch the full song list per user/library
-- Calls `setRating` once per song where a tag was found
+- Paginates `search3` (500 songs/page) lazily — fetches only the page the current chunk needs, so a resumed sync re-reads at most one page
+- Calls `setRating` once per song where a tag was found (idempotent)
 - Reads `userRating` from the search response to implement skip-already-rated
+- Calls the `LibraryGetLibrary` host function once per library per run to read `LastScanAt` for the change-detection gate — skipping `search3` paging entirely when the library is unchanged
+
+---
+
+## Sync execution model
+
+- Every scheduler callback is bound by Navidrome's hard **30s** plugin-call limit (force-closes the WASM module otherwise — not configurable by the plugin)
+- Each callback processes songs for a **~20s budget** (`callBudget`), then stops
+- If songs remain, the callback serialises a cursor — `(library index, user index, song offset, pair scan-start)` — into the payload of a fresh one-time callback (empty schedule ID → host mints a unique one) and returns; the continuation resumes exactly there
+- Continuations are rescheduled with **zero delay**, which the host runs as `time.AfterFunc(0, …)` — so the next slice fires immediately. A large first import runs as a *continuous, back-to-back* chain of quick callbacks (`… time budget reached – rescheduled continuation …` → `sync complete`), completing in minutes. **Convergence speed is driven by this chain, not by the cron** — the cron interval only governs how often a *fresh* sweep starts
+- **Overlap guard:** a full sweep records a short-lived heartbeat (`sweep-active` KV key) refreshed on every continuation; a freshly-triggered sweep skips if one is already running, so a frequent cron firing mid-import can't start a second concurrent chain. The heartbeat goes stale (≈2 min) so a crashed chain self-heals, and `OnInit` clears it on reload. Best-effort — `setRating` idempotency covers any residual race
+- Progress lives only in the scheduler payload + KV store — package globals do **not** survive between callbacks (fresh WASM instance per call)
+- The 15-minute user-trigger check **enqueues** a single-pair continuation per due user instead of scanning inline, so it too stays under the limit
+- The incremental-sync threshold for a `(library, user)` is saved only once that pair is fully processed, so an interrupted/continued sweep never advances the threshold past unprocessed songs
 
 ---
 
@@ -109,4 +133,4 @@ After a successful scan, the timestamp is persisted per `(library, user)` in Nav
 - Does not support container formats beyond MP3, FLAC, Ogg-Vorbis, Opus, WAV, DSF, M4A/AAC, and WMA (AIFF, WavPack, DFF, etc. are skipped with a warning)
 - Does not support tag formats beyond WMP POPM, iTunes POPM, MediaMonkey/foobar2000 FMPS_Rating, and foobar2000 RATING
 - Does not import ratings in the other direction (Navidrome → file)
-- Does not deduplicate the Subsonic `search3` request itself — incremental sync skips per-file work, but the song list is still fetched in full each run
+- Does not cache the Subsonic `search3` results between callbacks — each chunk fetches the page(s) it needs. A sweep of a *changed* library still enumerates it page by page (incremental sync skips the per-file work within); a sweep of an *unchanged* library is skipped wholesale by the change-detection gate, so it does no paging at all

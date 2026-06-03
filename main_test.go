@@ -21,9 +21,9 @@ func resetSchedulerMock(t *testing.T) {
 
 func TestRegisterSchedules_DefaultCron(t *testing.T) {
 	resetSchedulerMock(t)
-	cfg := pluginConfig{SyncSchedule: "0 */6 * * *"}
+	cfg := pluginConfig{SyncSchedule: "0 * * * *"}
 
-	host.SchedulerMock.On("ScheduleRecurring", "0 */6 * * *", "", scheduleID).Return("id-1", nil)
+	host.SchedulerMock.On("ScheduleRecurring", "0 * * * *", "", scheduleID).Return("id-1", nil)
 	host.SchedulerMock.On("ScheduleOneTime", int32(0), "", scheduleIDImmediate).Return("id-2", nil)
 	host.SchedulerMock.On("ScheduleRecurring", "*/15 * * * *", "", scheduleIDTriggerCheck).Return("id-3", nil)
 
@@ -45,12 +45,32 @@ func TestRegisterSchedules_CustomCron(t *testing.T) {
 
 func TestRegisterSchedules_RecurringFails(t *testing.T) {
 	resetSchedulerMock(t)
-	cfg := pluginConfig{SyncSchedule: "0 */6 * * *"}
+	cfg := pluginConfig{SyncSchedule: "0 * * * *"}
 
-	host.SchedulerMock.On("ScheduleRecurring", "0 */6 * * *", "", scheduleID).
+	host.SchedulerMock.On("ScheduleRecurring", "0 * * * *", "", scheduleID).
 		Return("", assert.AnError)
 
 	require.Error(t, registerSchedules(cfg))
+}
+
+// ─── OnInit ───────────────────────────────────────────────────────────────────
+
+// TestOnInit_ClearsSweepGuard proves OnInit drops any stale in-progress
+// heartbeat (a reload kills the chain it belonged to) before registering the
+// schedules, so the immediate-on-load sweep is never suppressed.
+func TestOnInit_ClearsSweepGuard(t *testing.T) {
+	resetSchedulerMock(t)
+	resetKVStoreMock(t)
+
+	host.KVStoreMock.On("Delete", "sweep-active").Return(nil)
+	// loadConfig() returns the hourly default and no libraries in non-WASM builds.
+	host.SchedulerMock.On("ScheduleRecurring", "0 * * * *", "", scheduleID).Return("id-1", nil)
+	host.SchedulerMock.On("ScheduleOneTime", int32(0), "", scheduleIDImmediate).Return("id-2", nil)
+	host.SchedulerMock.On("ScheduleRecurring", "*/15 * * * *", "", scheduleIDTriggerCheck).Return("id-3", nil)
+
+	require.NoError(t, ratingPlugin{}.OnInit())
+	host.KVStoreMock.AssertExpectations(t)
+	host.SchedulerMock.AssertExpectations(t)
 }
 
 // ─── OnCallback routing ──────────────────────────────────────────────────────
@@ -76,6 +96,24 @@ func TestOnCallback_ImmediateFallsThroughToSync(t *testing.T) {
 	err := ratingPlugin{}.OnCallback(scheduler.SchedulerCallbackRequest{ScheduleID: scheduleIDImmediate})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no libraries configured")
+}
+
+// TestOnCallback_UnknownIDsFallThroughToSync pins the forward-compat behaviour
+// of the dispatch: any schedule ID other than the trigger-check sentinel —
+// including a brand-new one the host might invent, an empty string, or the
+// host-minted IDs used for sync continuations — must route to runSyncStep
+// rather than be silently dropped. Without this guard, a future change to
+// scheduler IDs in main.go could cause callbacks to vanish without anyone
+// noticing.
+func TestOnCallback_UnknownIDsFallThroughToSync(t *testing.T) {
+	for _, id := range []string{"", "nd-rating-sync-some-future-id", "totally-foreign-id"} {
+		t.Run(id, func(t *testing.T) {
+			err := ratingPlugin{}.OnCallback(scheduler.SchedulerCallbackRequest{ScheduleID: id})
+			require.Error(t, err, "ID %q should route to runSyncStep (which errors on empty libraries)", id)
+			assert.Contains(t, err.Error(), "no libraries configured",
+				"ID %q must route to runSyncStep, not be silently dropped", id)
+		})
+	}
 }
 
 // ─── schedule ID constants ────────────────────────────────────────────────────

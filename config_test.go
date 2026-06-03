@@ -11,9 +11,8 @@ import (
 func TestLoadConfig_Defaults(t *testing.T) {
 	cfg := loadConfigFrom(mapGetter(map[string]string{}))
 
-	assert.Equal(t, "0 */6 * * *", cfg.SyncSchedule)
+	assert.Equal(t, "0 * * * *", cfg.SyncSchedule)
 	assert.Equal(t, 24, cfg.UserScanCooldownHours)
-	assert.Equal(t, 500, cfg.MaxSongsPerRun)
 	assert.True(t, cfg.IncrementalSync, "IncrementalSync should default to true")
 	assert.Empty(t, cfg.Libraries)
 }
@@ -41,7 +40,7 @@ func TestLoadConfig_SyncSchedule(t *testing.T) {
 
 func TestLoadConfig_SyncScheduleWhitespaceOnlyUsesDefault(t *testing.T) {
 	cfg := loadConfigFrom(mapGetter(map[string]string{"sync_schedule": "   "}))
-	assert.Equal(t, "0 */6 * * *", cfg.SyncSchedule)
+	assert.Equal(t, "0 * * * *", cfg.SyncSchedule)
 }
 
 func TestLoadConfig_CooldownHours(t *testing.T) {
@@ -52,21 +51,6 @@ func TestLoadConfig_CooldownHours(t *testing.T) {
 func TestLoadConfig_CooldownZeroDisablesCooldown(t *testing.T) {
 	cfg := loadConfigFrom(mapGetter(map[string]string{"user_scan_cooldown_hours": "0"}))
 	assert.Equal(t, 0, cfg.UserScanCooldownHours)
-}
-
-func TestLoadConfig_MaxSongsPerRun(t *testing.T) {
-	cfg := loadConfigFrom(mapGetter(map[string]string{"max_songs_per_run": "250"}))
-	assert.Equal(t, 250, cfg.MaxSongsPerRun)
-}
-
-func TestLoadConfig_MaxSongsZeroMeansUnlimited(t *testing.T) {
-	cfg := loadConfigFrom(mapGetter(map[string]string{"max_songs_per_run": "0"}))
-	assert.Equal(t, 0, cfg.MaxSongsPerRun)
-}
-
-func TestLoadConfig_MaxSongsInvalidKeepsDefault(t *testing.T) {
-	cfg := loadConfigFrom(mapGetter(map[string]string{"max_songs_per_run": "not-a-number"}))
-	assert.Equal(t, 500, cfg.MaxSongsPerRun)
 }
 
 func TestLoadConfig_Libraries(t *testing.T) {
@@ -105,54 +89,15 @@ func TestLoadConfig_SkipAlreadyRatedDefaultsTrue(t *testing.T) {
 }
 
 func TestLoadConfig_SkipAlreadyRatedCanBeDisabled(t *testing.T) {
+	falseVal := false
 	libs := []map[string]any{
 		{
 			"libraryId": "lib1",
-			"users":     []map[string]any{{"username": "carol", "skip_already_rated": "no"}},
+			"users":     []map[string]any{{"username": "carol", "skip_already_rated": falseVal}},
 		},
 	}
 	raw, _ := json.Marshal(libs)
 	cfg := loadConfigFrom(mapGetter(map[string]string{"libraries": string(raw)}))
-	assert.False(t, cfg.Libraries[0].Users[0].SkipAlreadyRated)
-}
-
-func TestLoadConfig_TristateStringValues(t *testing.T) {
-	libs := []map[string]any{
-		{
-			"libraryId": "lib1",
-			"users": []map[string]any{
-				{"username": "carol", "skip_already_rated": "no", "trigger_user_scan": "yes", "clear_rating_if_untagged": "yes"},
-			},
-		},
-	}
-	raw, _ := json.Marshal(libs)
-	cfg := loadConfigFrom(mapGetter(map[string]string{"libraries": string(raw)}))
-	u := cfg.Libraries[0].Users[0]
-	assert.False(t, u.SkipAlreadyRated, `"no" → false`)
-	assert.True(t, u.TriggerUserScan, `"yes" → true`)
-	assert.True(t, u.ClearRatingIfUntagged, `"yes" → true`)
-}
-
-func TestLoadConfig_TristateInheritUsesPluginFallback(t *testing.T) {
-	libs := []map[string]any{
-		{"libraryId": "lib1", "users": []map[string]any{{"username": "carol", "skip_already_rated": "inherit"}}},
-	}
-	raw, _ := json.Marshal(libs)
-	// No admin default set → "inherit" resolves to the plugin fallback (true).
-	cfg := loadConfigFrom(mapGetter(map[string]string{"libraries": string(raw)}))
-	assert.True(t, cfg.Libraries[0].Users[0].SkipAlreadyRated)
-}
-
-func TestLoadConfig_AdminDefaultStringAppliesToInheritUser(t *testing.T) {
-	libs := []map[string]any{
-		{"libraryId": "lib1", "users": []map[string]any{{"username": "carol"}}},
-	}
-	raw, _ := json.Marshal(libs)
-	// User leaves skip_already_rated unset → admin default "no" applies.
-	cfg := loadConfigFrom(mapGetter(map[string]string{
-		"libraries":                  string(raw),
-		"default_skip_already_rated": "no",
-	}))
 	assert.False(t, cfg.Libraries[0].Users[0].SkipAlreadyRated)
 }
 

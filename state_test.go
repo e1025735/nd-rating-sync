@@ -121,3 +121,49 @@ func TestStateRoundTrip(t *testing.T) {
 	require.True(t, when.Equal(got), "want=%s got=%s", when, got)
 	host.KVStoreMock.AssertExpectations(t)
 }
+
+// ─── sweepInProgress guard ────────────────────────────────────────────────────
+
+func TestSweepInProgress_FreshHeartbeatIsActive(t *testing.T) {
+	resetKVStoreMock(t)
+	host.KVStoreMock.On("Get", "sweep-active").
+		Return([]byte(time.Now().UTC().Format(time.RFC3339Nano)), true, nil)
+	assert.True(t, sweepInProgress(), "a recent heartbeat means a sweep is in progress")
+}
+
+func TestSweepInProgress_StaleHeartbeatFailsOpen(t *testing.T) {
+	resetKVStoreMock(t)
+	stale := time.Now().Add(-2 * sweepStaleAfter).UTC().Format(time.RFC3339Nano)
+	host.KVStoreMock.On("Get", "sweep-active").Return([]byte(stale), true, nil)
+	assert.False(t, sweepInProgress(), "a heartbeat older than sweepStaleAfter is not active")
+}
+
+// TestSweepInProgress_FutureHeartbeatFailsOpen pins the clock-skew fix: a
+// heartbeat dated in the future (system clock stepped backward) must be treated
+// as stale, not as an active sweep — otherwise recurring sweeps would be
+// suppressed until real time caught up.
+func TestSweepInProgress_FutureHeartbeatFailsOpen(t *testing.T) {
+	resetKVStoreMock(t)
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	host.KVStoreMock.On("Get", "sweep-active").Return([]byte(future), true, nil)
+	assert.False(t, sweepInProgress(), "future-dated heartbeat must fail open")
+}
+
+func TestSweepInProgress_MalformedFailsOpen(t *testing.T) {
+	resetKVStoreMock(t)
+	host.KVStoreMock.On("Get", "sweep-active").Return([]byte("not a timestamp"), true, nil)
+	assert.False(t, sweepInProgress(), "a malformed heartbeat is treated as not active")
+}
+
+func TestSweepInProgress_MissingFailsOpen(t *testing.T) {
+	resetKVStoreMock(t)
+	host.KVStoreMock.On("Get", "sweep-active").Return([]byte(nil), false, nil)
+	assert.False(t, sweepInProgress(), "no heartbeat → no sweep in progress")
+}
+
+func TestSweepInProgress_KVErrorFailsOpen(t *testing.T) {
+	resetKVStoreMock(t)
+	host.KVStoreMock.On("Get", "sweep-active").
+		Return([]byte(nil), false, errors.New("kvstore unavailable"))
+	assert.False(t, sweepInProgress(), "KV error must not block a sync")
+}

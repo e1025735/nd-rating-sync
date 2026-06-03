@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 )
@@ -36,55 +37,69 @@ type subsonicSong struct {
 	UserRating int    `json:"userRating"` // 0 = unrated, 1–5 = stars
 }
 
+// songPageSize is the number of songs requested per search3 call. It also
+// defines the granularity at which a chunked sync re-fetches when resuming
+// from a cursor.
+const songPageSize = 500
+
+// fetchSongPage retrieves a single page of songs accessible by username in the
+// given library (empty libraryID = all libraries). It returns the page plus a
+// "more" flag that is true when the page came back full, i.e. another page may
+// follow. A short or empty page reports more=false, which gives the caller a
+// well-defined stopping condition even if the server mishandles songOffset
+// (preventing an unbounded paging loop).
+func fetchSongPage(username, libraryID string, offset, pageSize int) (songs []subsonicSong, more bool, err error) {
+	uri := fmt.Sprintf(
+		"search3?query=%%22%%22&songCount=%d&songOffset=%d&albumCount=0&artistCount=0&u=%s",
+		pageSize, offset, url.QueryEscape(username))
+	if libraryID != "" {
+		uri += "&musicFolderId=" + url.QueryEscape(libraryID)
+	}
+
+	logDebug(fmt.Sprintf(
+		"nd-rating-sync: fetching songs – user=%q library=%q offset=%d page_size=%d",
+		username, libraryID, offset, pageSize))
+
+	raw, err := host.SubsonicAPICall(uri)
+	if err != nil {
+		return nil, false, fmt.Errorf("SubsonicAPICall (offset=%d): %w", offset, err)
+	}
+
+	var wrapper subsonicWrapper
+	if err := json.Unmarshal([]byte(raw), &wrapper); err != nil {
+		return nil, false, fmt.Errorf("unmarshal search3 response: %w", err)
+	}
+	if wrapper.Response.Status != "ok" {
+		if wrapper.Response.Error != nil {
+			return nil, false, fmt.Errorf("Subsonic API error %d: %q",
+				wrapper.Response.Error.Code, wrapper.Response.Error.Message)
+		}
+		return nil, false, errors.New("Subsonic API returned non-ok status")
+	}
+	if wrapper.Response.SearchResult3 == nil {
+		return nil, false, nil
+	}
+	page := wrapper.Response.SearchResult3.Song
+	logDebug(fmt.Sprintf(
+		"nd-rating-sync: page offset=%d returned %d songs", offset, len(page)))
+	return page, len(page) == pageSize, nil
+}
+
 // fetchAllSongs pages through search3 and returns every song accessible by
-// username in the given library. Pass an empty libraryID to search across all libraries.
+// username in the given library. Pass an empty libraryID to search across all
+// libraries. It is a convenience wrapper over fetchSongPage for callers that
+// want the whole list in one shot.
 func fetchAllSongs(username, libraryID string) ([]subsonicSong, error) {
-	const pageSize = 500
 	var all []subsonicSong
-	offset := 0
-
-	for {
-		uri := fmt.Sprintf(
-			"search3?query=%%22%%22&songCount=%d&songOffset=%d&albumCount=0&artistCount=0&u=%s",
-			pageSize, offset, username)
-		if libraryID != "" {
-			uri += "&musicFolderId=" + libraryID
-		}
-
-		logDebug(fmt.Sprintf(
-			"nd-rating-sync: fetching songs – user=%q library=%s offset=%d page_size=%d",
-			username, libraryID, offset, pageSize))
-
-		raw, err := host.SubsonicAPICall(uri)
+	for offset := 0; ; offset += songPageSize {
+		page, more, err := fetchSongPage(username, libraryID, offset, songPageSize)
 		if err != nil {
-			return nil, fmt.Errorf("SubsonicAPICall (offset=%d): %w", offset, err)
+			return nil, err
 		}
-
-		var wrapper subsonicWrapper
-		if err := json.Unmarshal([]byte(raw), &wrapper); err != nil {
-			return nil, fmt.Errorf("unmarshal search3 response: %w", err)
-		}
-		if wrapper.Response.Status != "ok" {
-			if wrapper.Response.Error != nil {
-				return nil, fmt.Errorf("Subsonic API error %d: %s",
-					wrapper.Response.Error.Code, wrapper.Response.Error.Message)
-			}
-			return nil, errors.New("Subsonic API returned non-ok status")
-		}
-
-		if wrapper.Response.SearchResult3 == nil {
-			break
-		}
-		page := wrapper.Response.SearchResult3.Song
 		all = append(all, page...)
-		logDebug(fmt.Sprintf(
-			"nd-rating-sync: page offset=%d returned %d songs (total so far: %d)",
-			offset, len(page), len(all)))
-
-		if len(page) < pageSize {
+		if !more {
 			break
 		}
-		offset += pageSize
 	}
 
 	logInfo(fmt.Sprintf(

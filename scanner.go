@@ -3,11 +3,14 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 )
 
 // ─── User-triggered scan ──────────────────────────────────────────────────────
@@ -22,12 +25,17 @@ func checkAndRunUserTriggeredScan() error {
 	return checkAndRunUserTriggeredScanWith(loadConfig())
 }
 
-// checkAndRunUserTriggeredScanWith is the testable variant that takes the
-// already-resolved config rather than reading it from the PDK.
+// checkAndRunUserTriggeredScanWith enqueues a single-pair sync for every user
+// whose trigger_user_scan flag is set and whose cooldown has elapsed. It does
+// NOT scan inline: the 15-minute trigger-check callback is bound by the same
+// 30s host limit as any other call, so each due user instead gets a one-time
+// continuation (Single cursor) that the budgeted chunk engine drives to
+// completion. This keeps the trigger-check itself fast regardless of how many
+// users are due or how large their libraries are.
 func checkAndRunUserTriggeredScanWith(cfg pluginConfig) error {
 	var errMsgs []string
-	for _, lib := range cfg.Libraries {
-		for _, u := range lib.Users {
+	for li, lib := range cfg.Libraries {
+		for ui, u := range lib.Users {
 			if !u.TriggerUserScan {
 				continue
 			}
@@ -48,174 +56,301 @@ func checkAndRunUserTriggeredScanWith(cfg pluginConfig) error {
 			}
 
 			logInfo(fmt.Sprintf(
-				"nd-rating-sync: running user-triggered rating sync for %q (library=%s)",
+				"nd-rating-sync: queuing user-triggered rating sync for %q (library=%q)",
 				u.Username, lib.LibraryID))
 
 			lastUserScanMu.Lock()
 			lastUserScanTimes[u.Username] = time.Now()
 			lastUserScanMu.Unlock()
 
-			if err := runSyncForUser(lib, u, cfg); err != nil {
-				errMsgs = append(errMsgs, fmt.Sprintf("user=%s lib=%s: %v", u.Username, lib.LibraryID, err))
+			cur := syncCursor{Lib: li, User: ui, Single: true}
+			if _, err := host.SchedulerScheduleOneTime(0, cur.marshal(), ""); err != nil {
+				errMsgs = append(errMsgs, fmt.Sprintf("user=%q lib=%q: %v", u.Username, lib.LibraryID, err))
 			}
 		}
 	}
 
 	if len(errMsgs) > 0 {
-		return fmt.Errorf("user-triggered sync errors: %s", strings.Join(errMsgs, "; "))
+		return fmt.Errorf("user-triggered scan scheduling errors: %s", strings.Join(errMsgs, "; "))
 	}
 	return nil
 }
 
 // ─── Sync ─────────────────────────────────────────────────────────────────────
 
-// runSync iterates over every configured library/user combination.
-func runSync() error { return runSyncWith(loadConfig()) }
+// runSyncChunk processes as many songs as fit before deadline, starting from
+// cur, and returns the position to resume at plus whether the whole sweep is
+// finished. It walks (library, user) pairs in order: for each fresh pair it
+// stamps PairStart (the eventual incremental threshold) and, once the pair is
+// fully processed, persists that threshold. A Single cursor stops after one
+// pair. When the deadline is reached mid-sweep it returns allDone=false with a
+// cursor the caller hands to a continuation callback.
+//
+// Forward progress is guaranteed: the budget is only checked at pair
+// boundaries here and after each song in processPairChunk, so every invocation
+// either advances the cursor or completes the sweep – a chain of continuations
+// always terminates.
+func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCursor, bool) {
+	// Per-call cache of LibraryGetLibrary results so multiple users of one
+	// library share a single host call. Globals do not persist across
+	// callbacks, so this is intentionally scoped to one invocation.
+	libCache := map[string]libScanResult{}
 
-// runSyncWith is the testable variant that takes the resolved config.
-func runSyncWith(cfg pluginConfig) error {
-	if len(cfg.Libraries) == 0 {
-		return errors.New("no libraries configured – add at least one library with users in the plugin settings")
-	}
+	for {
+		// Skip exhausted users/libraries. Also tolerates indices that point
+		// past the end after a config change between continuations.
+		for cur.Lib < len(cfg.Libraries) && cur.User >= len(cfg.Libraries[cur.Lib].Users) {
+			cur.Lib++
+			cur.User = 0
+			cur.Offset = 0
+			cur.PairStart = ""
+		}
+		if cur.Lib >= len(cfg.Libraries) {
+			return cur, true // whole sweep complete
+		}
+		// A valid pair is selected. If the budget is gone, resume here.
+		if time.Now().After(deadline) {
+			return cur, false
+		}
 
-	logInfo(fmt.Sprintf(
-		"nd-rating-sync: starting sync – libraries=%d max_songs_per_run=%d incremental=%v dry_run=%v",
-		len(cfg.Libraries), cfg.MaxSongsPerRun, cfg.IncrementalSync, cfg.DryRun))
+		lib := cfg.Libraries[cur.Lib]
+		u := lib.Users[cur.User]
+		if u.Username == "" {
+			logWarn(fmt.Sprintf(
+				"nd-rating-sync: skipping library=%q user#%d – empty username in config", lib.LibraryID, cur.User))
+			cur.User++
+			cur.Offset = 0
+			cur.PairStart = ""
+			continue
+		}
 
-	var errMsgs []string
-	for _, lib := range cfg.Libraries {
-		for _, u := range lib.Users {
-			if err := runSyncForUser(lib, u, cfg); err != nil {
-				errMsgs = append(errMsgs, fmt.Sprintf("user=%s lib=%s: %v", u.Username, lib.LibraryID, err))
+		// Load the incremental threshold once for this pair; reused by the
+		// LastScanAt gate below and passed into processPairChunk for the
+		// per-file mtime skip.
+		var threshold time.Time
+		if cfg.IncrementalSync {
+			threshold = loadLastSynced(lib.LibraryID, u.Username)
+		}
+
+		// LastScanAt gate: when starting a fresh pair, skip the whole pair if
+		// Navidrome has not rescanned the library since our last completed sweep
+		// — no song paging at all. Single (user-triggered) scans bypass the gate
+		// so an explicit request always re-pages. A gated skip must NOT save the
+		// threshold: nothing was processed, so it stays pinned to the last real
+		// sweep and a later scan still re-processes the files that changed in it.
+		if cur.Offset == 0 && cur.PairStart == "" && cfg.IncrementalSync && !cur.Single && !threshold.IsZero() {
+			if scanned, ok := cachedLibraryLastScan(libCache, lib.LibraryID); ok && scanned.Before(threshold) {
+				logInfo(fmt.Sprintf(
+					"nd-rating-sync: skipping user=%q library=%q – library unchanged since last sync (last_scan=%s threshold=%s)",
+					u.Username, lib.LibraryID, scanned.UTC().Format(time.RFC3339), threshold.UTC().Format(time.RFC3339)))
+				cur.User++
+				cur.Offset = 0
+				cur.PairStart = ""
+				continue
 			}
 		}
-	}
 
-	if len(errMsgs) > 0 {
-		return fmt.Errorf("sync errors: %s", strings.Join(errMsgs, "; "))
+		if cur.PairStart == "" {
+			cur.PairStart = time.Now().UTC().Format(time.RFC3339Nano)
+		}
+
+		next, pairDone := processPairChunk(lib, u, cfg, cur, threshold, deadline)
+		cur = next
+		if !pairDone {
+			return cur, false // deadline hit (or fetch failed) mid-pair
+		}
+
+		// Pair finished: persist the threshold captured when the pair started.
+		if cfg.IncrementalSync && !cfg.DryRun {
+			if ps, err := time.Parse(time.RFC3339Nano, cur.PairStart); err == nil {
+				saveLastSynced(lib.LibraryID, u.Username, ps)
+			}
+		}
+
+		if cur.Single {
+			return cur, true
+		}
+
+		cur.User++
+		cur.Offset = 0
+		cur.PairStart = ""
 	}
-	return nil
 }
 
-// runSyncForUser fetches and processes songs for a single library/user pair.
+// processPairChunk processes songs for a single (library, user) pair starting
+// at cur.Offset until the deadline elapses or the pair's songs are exhausted.
+// It returns the advanced cursor and whether the pair is complete. The deadline
+// is checked after each processed song, so at least one song is handled per
+// call (provided the deadline had not already passed on entry, which
+// runSyncChunk guarantees) – this is what makes the continuation chain
+// terminate.
 //
-// When cfg.IncrementalSync is true, the previous successful scan time is
-// loaded from the KV store and any song whose file mtime predates it is
-// skipped without reading the file or calling setRating. The scan-start
-// time is captured before iterating and persisted at the end, so any file
-// edits that occur during the scan are caught on the next run.
-func runSyncForUser(lib libraryConfig, u userConfig, cfg pluginConfig) error {
-	if u.Username == "" {
-		return errors.New("username is empty – check plugin configuration")
-	}
-
-	var threshold time.Time
-	if cfg.IncrementalSync {
-		threshold = loadLastSynced(lib.LibraryID, u.Username)
-	}
-	scanStart := time.Now()
-
+// A page-fetch failure returns pairDone=false without advancing past the failed
+// page, so the next run retries the same offset; the cursor already points at
+// the first unprocessed song.
+func processPairChunk(lib libraryConfig, u userConfig, cfg pluginConfig, cur syncCursor, threshold time.Time, deadline time.Time) (syncCursor, bool) {
 	if cfg.DryRun {
 		logInfo(fmt.Sprintf(
 			"nd-rating-sync: [DRY RUN] user=%q – no ratings will be written", u.Username))
 	}
-
 	if u.ClearRatingIfUntagged && u.SkipAlreadyRated {
 		logWarn(fmt.Sprintf(
 			"nd-rating-sync: user=%q has clear_rating_if_untagged=true but skip_already_rated=true – "+
 				"songs already rated in Navidrome will be skipped before the file is read and their ratings will NOT be cleared",
 			u.Username))
 	}
-
 	logInfo(fmt.Sprintf(
-		"nd-rating-sync: syncing user=%q library=%s skip_already_rated=%v clear_rating_if_untagged=%v dry_run=%v tag_order=%v incremental_threshold=%s",
-		u.Username, lib.LibraryID, u.SkipAlreadyRated, u.ClearRatingIfUntagged, cfg.DryRun, u.RatingTagOrder, formatThreshold(threshold)))
+		"nd-rating-sync: syncing user=%q library=%q from offset=%d skip_already_rated=%v clear_rating_if_untagged=%v dry_run=%v tag_order=%q incremental_threshold=%s",
+		u.Username, lib.LibraryID, cur.Offset, u.SkipAlreadyRated, u.ClearRatingIfUntagged, cfg.DryRun, u.RatingTagOrder, formatThreshold(threshold)))
 
-	songs, err := fetchAllSongs(u.Username, lib.LibraryID)
-	if err != nil {
-		return fmt.Errorf("fetching songs: %w", err)
-	}
+	var tally syncTally
+	for {
+		pageOffset := (cur.Offset / songPageSize) * songPageSize
+		skip := cur.Offset - pageOffset
 
-	rated, cleared, wouldRate, wouldClear, skippedRated, skippedNoTag, skippedUnchanged, errored := 0, 0, 0, 0, 0, 0, 0, 0
-	processed := 0
-	for _, s := range songs {
-		if u.SkipAlreadyRated && s.UserRating > 0 {
-			logDebug(fmt.Sprintf(
-				"nd-rating-sync: skipping %q – already rated (%d stars in Navidrome)", s.Title, s.UserRating))
-			skippedRated++
-			continue
-		}
-
-		if !threshold.IsZero() {
-			if info, err := os.Stat(s.Path); err == nil && info.ModTime().Before(threshold) {
-				logDebug(fmt.Sprintf(
-					"nd-rating-sync: skipping %q – unchanged since last scan (mtime=%s)",
-					s.Title, info.ModTime().Format(time.RFC3339)))
-				skippedUnchanged++
-				continue
-			}
-		}
-
-		if cfg.MaxSongsPerRun > 0 && processed >= cfg.MaxSongsPerRun {
-			logInfo(fmt.Sprintf(
-				"nd-rating-sync: reached max_songs_per_run=%d for user=%q, stopping early",
-				cfg.MaxSongsPerRun, u.Username))
-			break
-		}
-		processed++
-
-		stars, ok := extractStarsFromFile(s.Path, s.Suffix, u.RatingTagOrder)
-		if !ok {
-			if u.ClearRatingIfUntagged {
-				if cfg.DryRun {
-					logInfo(fmt.Sprintf("nd-rating-sync: [DRY RUN] would clear rating for %q (no tag found)", s.Title))
-					wouldClear++
-				} else {
-					if err := setRating(u.Username, s.ID, 0); err != nil {
-						logWarn(fmt.Sprintf(
-							"nd-rating-sync: setRating(0) failed for %q (id=%s): %v", s.Title, s.ID, err))
-						errored++
-					} else {
-						logDebug(fmt.Sprintf("nd-rating-sync: cleared rating for %q (no tag found)", s.Title))
-						cleared++
-					}
-				}
-			} else {
-				skippedNoTag++
-			}
-			continue
-		}
-
-		if cfg.DryRun {
-			logInfo(fmt.Sprintf("nd-rating-sync: [DRY RUN] would rate %q → %d stars", s.Title, stars))
-			wouldRate++
-			continue
-		}
-
-		if err := setRating(u.Username, s.ID, stars); err != nil {
+		page, more, err := fetchSongPage(u.Username, lib.LibraryID, pageOffset, songPageSize)
+		if err != nil {
 			logWarn(fmt.Sprintf(
-				"nd-rating-sync: setRating failed for %q (id=%s): %v", s.Title, s.ID, err))
-			errored++
+				"nd-rating-sync: fetching songs for user=%q library=%q at offset=%d failed: %q – will retry next run",
+				u.Username, lib.LibraryID, pageOffset, err.Error()))
+			tally.log(u.Username, lib.LibraryID, cfg.DryRun)
+			return cur, false
+		}
+
+		// Resume position is at/past the end of this page (only happens when a
+		// page came back shorter than expected). Advance or finish.
+		if skip >= len(page) {
+			if !more {
+				tally.log(u.Username, lib.LibraryID, cfg.DryRun)
+				return cur, true
+			}
+			cur.Offset = pageOffset + songPageSize
 			continue
 		}
 
-		logDebug(fmt.Sprintf("nd-rating-sync: rated %q → %d stars", s.Title, stars))
-		rated++
+		for i := skip; i < len(page); i++ {
+			processSong(u, cfg, page[i], threshold, &tally)
+			cur.Offset = pageOffset + i + 1
+			if time.Now().After(deadline) {
+				tally.log(u.Username, lib.LibraryID, cfg.DryRun)
+				return cur, false
+			}
+		}
+
+		if !more {
+			tally.log(u.Username, lib.LibraryID, cfg.DryRun)
+			return cur, true
+		}
+		// Page was full; cur.Offset is already at the next page boundary.
+	}
+}
+
+// syncTally accumulates per-chunk outcome counts for a single summary log line.
+type syncTally struct {
+	rated, cleared, wouldRate, wouldClear        int
+	skippedRated, skippedNoTag, skippedUnchanged int
+	skippedUnreadable, errored                   int
+}
+
+func (t syncTally) log(username, libraryID string, dryRun bool) {
+	if dryRun {
+		logInfo(fmt.Sprintf(
+			"nd-rating-sync: [DRY RUN] chunk done user=%q library=%q – would_rate=%d would_clear=%d skipped_already_rated=%d skipped_unchanged=%d skipped_no_tag=%d skipped_unreadable=%d",
+			username, libraryID, t.wouldRate, t.wouldClear, t.skippedRated, t.skippedUnchanged, t.skippedNoTag, t.skippedUnreadable))
+		return
+	}
+	logInfo(fmt.Sprintf(
+		"nd-rating-sync: chunk done user=%q library=%q – rated=%d cleared=%d skipped_already_rated=%d skipped_unchanged=%d skipped_no_tag=%d skipped_unreadable=%d errors=%d",
+		username, libraryID, t.rated, t.cleared, t.skippedRated, t.skippedUnchanged, t.skippedNoTag, t.skippedUnreadable, t.errored))
+}
+
+// processSong applies the rating pipeline to one song: skip-if-already-rated,
+// skip-if-unchanged (incremental), read+parse the file, then write or clear the
+// rating. Outcomes are accumulated into tally. A file that cannot be read or
+// parsed is treated as fileUnreadable – never as "untagged" – so
+// clear_rating_if_untagged can never wipe a rating on a transient I/O error.
+func processSong(u userConfig, cfg pluginConfig, s subsonicSong, threshold time.Time, tally *syncTally) {
+	if u.SkipAlreadyRated && s.UserRating > 0 {
+		logDebug(fmt.Sprintf(
+			"nd-rating-sync: skipping %q – already rated (%d stars in Navidrome)", s.Title, s.UserRating))
+		tally.skippedRated++
+		return
 	}
 
+	if !threshold.IsZero() {
+		if info, err := os.Stat(s.Path); err == nil && info.ModTime().Before(threshold) {
+			logDebug(fmt.Sprintf(
+				"nd-rating-sync: skipping %q – unchanged since last scan (mtime=%s)",
+				s.Title, info.ModTime().Format(time.RFC3339)))
+			tally.skippedUnchanged++
+			return
+		}
+	}
+
+	stars, result := extractStarsFromFile(s.Path, s.Suffix, u.RatingTagOrder)
+	switch result {
+	case fileUnreadable:
+		// I/O error, unsupported extension, or parse panic. Never clear here —
+		// clearing on a transient read failure would corrupt the user's
+		// existing Navidrome rating. The warning was already logged inside
+		// extractStarsFromFile; just count and move on.
+		tally.skippedUnreadable++
+		return
+	case tagAbsent:
+		if !u.ClearRatingIfUntagged {
+			tally.skippedNoTag++
+			return
+		}
+		if cfg.DryRun {
+			logInfo(fmt.Sprintf("nd-rating-sync: [DRY RUN] would clear rating for %q (no tag found)", s.Title))
+			tally.wouldClear++
+			return
+		}
+		if err := setRating(u.Username, s.ID, 0); err != nil {
+			logWarn(fmt.Sprintf(
+				"nd-rating-sync: setRating(0) failed for %q (id=%q): %v", s.Title, s.ID, err))
+			tally.errored++
+			return
+		}
+		logDebug(fmt.Sprintf("nd-rating-sync: cleared rating for %q (no tag found)", s.Title))
+		tally.cleared++
+		return
+	}
+
+	// result == tagFound
 	if cfg.DryRun {
-		logInfo(fmt.Sprintf(
-			"nd-rating-sync: [DRY RUN] done user=%q – would_rate=%d would_clear=%d skipped_already_rated=%d skipped_unchanged=%d skipped_no_tag=%d",
-			u.Username, wouldRate, wouldClear, skippedRated, skippedUnchanged, skippedNoTag))
-	} else {
-		logInfo(fmt.Sprintf(
-			"nd-rating-sync: done user=%q – rated=%d cleared=%d skipped_already_rated=%d skipped_unchanged=%d skipped_no_tag=%d errors=%d",
-			u.Username, rated, cleared, skippedRated, skippedUnchanged, skippedNoTag, errored))
+		logInfo(fmt.Sprintf("nd-rating-sync: [DRY RUN] would rate %q → %d stars", s.Title, stars))
+		tally.wouldRate++
+		return
 	}
+	if err := setRating(u.Username, s.ID, stars); err != nil {
+		logWarn(fmt.Sprintf(
+			"nd-rating-sync: setRating failed for %q (id=%q): %v", s.Title, s.ID, err))
+		tally.errored++
+		return
+	}
+	logDebug(fmt.Sprintf("nd-rating-sync: rated %q → %d stars", s.Title, stars))
+	tally.rated++
+}
 
-	if cfg.IncrementalSync && !cfg.DryRun {
-		saveLastSynced(lib.LibraryID, u.Username, scanStart)
+// runSyncForUser fetches and processes every song for a single (library, user)
+// pair to completion, ignoring the time budget. The scheduled paths use
+// runSyncChunk so they stay inside the host's per-call time limit; this helper
+// is retained for direct callers and tests that want one pair processed
+// synchronously. It runs the pair through the same engine via a single-pair
+// config and a Single cursor, so threshold handling stays identical.
+func runSyncForUser(lib libraryConfig, u userConfig, cfg pluginConfig) error {
+	if u.Username == "" {
+		return errors.New("username is empty – check plugin configuration")
 	}
+	single := cfg
+	single.Libraries = []libraryConfig{{
+		LibraryID:   lib.LibraryID,
+		LibraryName: lib.LibraryName,
+		Users:       []userConfig{u},
+	}}
+	// A deadline far in the future means the pair always runs to completion.
+	runSyncChunk(single, syncCursor{Single: true}, time.Now().Add(24*time.Hour))
 	return nil
 }
 
@@ -230,13 +365,32 @@ func formatThreshold(t time.Time) string {
 
 // ─── File reading ─────────────────────────────────────────────────────────────
 
+// fileReadResult tells the caller whether the file was readable and parseable.
+// It exists so a transient I/O error or unsupported extension can never be
+// confused with "no rating tag found", which would otherwise cause
+// clear_rating_if_untagged to wipe the user's existing Navidrome rating.
+type fileReadResult int
+
+const (
+	tagFound      fileReadResult = iota // a recognised rating tag was extracted
+	tagAbsent                           // file was read and parsed; no recognised tag
+	fileUnreadable                      // I/O error, unsupported extension, or container parse failure
+)
+
+// maxAudioFileBytes caps how much of any single file we will pull into memory.
+// Embedded artwork pushes legitimate audio up to a few tens of MiB; 64 MiB
+// covers that with margin while keeping a hostile or misreported path (e.g.
+// /dev/zero) from OOM-ing the wasm sandbox.
+const maxAudioFileBytes = 64 * 1024 * 1024
+
 // extractStarsFromFile reads the audio file at path and returns a 1–5 star
-// rating using the tag formats in tagOrder for priority.
-func extractStarsFromFile(path, suffix string, tagOrder []string) (int, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		logWarn(fmt.Sprintf("nd-rating-sync: cannot read %q: %v", path, err))
-		return 0, false
+// rating using the tag formats in tagOrder for priority. The fileReadResult
+// disambiguates "no tag found" (safe to clear) from "could not read"
+// (must skip — clearing on I/O errors would corrupt user state).
+func extractStarsFromFile(path, suffix string, tagOrder []string) (int, fileReadResult) {
+	data, ok := readAudioFile(path)
+	if !ok {
+		return 0, fileUnreadable
 	}
 
 	ext := strings.ToLower(suffix)
@@ -244,66 +398,88 @@ func extractStarsFromFile(path, suffix string, tagOrder []string) (int, bool) {
 		ext = strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
 	}
 
+	stars, ok, supported := dispatchParser(path, ext, data, tagOrder)
+	if !supported {
+		return 0, fileUnreadable
+	}
+	if ok {
+		logDebug(fmt.Sprintf("nd-rating-sync: %q – found rating tag → %d stars", path, stars))
+		return stars, tagFound
+	}
+	logDebug(fmt.Sprintf("nd-rating-sync: %q – no rating tag found", path))
+	return 0, tagAbsent
+}
+
+// readAudioFile reads up to maxAudioFileBytes from path. Files that exceed
+// the cap are reported as unreadable rather than partially parsed — a
+// truncated audio file would yield arbitrary parse results.
+func readAudioFile(path string) ([]byte, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		// Log only the path — the raw OS error ("permission denied" vs
+		// "no such file or directory") would let an admin who can plant
+		// a symlink in the music tree probe arbitrary paths' existence
+		// via plugin warnings. Path alone is enough for diagnostics.
+		logWarn(fmt.Sprintf("nd-rating-sync: cannot open %q (skipping)", path))
+		logDebug(fmt.Sprintf("nd-rating-sync: open %q error: %q", path, err.Error()))
+		return nil, false
+	}
+	defer f.Close()
+
+	if info, err := f.Stat(); err == nil && info.Size() > maxAudioFileBytes {
+		logWarn(fmt.Sprintf(
+			"nd-rating-sync: skipping %q – size %d exceeds cap %d",
+			path, info.Size(), maxAudioFileBytes))
+		return nil, false
+	}
+
+	// LimitReader guards the case where Stat lies (e.g. /dev/zero, FUSE).
+	data, err := io.ReadAll(io.LimitReader(f, maxAudioFileBytes+1))
+	if err != nil {
+		logWarn(fmt.Sprintf("nd-rating-sync: cannot read %q (skipping)", path))
+		logDebug(fmt.Sprintf("nd-rating-sync: read %q error: %q", path, err.Error()))
+		return nil, false
+	}
+	if len(data) > maxAudioFileBytes {
+		logWarn(fmt.Sprintf(
+			"nd-rating-sync: skipping %q – exceeds cap %d", path, maxAudioFileBytes))
+		return nil, false
+	}
+	return data, true
+}
+
+// dispatchParser routes data to the right container parser, recovering from
+// any panic the parser raises on hostile input so a single bad file cannot
+// abort the whole sync. Returns (stars, tagFound, formatSupported).
+func dispatchParser(path, ext string, data []byte, tagOrder []string) (stars int, ok, supported bool) {
+	supported = true
+	defer func() {
+		if r := recover(); r != nil {
+			logWarn(fmt.Sprintf(
+				"nd-rating-sync: panic parsing %q (%q): %v – treating as unreadable", path, ext, r))
+			stars, ok, supported = 0, false, false
+		}
+	}()
+
 	switch ext {
 	case "mp3":
-		stars, ok := parseID3v2Rating(data, tagOrder)
-		if ok {
-			logDebug(fmt.Sprintf("nd-rating-sync: %q – found rating tag → %d stars", path, stars))
-		} else {
-			logDebug(fmt.Sprintf("nd-rating-sync: %q – no rating tag found", path))
-		}
-		return stars, ok
+		stars, ok = parseID3v2Rating(data, tagOrder)
 	case "flac":
-		stars, ok := parseFLACRating(data, tagOrder)
-		if ok {
-			logDebug(fmt.Sprintf("nd-rating-sync: %q – found rating tag → %d stars", path, stars))
-		} else {
-			logDebug(fmt.Sprintf("nd-rating-sync: %q – no rating tag found", path))
-		}
-		return stars, ok
+		stars, ok = parseFLACRating(data, tagOrder)
 	case "ogg", "oga", "opus":
-		stars, ok := parseOggVorbisRating(data, tagOrder)
-		if ok {
-			logDebug(fmt.Sprintf("nd-rating-sync: %q – found rating tag → %d stars", path, stars))
-		} else {
-			logDebug(fmt.Sprintf("nd-rating-sync: %q – no rating tag found", path))
-		}
-		return stars, ok
+		stars, ok = parseOggVorbisRating(data, tagOrder)
 	case "wav":
-		stars, ok := parseWAVRating(data, tagOrder)
-		if ok {
-			logDebug(fmt.Sprintf("nd-rating-sync: %q – found rating tag → %d stars", path, stars))
-		} else {
-			logDebug(fmt.Sprintf("nd-rating-sync: %q – no rating tag found", path))
-		}
-		return stars, ok
+		stars, ok = parseWAVRating(data, tagOrder)
 	case "dsf":
-		stars, ok := parseDSFRating(data, tagOrder)
-		if ok {
-			logDebug(fmt.Sprintf("nd-rating-sync: %q – found rating tag → %d stars", path, stars))
-		} else {
-			logDebug(fmt.Sprintf("nd-rating-sync: %q – no rating tag found", path))
-		}
-		return stars, ok
+		stars, ok = parseDSFRating(data, tagOrder)
 	case "m4a", "aac", "mp4":
-		stars, ok := parseM4ARating(data, tagOrder)
-		if ok {
-			logDebug(fmt.Sprintf("nd-rating-sync: %q – found rating tag → %d stars", path, stars))
-		} else {
-			logDebug(fmt.Sprintf("nd-rating-sync: %q – no rating tag found", path))
-		}
-		return stars, ok
+		stars, ok = parseM4ARating(data, tagOrder)
 	case "wma":
-		stars, ok := parseWMARating(data, tagOrder)
-		if ok {
-			logDebug(fmt.Sprintf("nd-rating-sync: %q – found rating tag → %d stars", path, stars))
-		} else {
-			logDebug(fmt.Sprintf("nd-rating-sync: %q – no rating tag found", path))
-		}
-		return stars, ok
+		stars, ok = parseWMARating(data, tagOrder)
 	default:
 		logWarn(fmt.Sprintf(
-			"nd-rating-sync: skipping %q – supported formats are MP3, FLAC, OGG, Opus, WAV, DSF, M4A/AAC and WMA (got .%s)", path, ext))
-		return 0, false
+			"nd-rating-sync: skipping %q – supported formats are MP3, FLAC, Ogg, Opus, WAV, DSF, M4A/AAC and WMA (got .%q)", path, ext))
+		supported = false
 	}
+	return stars, ok, supported
 }
