@@ -212,10 +212,6 @@
         },
         {
           "type": "Control",
-          "scope": "#/properties/user_scan_cooldown_hours"
-        },
-        {
-          "type": "Control",
           "scope": "#/properties/incremental_sync"
         },
         {

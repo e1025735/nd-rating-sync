@@ -23,11 +23,15 @@ import (
 const callBudget = 10 * time.Second
 
 // deadlineCheckEvery is the number of songs processed between time.Now()
-// deadline checks inside processPairChunk's hot loop. Each time.Now() is a
-// clock_time_get host call; reducing the rate by a factor of 8 cuts the
-// surface area of clock host calls 8x. With ~10ms per song typical, an 8-song
-// burst is ~80ms of overshoot at worst — negligible against the 10s budget.
-const deadlineCheckEvery = 8
+// deadline checks inside processPairChunk's hot loop. Per-song cost varies
+// wildly in production (observed range: 0.6 s to 2.4 s per song depending on
+// file size, embedded artwork, filesystem latency). Anything > 1 means a
+// stretch of slow songs can blow past the 10 s budget AND the host's 30 s
+// hard timeout (`module closed with context deadline exceeded`). 1 keeps
+// the enforcement tight; the original concern about clock_time_get host
+// frequency did not reproduce, and the 10 s callBudget bounds total
+// time.Now() calls per call anyway.
+const deadlineCheckEvery = 1
 
 // syncCursor is the resumable position of a sync. It is serialised into the
 // scheduler callback payload so a long sync can be spread across many short
