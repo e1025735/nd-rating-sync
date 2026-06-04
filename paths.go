@@ -130,3 +130,51 @@ func matchFile(index map[string][]fileEntry, s subsonicSong) (fileEntry, bool) {
 	}
 	return cands[0], true
 }
+
+// fileIndexResult is a memoised resolve+walk outcome: the file index for a
+// library plus whether the mount could be resolved and read. A "false" entry
+// means we already logged the failure and the caller should skip the pair
+// without saving the threshold.
+type fileIndexResult struct {
+	index map[string][]fileEntry
+	ok    bool
+}
+
+// cachedFileIndex returns the file index for libraryID, building it on first
+// access and memoising the result for the lifetime of a single runSyncChunk
+// call. State does not survive across callbacks, so the cache is created fresh
+// per call. N users of one library therefore share one walk; an unchanged
+// library that the LastScanAt gate skips never reaches this cache at all.
+func cachedFileIndex(cache map[string]fileIndexResult, libraryID string) (map[string][]fileEntry, bool) {
+	if r, found := cache[libraryID]; found {
+		return r.index, r.ok
+	}
+	idx, ok := resolveAndIndex(libraryID)
+	cache[libraryID] = fileIndexResult{index: idx, ok: ok}
+	return idx, ok
+}
+
+// resolveAndIndex is the uncached variant: resolve the library's mount and
+// walk it. Both stages fail-closed by skipping the pair (caller responsibility):
+// without a real file index we cannot match songs to files and any read
+// attempt would just regress to the s.Path bug.
+func resolveAndIndex(libraryID string) (map[string][]fileEntry, bool) {
+	mountPoint, err := resolveMountPoint(libraryID)
+	if err != nil {
+		logWarn(fmt.Sprintf(
+			"nd-rating-sync: cannot access filesystem for library=%q: %v – skipping pair", libraryID, err))
+		return nil, false
+	}
+	idx, err := buildFileIndex(mountPoint)
+	if err != nil {
+		logWarn(fmt.Sprintf(
+			"nd-rating-sync: cannot read library mount %q – skipping pair", mountPoint))
+		logDebug(fmt.Sprintf(
+			"nd-rating-sync: read mount %q error: %q", mountPoint, err.Error()))
+		return nil, false
+	}
+	logDebug(fmt.Sprintf(
+		"nd-rating-sync: indexed mount %q for library=%q – %d size buckets",
+		mountPoint, libraryID, len(idx)))
+	return idx, true
+}

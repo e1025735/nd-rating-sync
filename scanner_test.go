@@ -138,8 +138,10 @@ func TestSyncPair_HappyPath(t *testing.T) {
 	path := writeFMPSFileAt(t, mount, "song-1.mp3", "0.6")
 	mockGetLibrary(1, mount)
 
-	// 2. fetchAllSongs returns one song whose size matches that file.
-	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Path: path, Size: fileSize(t, path)}}
+	// 2. fetchAllSongs returns one song whose size matches that file. Path is
+	// deliberately omitted: the production code never reads it (it would be a
+	// synthesized fake from Navidrome), only size+suffix.
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Size: fileSize(t, path)}}
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK(songs), nil)
@@ -209,7 +211,7 @@ func TestSyncPair_IncrementalFirstRun_ProcessesAllAndSavesThreshold(t *testing.T
 	mount := t.TempDir()
 	path := writeFMPSFileAt(t, mount, "song.mp3", "0.6")
 	mockGetLibrary(1, mount)
-	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Path: path, Size: fileSize(t, path)}}
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Size: fileSize(t, path)}}
 
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
@@ -247,7 +249,7 @@ func TestSyncPair_IncrementalSkipsUnchangedFile(t *testing.T) {
 	fileTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	require.NoError(t, os.Chtimes(path, fileTime, fileTime))
 
-	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Path: path, Size: fileSize(t, path)}}
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Size: fileSize(t, path)}}
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK(songs), nil)
@@ -282,7 +284,7 @@ func TestSyncPair_IncrementalProcessesNewerFile(t *testing.T) {
 	fileTime := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	require.NoError(t, os.Chtimes(path, fileTime, fileTime))
 
-	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Path: path, Size: fileSize(t, path)}}
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Size: fileSize(t, path)}}
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK(songs), nil)
@@ -308,20 +310,23 @@ func TestSyncPair_IncrementalProcessesNewerFile(t *testing.T) {
 func TestSyncPair_IncrementalDisabled_BypassesKV(t *testing.T) {
 	resetSubsonicMock(t)
 	resetKVStoreMock(t)
+	resetLibraryMock(t)
 
-	path := writeFMPSFile(t, "0.6")
+	mount := t.TempDir()
+	path := writeFMPSFileAt(t, mount, "song.mp3", "0.6")
+	mockGetLibrary(1, mount)
 	// File mtime far in the past — would be skipped if incremental were on.
 	require.NoError(t, os.Chtimes(path, time.Unix(0, 0), time.Unix(0, 0)))
 
-	songs := []subsonicSong{{ID: "song-1", Title: "Test", Path: path, Suffix: "mp3"}}
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Size: fileSize(t, path)}}
 	host.SubsonicAPIMock.On("Call",
-		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=lib1`,
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK(songs), nil)
 	host.SubsonicAPIMock.On("Call", "setRating?id=song-1&rating=3&u=alice").
 		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
 
 	cfg := pluginConfig{IncrementalSync: false, Libraries: []libraryConfig{{
-		LibraryID: "lib1",
+		LibraryID: "1",
 		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
 	}}}
 
@@ -337,6 +342,10 @@ func TestSyncPair_IncrementalDisabled_BypassesKV(t *testing.T) {
 // TestProcessPairChunk_StopsAtDeadlineMidPair proves the time budget yields
 // after a single song (the deadline is checked after each one) and returns an
 // advanced cursor so the next call resumes where this one stopped.
+//
+// Calls processPairChunk directly so the file index is the caller's
+// responsibility; we pass nil because every song is skipped on
+// SkipAlreadyRated before matchFile is consulted.
 func TestProcessPairChunk_StopsAtDeadlineMidPair(t *testing.T) {
 	resetSubsonicMock(t)
 
@@ -353,7 +362,7 @@ func TestProcessPairChunk_StopsAtDeadlineMidPair(t *testing.T) {
 	user := userConfig{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}
 
 	deadline := time.Now().Add(-time.Second) // already past
-	next, pairDone := processPairChunk(lib, user, pluginConfig{}, syncCursor{}, time.Time{}, deadline)
+	next, pairDone := processPairChunk(lib, user, pluginConfig{}, syncCursor{}, time.Time{}, deadline, nil)
 
 	assert.False(t, pairDone, "deadline hit mid-pair → pair not done")
 	assert.Equal(t, 1, next.Offset, "exactly one song processed before yielding")
@@ -362,18 +371,23 @@ func TestProcessPairChunk_StopsAtDeadlineMidPair(t *testing.T) {
 
 // TestRunSyncChunk_AdvancesAcrossPairsToCompletion proves a generous deadline
 // walks every (library, user) pair and reports the sweep complete.
+//
+// The library is mocked with a real temp-dir mount so cachedFileIndex can
+// resolve and walk it; both songs are skip-rated, so the mount is empty.
 func TestRunSyncChunk_AdvancesAcrossPairsToCompletion(t *testing.T) {
 	resetSubsonicMock(t)
+	resetLibraryMock(t)
+	mockGetLibrary(1, t.TempDir())
 
 	host.SubsonicAPIMock.On("Call",
-		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=lib1`,
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK([]subsonicSong{{ID: "a1", UserRating: 5}}), nil)
 	host.SubsonicAPIMock.On("Call",
-		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=bob&musicFolderId=lib1`,
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=bob&musicFolderId=1`,
 	).Return(subsonicOK([]subsonicSong{{ID: "b1", UserRating: 5}}), nil)
 
 	cfg := pluginConfig{Libraries: []libraryConfig{{
-		LibraryID: "lib1",
+		LibraryID: "1",
 		Users: []userConfig{
 			{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder},
 			{Username: "bob", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder},
@@ -418,9 +432,11 @@ func TestRunSyncStepUntil_NoRescheduleWhenComplete(t *testing.T) {
 	resetSubsonicMock(t)
 	resetSchedulerMock(t)
 	resetKVStoreMock(t)
+	resetLibraryMock(t)
+	mockGetLibrary(1, t.TempDir())
 
 	host.SubsonicAPIMock.On("Call",
-		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=lib1`,
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK([]subsonicSong{{ID: "a1", UserRating: 5}}), nil)
 
 	// Fresh full sweep that finishes inside the budget: records, then clears, the
@@ -430,7 +446,7 @@ func TestRunSyncStepUntil_NoRescheduleWhenComplete(t *testing.T) {
 	host.KVStoreMock.On("Delete", "sweep-active").Return(nil)
 
 	cfg := pluginConfig{Libraries: []libraryConfig{{
-		LibraryID: "lib1",
+		LibraryID: "1",
 		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
 	}}}
 
@@ -473,6 +489,10 @@ func TestRunSyncChunk_GateSkipsUnchangedLibrary(t *testing.T) {
 
 // TestRunSyncChunk_GateProcessesRescannedLibrary proves the gate opens (pages
 // normally and re-saves the threshold) once LastScanAt advances past it.
+//
+// The Library mock returns a real MountPoint so cachedFileIndex can walk it
+// after the gate opens (the gate uses the same GetLibrary call). The song is
+// skip-rated, so the empty mount is fine.
 func TestRunSyncChunk_GateProcessesRescannedLibrary(t *testing.T) {
 	resetSubsonicMock(t)
 	resetKVStoreMock(t)
@@ -484,7 +504,7 @@ func TestRunSyncChunk_GateProcessesRescannedLibrary(t *testing.T) {
 	host.KVStoreMock.On("Get", "last-synced:1:alice").
 		Return([]byte(threshold.Format(time.RFC3339Nano)), true, nil)
 	host.LibraryMock.On("GetLibrary", int32(1)).
-		Return(&host.Library{ID: 1, LastScanAt: lastScan.Unix()}, nil)
+		Return(&host.Library{ID: 1, LastScanAt: lastScan.Unix(), MountPoint: t.TempDir()}, nil)
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK([]subsonicSong{{ID: "a1", UserRating: 5}}), nil)

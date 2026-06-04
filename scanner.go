@@ -24,10 +24,13 @@ import (
 // either advances the cursor or completes the sweep – a chain of continuations
 // always terminates.
 func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCursor, bool) {
-	// Per-call cache of LibraryGetLibrary results so multiple users of one
-	// library share a single host call. Globals do not persist across
-	// callbacks, so this is intentionally scoped to one invocation.
+	// Per-call caches: LibraryGetLibrary results (for the LastScanAt gate) and
+	// file-index results (for size-based file matching) so multiple users of
+	// one library share a single host call and a single mount walk. Globals
+	// do not persist across callbacks, so both are intentionally scoped to
+	// one invocation.
 	libCache := map[string]libScanResult{}
+	indexCache := map[string]fileIndexResult{}
 
 	for {
 		// Skip exhausted users/libraries. Also tolerates indices that point
@@ -82,11 +85,26 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 			}
 		}
 
+		// Resolve the library's sandbox mount and index its files by (size,
+		// suffix). Navidrome does not give plugins an openable path for a song
+		// (the Subsonic `path` is a synthesized fake by default), so the only
+		// way to locate a file is to walk the mount the host provides. A
+		// failure here is non-fatal and the pair is skipped WITHOUT saving the
+		// threshold – nothing was processed, so the next run retries from the
+		// same baseline.
+		index, indexOK := cachedFileIndex(indexCache, lib.LibraryID)
+		if !indexOK {
+			cur.User++
+			cur.Offset = 0
+			cur.PairStart = ""
+			continue
+		}
+
 		if cur.PairStart == "" {
 			cur.PairStart = time.Now().UTC().Format(time.RFC3339Nano)
 		}
 
-		next, pairDone := processPairChunk(lib, u, cfg, cur, threshold, deadline)
+		next, pairDone := processPairChunk(lib, u, cfg, cur, threshold, deadline, index)
 		cur = next
 		if !pairDone {
 			return cur, false // deadline hit (or fetch failed) mid-pair
@@ -116,7 +134,7 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 // A page-fetch failure returns pairDone=false without advancing past the failed
 // page, so the next run retries the same offset; the cursor already points at
 // the first unprocessed song.
-func processPairChunk(lib libraryConfig, u userConfig, cfg pluginConfig, cur syncCursor, threshold time.Time, deadline time.Time) (syncCursor, bool) {
+func processPairChunk(lib libraryConfig, u userConfig, cfg pluginConfig, cur syncCursor, threshold time.Time, deadline time.Time, index map[string][]fileEntry) (syncCursor, bool) {
 	if cfg.DryRun {
 		logInfo(fmt.Sprintf(
 			"nd-rating-sync: [DRY RUN] user=%q – no ratings will be written", u.Username))
@@ -157,7 +175,7 @@ func processPairChunk(lib libraryConfig, u userConfig, cfg pluginConfig, cur syn
 		}
 
 		for i := skip; i < len(page); i++ {
-			processSong(u, cfg, page[i], threshold, &tally)
+			processSong(u, cfg, page[i], threshold, index, &tally)
 			cur.Offset = pageOffset + i + 1
 			if time.Now().After(deadline) {
 				tally.log(u.Username, lib.LibraryID, cfg.DryRun)
@@ -193,11 +211,12 @@ func (t syncTally) log(username, libraryID string, dryRun bool) {
 }
 
 // processSong applies the rating pipeline to one song: skip-if-already-rated,
-// skip-if-unchanged (incremental), read+parse the file, then write or clear the
-// rating. Outcomes are accumulated into tally. A file that cannot be read or
-// parsed is treated as fileUnreadable – never as "untagged" – so
-// clear_rating_if_untagged can never wipe a rating on a transient I/O error.
-func processSong(u userConfig, cfg pluginConfig, s subsonicSong, threshold time.Time, tally *syncTally) {
+// locate the real file under the library mount, skip-if-unchanged (incremental),
+// read+parse the file, then write or clear the rating. Outcomes are accumulated
+// into tally. A file that cannot be located, read, or parsed is treated as
+// fileUnreadable – never as "untagged" – so clear_rating_if_untagged can never
+// wipe a rating on a transient I/O error or an unmatched file.
+func processSong(u userConfig, cfg pluginConfig, s subsonicSong, threshold time.Time, index map[string][]fileEntry, tally *syncTally) {
 	if u.SkipAlreadyRated && s.UserRating > 0 {
 		logDebug(fmt.Sprintf(
 			"nd-rating-sync: skipping %q – already rated (%d stars in Navidrome)", s.Title, s.UserRating))
@@ -205,17 +224,31 @@ func processSong(u userConfig, cfg pluginConfig, s subsonicSong, threshold time.
 		return
 	}
 
-	if !threshold.IsZero() {
-		if info, err := os.Stat(s.Path); err == nil && info.ModTime().Before(threshold) {
-			logDebug(fmt.Sprintf(
-				"nd-rating-sync: skipping %q – unchanged since last scan (mtime=%s)",
-				s.Title, info.ModTime().Format(time.RFC3339)))
-			tally.skippedUnchanged++
-			return
-		}
+	// Locate the file under the library mount. Navidrome's Subsonic `path`
+	// field is a synthesized fake by default (see helpers.fakePath in the
+	// server), so we cannot open it directly; instead we match on the
+	// reported byte size + suffix that the host's scanner stored.
+	// A missing or ambiguous match is treated as unreadable – never as
+	// "no tag found" – so clear_rating_if_untagged can never wipe a rating
+	// for a file we could not positively identify on disk.
+	entry, found := matchFile(index, s)
+	if !found {
+		logDebug(fmt.Sprintf(
+			"nd-rating-sync: no unique file for %q (size=%d suffix=%q) – skipping",
+			s.Title, s.Size, s.Suffix))
+		tally.skippedUnreadable++
+		return
 	}
 
-	stars, result := extractStarsFromFile(s.Path, s.Suffix, u.RatingTagOrder)
+	if !threshold.IsZero() && entry.mtime.Before(threshold) {
+		logDebug(fmt.Sprintf(
+			"nd-rating-sync: skipping %q – unchanged since last scan (mtime=%s)",
+			s.Title, entry.mtime.Format(time.RFC3339)))
+		tally.skippedUnchanged++
+		return
+	}
+
+	stars, result := extractStarsFromFile(entry.path, s.Suffix, u.RatingTagOrder)
 	switch result {
 	case fileUnreadable:
 		// I/O error, unsupported extension, or parse panic. Never clear here —
@@ -279,9 +312,9 @@ func formatThreshold(t time.Time) string {
 type fileReadResult int
 
 const (
-	tagFound      fileReadResult = iota // a recognised rating tag was extracted
-	tagAbsent                           // file was read and parsed; no recognised tag
-	fileUnreadable                      // I/O error, unsupported extension, or container parse failure
+	tagFound       fileReadResult = iota // a recognised rating tag was extracted
+	tagAbsent                            // file was read and parsed; no recognised tag
+	fileUnreadable                       // I/O error, unsupported extension, or container parse failure
 )
 
 // maxAudioFileBytes caps how much of any single file we will pull into memory.
