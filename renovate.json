@@ -14,7 +14,9 @@
   "customManagers": [
     {
       "customType": "regex",
-      "fileMatch": ["\\.github/workflows/.*\\.yml$"],
+      "managerFilePatterns": [
+        "/\\.github/workflows/.*\\.yml$/"
+      ],
       "matchStrings": ["tinygo-version: '(?<currentValue>[^']+)'"],
       "depNameTemplate": "tinygo-org/tinygo",
       "datasourceTemplate": "github-releases",
