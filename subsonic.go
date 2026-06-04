@@ -32,8 +32,9 @@ type subsonicSong struct {
 	ID         string `json:"id"`
 	Title      string `json:"title"`
 	Artist     string `json:"artist"`
-	Path       string `json:"path"`
-	Suffix     string `json:"suffix"`
+	Path       string `json:"path"`   // Navidrome's reported path — synthesized/fake by default, NOT used to open the file
+	Suffix     string `json:"suffix"` // file extension without the dot, e.g. "mp3"
+	Size       int64  `json:"size"`   // file size in bytes — used to locate the real file under the library mount
 	UserRating int    `json:"userRating"` // 0 = unrated, 1–5 = stars
 }
 

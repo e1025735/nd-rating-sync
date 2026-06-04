@@ -14,11 +14,11 @@
   "default_skip_already_rated": true,
   "default_clear_rating_if_untagged": null,
 
-  "_comment_libraries": "One entry per Navidrome library. The libraryId is the internal ID shown on the Libraries admin page — NOT the display name. libraryName is purely for your own reference. Each library carries its own users[] list, so a single user can be configured differently in different libraries.",
+  "_comment_libraries": "One entry per Navidrome library. The libraryId is the internal NUMERIC ID shown on the Libraries admin page (e.g. \"1\") — NOT the display name. The plugin uses it both to scope the song query and to resolve the library's read-only filesystem mount, so it must be that number. libraryName is purely for your own reference. Each library carries its own users[] list, so a single user can be configured differently in different libraries.",
 
   "libraries": [
     {
-      "libraryId": "REPLACE-WITH-NAVIDROME-LIBRARY-ID",
+      "libraryId": "1",
       "libraryName": "Main Music",
 
       "users": [
@@ -44,7 +44,7 @@
     {
       "_comment_second_library": "Optional second library example. Useful if you keep, say, lossy stream rips separate from your main lossless collection. Note that Bob is omitted here — he simply doesn't get rating sync for this library, while Alice still does.",
 
-      "libraryId": "REPLACE-WITH-SECOND-LIBRARY-ID",
+      "libraryId": "2",
       "libraryName": "Streaming Rips",
       "users": [
         {

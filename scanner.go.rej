@@ -1,0 +1,74 @@
+diff a/scanner.go b/scanner.go	(rejected hunks)
+@@ -137,6 +137,30 @@ func runSyncForUser(lib libraryConfig, u userConfig, cfg pluginConfig) error {
+ 		return fmt.Errorf("fetching songs: %w", err)
+ 	}
+ 
++	// Navidrome does not hand a plugin an openable path for a song, so locate
++	// each file by walking the library's sandbox mount and indexing by size.
++	// A failure here is non-fatal: we skip this (library, user) without writing
++	// or clearing any rating, so a missing mount can never corrupt user state.
++	mountPoint, err := resolveMountPoint(lib.LibraryID)
++	if err != nil {
++		logWarn(fmt.Sprintf(
++			"nd-rating-sync: cannot access filesystem for library=%q user=%q: %v – skipping",
++			lib.LibraryID, u.Username, err))
++		return nil
++	}
++	index, err := buildFileIndex(mountPoint)
++	if err != nil {
++		logWarn(fmt.Sprintf(
++			"nd-rating-sync: cannot read library mount %q for user=%q – skipping",
++			mountPoint, u.Username))
++		logDebug(fmt.Sprintf(
++			"nd-rating-sync: read mount %q error: %q", mountPoint, err.Error()))
++		return nil
++	}
++	logDebug(fmt.Sprintf(
++		"nd-rating-sync: indexed mount %q for user=%q – %d size buckets from %d songs",
++		mountPoint, u.Username, len(index), len(songs)))
++
+ 	rated, cleared, wouldRate, wouldClear, skippedRated, skippedNoTag, skippedUnchanged, skippedUnreadable, errored := 0, 0, 0, 0, 0, 0, 0, 0, 0
+ 	processed := 0
+ 	for _, s := range songs {
+@@ -147,14 +171,24 @@ func runSyncForUser(lib libraryConfig, u userConfig, cfg pluginConfig) error {
+ 			continue
+ 		}
+ 
+-		if !threshold.IsZero() {
+-			if info, err := os.Stat(s.Path); err == nil && info.ModTime().Before(threshold) {
+-				logDebug(fmt.Sprintf(
+-					"nd-rating-sync: skipping %q – unchanged since last scan (mtime=%s)",
+-					s.Title, info.ModTime().Format(time.RFC3339)))
+-				skippedUnchanged++
+-				continue
+-			}
++		entry, found := matchFile(index, s)
++		if !found {
++			// File not present under the mount, or an ambiguous size match.
++			// Treat as unreadable (never "untagged"): clearing here would wipe
++			// a rating for a file we could not actually inspect.
++			logDebug(fmt.Sprintf(
++				"nd-rating-sync: no unique file for %q (size=%d suffix=%q) – skipping",
++				s.Title, s.Size, s.Suffix))
++			skippedUnreadable++
++			continue
++		}
++
++		if !threshold.IsZero() && entry.mtime.Before(threshold) {
++			logDebug(fmt.Sprintf(
++				"nd-rating-sync: skipping %q – unchanged since last scan (mtime=%s)",
++				s.Title, entry.mtime.Format(time.RFC3339)))
++			skippedUnchanged++
++			continue
+ 		}
+ 
+ 		if cfg.MaxSongsPerRun > 0 && processed >= cfg.MaxSongsPerRun {
+@@ -165,7 +199,7 @@ func runSyncForUser(lib libraryConfig, u userConfig, cfg pluginConfig) error {
+ 		}
+ 		processed++
+ 
+-		stars, result := extractStarsFromFile(s.Path, s.Suffix, u.RatingTagOrder)
++		stars, result := extractStarsFromFile(entry.path, s.Suffix, u.RatingTagOrder)
+ 		switch result {
+ 		case fileUnreadable:
+ 			// I/O error or unsupported extension. Never clear in this case —

@@ -10,8 +10,9 @@ Navidrome plugin (WASM) that reads embedded star-rating tags from MP3, FLAC, Ogg
 | `config.go` | Config types (`pluginConfig`, `libraryConfig`, `userConfig`) and `loadConfig()` |
 | `cursor.go` | `syncCursor` (resumable position carried in the scheduler payload), `parseCursor` / `marshal`, and `callBudget` (20 s — the per-callback wall-clock budget, well under Navidrome's hardcoded 30 s plugin-call limit) |
 | `scanner.go` | Sync engine — `runSyncChunk` (walks library/user pairs until the deadline; loads each pair's threshold and applies the **LastScanAt gate** — skips a fresh pair whose library has not been rescanned since the stored threshold, without saving), `processPairChunk` (one pair from a song offset, takes the threshold as a param, checks the deadline after each song), and `processSong`. `extractStarsFromFile` returns a `fileReadResult` (`tagFound` / `tagAbsent` / `fileUnreadable`) so I/O failures, oversize files (`maxAudioFileBytes` = 64 MiB), unsupported extensions, and parser panics never trigger `clear_rating_if_untagged`. `readAudioFile` enforces the size cap; `dispatchParser` recovers panics from any container parser so one hostile file can't kill the whole sync. |
+| `paths.go` | Filesystem-mount resolution and file matching — `resolveMountPoint` (config `libraryId` → `host.LibraryGetLibrary(int32).MountPoint`), `buildFileIndex` (recursive `os.ReadDir` walk keyed by `sizeKey(size, ext)`), `matchFile` (song → file by exact size+suffix; ambiguous/missing → not found). See **File access** below. |
 | `state.go` | KV-backed state — `loadLastSynced` / `saveLastSynced` (incremental threshold; KV key `"last-synced:" + url.QueryEscape(libraryID) + ":" + url.QueryEscape(username)` so a `:` in either component can't collide with a different tuple), plus the overlap-guard helpers `sweepInProgress` / `markSweepActive` / `clearSweepActive` (`sweep-active` heartbeat key, `sweepStaleAfter` = 2 min). All KV failures fail open. |
-| `subsonic.go` | Subsonic API domain — response types, `fetchSongPage` (single lazy page), `fetchAllSongs` (wrapper that loops it), `setRating` |
+| `subsonic.go` | Subsonic API domain — response types (incl. `subsonicSong.Size`, used to locate the file under the mount), `fetchAllSongs`, `setRating` |
 | `library.go` | `libraryLastScan` — wraps `host.LibraryGetLibrary` (empty libraryID → `LibraryGetAllLibraries`, newest `LastScanAt`) for the change-detection gate; returns `(zero,false)` on any uncertainty so the gate fails open. `cachedLibraryLastScan` memoises it per `runSyncChunk` call. |
 | `id3.go` | ID3v2 tag parsing (`parseID3v2Rating`) — dispatches by per-user `tagOrder` |
 | `flac.go` | FLAC + Vorbis comment parsing (`parseFLACVorbisComments`, `parseFLACRating`) plus the shared `ratingFromVorbisComments` resolver — hand-rolled, no external dep. Comment count is clamped to `maxVorbisComments` (1024) so a crafted block declaring `count = 2^32` can't burn millions of allocations before the byte budget runs out. |
@@ -21,7 +22,7 @@ Navidrome plugin (WASM) that reads embedded star-rating tags from MP3, FLAC, Ogg
 | `m4a.go` | MP4 atom walker (`walkAtoms`, `findAtom`, `parseM4ARating`) — resolves freeform `----` atoms for FMPS_Rating, RATING, and rating |
 | `wma.go` | ASF header walker (`parseWMARating`, `parseASFExtContentDesc`, `decodeUTF16LE`) — reads `WM/SharedUserRating` and `FMPS_Rating` from Extended Content Description Object |
 | `rating.go` | Pure converters: `fmpsToStars`, `ratingIntToStars`, `popmWMPToStars`, `popmITunesToStars` |
-| `manifest.json` | Plugin metadata, capabilities, JSON Schema config definition |
+| `manifest.json` | Plugin metadata, capabilities, permissions (`library` + `filesystem:true` for read-only file access — NOT the invalid `libraries`/`allowWrite` shape), JSON Schema config definition |
 
 ## Build
 
@@ -32,7 +33,32 @@ tinygo build -o plugin.wasm -target wasip1 -buildmode=c-shared .
 zip -j nd-rating-sync.ndp manifest.json plugin.wasm
 ```
 
-`go test ./...` and `go vet ./...` work on the regular toolchain (CI runs both). `pdk_stub.go` is `//go:build !wasip1` and provides no-op stand-ins for `logInfo`/`logDebug`/`logWarn`/`getConfig`; the Navidrome PDK ships matching non-wasip1 stubs for `host.*`. Only `GOARCH=wasm GOOS=wasip1 go vet ./...` fails — host imports have no Go function bodies under wasip1; TinyGo wires them up at link time. That part is expected.
+`go test ./...` and `go vet ./...` work on the regular toolchain (CI runs both). `pdk_stub.go` is `//go:build !wasip1` and provides no-op stand-ins for `logInfo`/`logDebug`/`logWarn`/`getConfig`; the Navidrome PDK ships matching non-wasip1 stubs for `host.*` (incl. `host.LibraryMock` for `LibraryGetLibrary`). Only `GOARCH=wasm GOOS=wasip1 go vet ./...` fails — host imports have no Go function bodies under wasip1; TinyGo wires them up at link time. That part is expected.
+
+## File access (filesystem mount)
+
+Navidrome does **not** hand a plugin an openable path. The Subsonic `search3`
+`path` field is a *synthesized fake* (`AlbumArtist/Album/NN-NN - Title.ext`, see
+Navidrome's `server/subsonic/helpers.go::fakePath`) unless the plugin's player
+has Report Real Path enabled — which a plugin cannot set (no manifest field; the
+`subsonicapi` permission can't modify player settings). And even a real path is
+the *host* path, not the in-sandbox one. So the plugin ignores `s.Path` and reads
+files through the library **mount** instead:
+
+- `manifest.json` declares `"library": { "filesystem": true }`. Navidrome then
+  read-only-mounts each assigned library at `/libraries/{id}` inside the sandbox.
+- `resolveMountPoint(libraryId)` → `host.LibraryGetLibrary(int32(id)).MountPoint`.
+  `libraryId` must be numeric; a blank/non-numeric ID or empty `MountPoint`
+  (filesystem perm not granted / library unassigned) is logged and the
+  (library, user) is skipped without touching any rating.
+- `buildFileIndex` walks the mount with `os.ReadDir` recursion (the pattern used
+  by the official `library-inspector` / `artist-nfo` plugins; avoids any
+  `filepath.WalkDir` TinyGo edge cases) and indexes by `sizeKey(size, ext)`.
+- `matchFile` resolves a song to its file by exact `(size, suffix)`. 0 or >1
+  candidates → not found → caller counts `skippedUnreadable` (never `tagAbsent`),
+  so an unmatched/ambiguous file can never be cleared by `clear_rating_if_untagged`.
+- There is **no** host "read file" API; `readAudioFile` uses plain `os.Open` on
+  the matched mount path.
 
 ## Config model (v0.3.0+)
 
@@ -65,7 +91,7 @@ When `incremental_sync` is true (default), each (library, user) tuple records th
 
 - KV key: `last-synced:{libraryID}:{username}` (plugin-scoped by the host).
 - Value: scan-start timestamp, captured when the pair *starts* (carried as `syncCursor.PairStart` across continuations) and written only when the pair is **fully** processed — so an interrupted/resumed sweep never advances the threshold past songs it hasn't reached yet. RFC3339Nano UTC.
-- Skip rule: `os.Stat(path).ModTime().Before(threshold)` — exact-equality files re-process, which keeps `setRating` idempotent and avoids drift if mtime resolution is coarser than expected.
+- Skip rule: the matched file's `ModTime().Before(threshold)` (mtime captured by `buildFileIndex` while walking the mount, not a separate `os.Stat`) — exact-equality files re-process, which keeps `setRating` idempotent and avoids drift if mtime resolution is coarser than expected.
 - Failure modes are non-fatal: a missing/malformed/unreadable KV value falls back to "no threshold" (full scan); a KV write failure means the next run does redundant work, never incorrect work.
 - Set `incremental_sync=false` to force a full scan every run — useful after a user changes `ratingTagOrder`, since tag-order changes don't auto-invalidate the threshold.
 

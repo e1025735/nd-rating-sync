@@ -133,7 +133,7 @@ For every Navidrome library you want synced, add an entry to `libraries[]`:
 
 | Field | Required | Meaning |
 |-------|----------|---------|
-| `libraryId` | yes | The internal ID of the library, visible on Navidrome's *Libraries* admin page. **Not** the display name. |
+| `libraryId` | yes | The internal **numeric** ID of the library, visible on Navidrome's *Libraries* admin page (e.g. `1`). **Not** the display name. The plugin uses it to look up the library's filesystem mount point, so it must be the number Navidrome assigned. |
 | `libraryName` | no | Human-readable label. Purely for your own reference — the plugin ignores it. |
 | `users` | yes | Per-user settings within this library. See below. |
 
@@ -233,27 +233,29 @@ plugin OnInit
       │  schedules one-shot immediate sync
       │
       └──── recurring / immediate sync ─────────────────────────┐
-                                                                 │
-                                                                 ▼
+                                                                │
+                                                                ▼
                                               process one time-budgeted chunk
                                                           │
-                              ┌─ change-detection gate (incremental, full sweep) ──┐
+                              ┌─ change-detection gate (incremental, full sweep)  ──┐
                               │  Navidrome rescanned this library since last sync?  │
                               │     no → skip whole (library,user) pair, no listing │
-                              └────────────────────────┬────────────────────────────┘
-                                                       │ yes
-                       ┌───────────────────────────────┴──────────────────────┐
-                       │                                                       │
-                       ▼                                                       ▼
-        load last-synced threshold              SubsonicAPICall("search3") → paginate
-        from KVStore (incremental_sync)         every song accessible by user
-                       │                                                      │
-                       └──────────── for each song ──────────────────────────┘
+                              └───────────────────────────────────────┬─────────────┘
+                                                                      │ yes
+                       ┌────────────────────────────────┬─────────────┴───────────────────┬───────────────────────────┐
+                       │                                │                                 │                           │
+                       ▼                                ▼                                 ▼                           │
+            load last-synced threshold     SubsonicAPICall("search3") →     LibraryGetLibrary(id) → mount point       │
+            from KVStore (incremental)     paginate songs (id, size, …)     walk mount, index files by (size, ext)    │
+                      │                                 │                                 │                           │
+                      └─────────────────────────── for each song ─────────────────────────┴───────────────────────────┘
                                        │
                                        ├─ song already rated in Navidrome?  → skip (skip_already_rated)
                                        │
-                                       ├─ os.Stat(path).mtime < threshold?  → skip (unchanged)
+                                       ├─ match song → file by exact (size, suffix) → no unique match? skip (unreadable, never clears)
                                        │
+                                       ├─ matched file mtime < threshold?          → skip (unchanged)
+                                       |  
                                        ├─ read file (≤ 64 MiB)     → fail or oversize? skip (unreadable, never clears)
                                        │
                                        ├─ parse tags (ID3v2 / Vorbis / MP4 / ASF)
@@ -264,13 +266,34 @@ plugin OnInit
                                        │
                                        └─ no tag found + clear_rating_if_untagged?
                                                        → SubsonicAPICall("setRating?id=…&rating=0")
-                       │
-                       ▼
-        budget (~20s) reached with songs still pending?
-          → reschedule a one-time continuation carrying the cursor, return
-        (library, user) fully processed?
-          → save scan-start timestamp to KVStore (incremental_sync)
+                                                              │
+                                                              ▼
+                                                budget (~20s) reached with songs still pending?
+                                                  → reschedule a one-time continuation carrying the cursor, return
+                                                (library, user) fully processed?
+                                                  → save scan-start timestamp to KVStore (incremental_sync)
 ```
+### How the plugin finds your files
+
+A Navidrome plugin runs in a sandbox and **cannot** open arbitrary paths. The
+Subsonic API also does not hand a plugin a usable path — the `path` field in a
+`search3` response is, by default, a *synthesized* string built from tags
+(`Artist/Album/NN - Title.ext`) that does not exist on disk. So the plugin
+never tries to open it.
+
+Instead, with the `library` permission's **filesystem** access enabled, Navidrome
+read-only-mounts each assigned library inside the sandbox and tells the plugin
+the mount point via `LibraryGetLibrary`. The plugin then:
+
+1. Walks that mount and indexes every audio file by **(exact byte size, extension)**.
+2. For each Subsonic song, looks up its file by the `size` Navidrome reports.
+3. Reads and parses only the matched file, then calls `setRating` using the song's ID.
+
+A song whose size matches no file — or matches *more than one* file (an
+ambiguous size+extension collision) — is treated as **unreadable** and skipped.
+It is never treated as "untagged", so `clear_rating_if_untagged` can never wipe
+a rating for a file the plugin could not positively identify.
+
 
 ### Staying within Navidrome's 30s call limit
 
@@ -343,7 +366,11 @@ make
    `setRating` calls will fail with API error 50.
 
 7. Under **Library Access**, grant access to the libraries whose IDs you
-   used in `libraries[].libraryId`.
+   used in `libraries[].libraryId`. The plugin requests **read-only filesystem
+   access** to those libraries (manifest `library` permission with
+   `filesystem: true`); this is what lets Navidrome mount the music folders into
+   the plugin sandbox so the files can be read. Without it, every file is
+   skipped as unreadable and no ratings are written.
 
 The plugin runs an immediate scan on activation, then repeats on the
 `sync_schedule` cron. After the first pass, recurring scans are nearly
@@ -394,7 +421,10 @@ The counters tell you what happened:
 |---------|-------------|
 | `no libraries configured` | The `libraries` array is empty or missing. Add at least one library with at least one user. |
 | `setRating` API error 50 (`user not authorised`) | The user is configured in `libraries[].users[]` but **not** added to the plugin's *User Access* tab in the Navidrome UI. Both are required. |
-| `cannot open "/path/to/song.mp3": permission denied` | The plugin lacks *Library Access* for the library containing this song. |
+| Every song counted as `skipped_unreadable`, nothing rated | The plugin has no filesystem access to the library. Grant **Library Access** (manifest `library` + `filesystem: true`) and confirm each `libraries[].libraryId` is the correct **numeric** ID. Look for `cannot access filesystem for library=…` in the log. |
+| `cannot access filesystem for library="…"` | The library ID is non-numeric, the library isn't assigned to the plugin, or filesystem access wasn't granted. The plugin skips that (library, user) without touching any rating. |
+| `no unique file for "…" (size=… suffix=…)` (debug) | No file under the library mount has that exact size + extension, or two files share it (ambiguous). The song is skipped as unreadable and its rating is never cleared. Often means Navidrome's stored size is stale — rescan the library so sizes match. |
+| `cannot open "…" (skipping)` | A file matched by size could not be opened (transient I/O error, or it was moved/removed mid-scan). Counted under `skipped_unreadable`; never cleared. |
 | `skipping "/path/to/song.flac" – size NNN exceeds cap …` | The file is larger than the 64 MiB read cap (typically a misreported path or a sample-rate-extreme archival rip). Counted under `skipped_unreadable`; the existing Navidrome rating is left untouched. |
 | `skipping … – supported formats are MP3, FLAC, Ogg, Opus, WAV, DSF, M4A/AAC and WMA (got .aiff)` | The file is in a container the plugin does not support. The song is silently passed over. |
 | Ratings not updating after I edited a tag | Two layers gate this. (1) The change-detection gate waits for Navidrome to rescan the library — until then an already-indexed file isn't revisited. (2) Incremental sync then only re-reads files whose mtime moved (confirm with `ls -l`). To apply an edit immediately, run one pass with `incremental_sync = false`. |

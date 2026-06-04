@@ -91,7 +91,8 @@ func TestExtractStarsFromFile_MP3NoRatingTag(t *testing.T) {
 }
 
 func TestExtractStarsFromFile_MP3WithFMPS(t *testing.T) {
-	path := writeFMPSFile(t, "0.6")
+	mount := t.TempDir()
+	path := writeFMPSFileAt(t, mount, "song.mp3", "0.6")
 	stars, result := extractStarsFromFile(path, "mp3", []string{"MediaMonkey"})
 	assert.Equal(t, tagFound, result)
 	assert.Equal(t, 3, stars)
@@ -124,19 +125,23 @@ func TestRunSyncStep_NoLibraries(t *testing.T) {
 
 // ─── Per-pair sync (integration) ─────────────────────────────────────────────
 
-// TestSyncPair_HappyPath wires the full pipeline together: SubsonicAPI returns
-// one song pointing at a real ID3-tagged temp file, the scanner reads the
+// TestRunSyncForUser_HappyPath wires the full pipeline together: a real
+// ID3-tagged file sits under the library mount, SubsonicAPI returns one song
+// whose size matches that file, the scanner locates it by size, reads the
 // rating, and setRating is called with the correct star count.
 func TestSyncPair_HappyPath(t *testing.T) {
 	resetSubsonicMock(t)
+	resetLibraryMock(t)
 
 	// 1. Real ID3 file with FMPS_Rating=0.6 (→ 3 stars).
-	path := writeFMPSFile(t, "0.6")
+	mount := t.TempDir()
+	path := writeFMPSFileAt(t, mount, "song-1.mp3", "0.6")
+	mockGetLibrary(1, mount)
 
-	// 2. fetchSongPage returns one song pointing at that path.
-	songs := []subsonicSong{{ID: "song-1", Title: "Test", Path: path, Suffix: "mp3"}}
+	// 2. fetchAllSongs returns one song whose size matches that file.
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Path: path, Size: fileSize(t, path)}}
 	host.SubsonicAPIMock.On("Call",
-		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=lib1`,
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK(songs), nil)
 
 	// 3. setRating expects rating=3.
@@ -144,7 +149,7 @@ func TestSyncPair_HappyPath(t *testing.T) {
 		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
 
 	cfg := pluginConfig{Libraries: []libraryConfig{{
-		LibraryID: "lib1",
+		LibraryID: "1",
 		Users: []userConfig{{
 			Username:         "alice",
 			SkipAlreadyRated: true,
@@ -159,24 +164,30 @@ func TestSyncPair_HappyPath(t *testing.T) {
 // ─── Regression: read failures must not trigger clear ────────────────────────
 
 // TestSyncPair_UnreadableFileWithClear_DoesNotClearRating proves that a
-// transient read failure (here: missing file) is NOT treated as "no tag found"
-// when clear_rating_if_untagged=true. Conflating the two would wipe the user's
-// existing Navidrome rating on the next I/O hiccup.
+// song the plugin cannot locate on disk is NOT treated as "no tag found" when
+// clear_rating_if_untagged=true. Conflating the two would wipe the user's
+// existing Navidrome rating whenever a file can't be matched.
 func TestSyncPair_UnreadableFileWithClear_DoesNotClearRating(t *testing.T) {
 	resetSubsonicMock(t)
+	resetLibraryMock(t)
+
+	// Empty mount: the song's size matches no file, so matchFile reports
+	// not-found and the scanner must surface this as fileUnreadable.
+	mount := t.TempDir()
+	mockGetLibrary(1, mount)
 
 	// Song points at a path that doesn't exist — extractStarsFromFile must
 	// surface this as fileUnreadable.
-	songs := []subsonicSong{{ID: "song-1", Title: "Test", Path: "/no/such/file.mp3", Suffix: "mp3"}}
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Size: 4242}}
 	host.SubsonicAPIMock.On("Call",
-		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=lib1`,
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK(songs), nil)
 	// CRITICAL: setRating must NOT be called with rating=0. The mock has no
 	// expectation registered for it, and AssertNotCalled below makes the
 	// invariant explicit.
 
 	cfg := pluginConfig{Libraries: []libraryConfig{{
-		LibraryID: "lib1",
+		LibraryID: "1",
 		Users: []userConfig{{
 			Username:              "alice",
 			ClearRatingIfUntagged: true,
@@ -193,25 +204,28 @@ func TestSyncPair_UnreadableFileWithClear_DoesNotClearRating(t *testing.T) {
 func TestSyncPair_IncrementalFirstRun_ProcessesAllAndSavesThreshold(t *testing.T) {
 	resetSubsonicMock(t)
 	resetKVStoreMock(t)
+	resetLibraryMock(t)
 
-	path := writeFMPSFile(t, "0.6")
-	songs := []subsonicSong{{ID: "song-1", Title: "Test", Path: path, Suffix: "mp3"}}
+	mount := t.TempDir()
+	path := writeFMPSFileAt(t, mount, "song.mp3", "0.6")
+	mockGetLibrary(1, mount)
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Path: path, Size: fileSize(t, path)}}
 
 	host.SubsonicAPIMock.On("Call",
-		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=lib1`,
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK(songs), nil)
 	host.SubsonicAPIMock.On("Call", "setRating?id=song-1&rating=3&u=alice").
 		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
 
 	// First run: KV miss → full scan.
-	host.KVStoreMock.On("Get", "last-synced:lib1:alice").
+	host.KVStoreMock.On("Get", "last-synced:1:alice").
 		Return([]byte(nil), false, nil).Once()
 	// At end of run, scan-start timestamp is written back.
-	host.KVStoreMock.On("Set", "last-synced:lib1:alice", mock.Anything).
+	host.KVStoreMock.On("Set", "last-synced:1:alice", mock.Anything).
 		Return(nil).Once()
 
 	cfg := pluginConfig{IncrementalSync: true, Libraries: []libraryConfig{{
-		LibraryID: "lib1",
+		LibraryID: "1",
 		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
 	}}}
 
@@ -223,27 +237,30 @@ func TestSyncPair_IncrementalFirstRun_ProcessesAllAndSavesThreshold(t *testing.T
 func TestSyncPair_IncrementalSkipsUnchangedFile(t *testing.T) {
 	resetSubsonicMock(t)
 	resetKVStoreMock(t)
+	resetLibraryMock(t)
 
-	path := writeFMPSFile(t, "0.6")
+	mount := t.TempDir()
+	path := writeFMPSFileAt(t, mount, "song.mp3", "0.6")
+	mockGetLibrary(1, mount)
 	// Make the file appear older than the threshold by setting mtime to
 	// a fixed past instant.
 	fileTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	require.NoError(t, os.Chtimes(path, fileTime, fileTime))
 
-	songs := []subsonicSong{{ID: "song-1", Title: "Test", Path: path, Suffix: "mp3"}}
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Path: path, Size: fileSize(t, path)}}
 	host.SubsonicAPIMock.On("Call",
-		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=lib1`,
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK(songs), nil)
 	// setRating should NOT be called — the file is unchanged.
 
 	threshold := fileTime.Add(time.Hour) // strictly after the file's mtime
-	host.KVStoreMock.On("Get", "last-synced:lib1:alice").
+	host.KVStoreMock.On("Get", "last-synced:1:alice").
 		Return([]byte(threshold.Format(time.RFC3339Nano)), true, nil).Once()
-	host.KVStoreMock.On("Set", "last-synced:lib1:alice", mock.Anything).
+	host.KVStoreMock.On("Set", "last-synced:1:alice", mock.Anything).
 		Return(nil).Once()
 
 	cfg := pluginConfig{IncrementalSync: true, Libraries: []libraryConfig{{
-		LibraryID: "lib1",
+		LibraryID: "1",
 		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
 	}}}
 
@@ -256,27 +273,30 @@ func TestSyncPair_IncrementalSkipsUnchangedFile(t *testing.T) {
 func TestSyncPair_IncrementalProcessesNewerFile(t *testing.T) {
 	resetSubsonicMock(t)
 	resetKVStoreMock(t)
+	resetLibraryMock(t)
 
-	path := writeFMPSFile(t, "0.8") // 4 stars
+	mount := t.TempDir()
+	path := writeFMPSFileAt(t, mount, "song.mp3", "0.8") // 4 stars
+	mockGetLibrary(1, mount)
 	// File mtime in the future of the threshold → must be processed.
 	fileTime := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	require.NoError(t, os.Chtimes(path, fileTime, fileTime))
 
-	songs := []subsonicSong{{ID: "song-1", Title: "Test", Path: path, Suffix: "mp3"}}
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Path: path, Size: fileSize(t, path)}}
 	host.SubsonicAPIMock.On("Call",
-		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=lib1`,
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK(songs), nil)
 	host.SubsonicAPIMock.On("Call", "setRating?id=song-1&rating=4&u=alice").
 		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
 
 	threshold := fileTime.Add(-time.Hour) // before file mtime
-	host.KVStoreMock.On("Get", "last-synced:lib1:alice").
+	host.KVStoreMock.On("Get", "last-synced:1:alice").
 		Return([]byte(threshold.Format(time.RFC3339Nano)), true, nil).Once()
-	host.KVStoreMock.On("Set", "last-synced:lib1:alice", mock.Anything).
+	host.KVStoreMock.On("Set", "last-synced:1:alice", mock.Anything).
 		Return(nil).Once()
 
 	cfg := pluginConfig{IncrementalSync: true, Libraries: []libraryConfig{{
-		LibraryID: "lib1",
+		LibraryID: "1",
 		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
 	}}}
 
@@ -554,7 +574,7 @@ func TestRunSyncStepUntil_ContinuationRefreshesGuardNotChecks(t *testing.T) {
 }
 
 // writeFMPSFile creates a temp .mp3 with an FMPS_Rating TXXX frame.
-func writeFMPSFile(t *testing.T, value string) string {
+func writeFMPSFileAt(t *testing.T, dir, name, value string) string {
 	t.Helper()
 	tag := id3v2.NewEmptyTag()
 	tag.AddFrame("TXXX", id3v2.UserDefinedTextFrame{
@@ -564,7 +584,29 @@ func writeFMPSFile(t *testing.T, value string) string {
 	_, err := tag.WriteTo(&buf)
 	require.NoError(t, err)
 
-	path := filepath.Join(t.TempDir(), "song.mp3")
+	path := filepath.Join(dir, name)
 	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o644))
 	return path
+}
+
+// writeFMPSFile creates a temp .mp3 with an FMPS_Rating TXXX frame.
+func writeFMPSFile(t *testing.T, value string) string {
+	t.Helper()
+	return writeFMPSFileAt(t, t.TempDir(), "song.mp3", value)
+}
+
+// fileSize returns the on-disk byte size of path — used to set the Subsonic
+// `size` a test song reports, so matchFile can locate it under the mount.
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	fi, err := os.Stat(path)
+	require.NoError(t, err)
+	return fi.Size()
+}
+
+// mockGetLibrary makes host.LibraryGetLibrary(libID) return a library mounted
+// at mountPoint. Path == MountPoint here, which is all the size-match flow needs.
+func mockGetLibrary(libID int32, mountPoint string) {
+	host.LibraryMock.On("GetLibrary", libID).
+		Return(&host.Library{ID: libID, MountPoint: mountPoint, Path: mountPoint}, nil)
 }

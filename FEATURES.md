@@ -21,7 +21,7 @@ its own; this plugin bridges file tags and the UI.
 
 After a successful scan, the timestamp is persisted per `(library, user)` in Navidrome's KV store. Subsequent runs skip any song whose file mtime predates that timestamp, so recurring scans are nearly instant after the first pass.
 
-- Skip is decided by `os.Stat(path).ModTime()` vs the stored threshold — file mtime is the right signal because tag editors update it the moment the user saves a rating, regardless of whether Navidrome's own library scan has caught up.
+- Skip is decided by the matched file's modification time (captured while indexing the library mount) vs the stored threshold — file mtime is the right signal because tag editors update it the moment the user saves a rating, regardless of whether Navidrome's own library scan has caught up.
 - KV failures are non-fatal: missing/corrupt state falls back to a full scan; failed writes mean the next run does redundant work, never incorrect work.
 - Disable with `incremental_sync=false` to force a full scan every run (useful after changing a user's `ratingTagOrder`).
 
@@ -64,6 +64,27 @@ Incremental sync skips the per-*file* work, but a naive sweep still pages the en
 
 ---
 
+## File location & filesystem access
+
+A Navidrome plugin cannot open arbitrary paths, and the Subsonic API does not
+give a plugin a real file path — the `path` field in a `search3` response is a
+*synthesized* string (built from tags) by default, not a path that exists on
+disk. So the plugin never opens it.
+
+- Requires the manifest `library` permission with **`filesystem: true`**, plus the
+  library assigned to the plugin in the Navidrome UI. Navidrome then read-only-mounts
+  each library inside the sandbox and exposes the mount via `LibraryGetLibrary`.
+- The plugin walks the mount and indexes every supported audio file by **(exact
+  byte size, extension)**, then matches each Subsonic song to its file using the
+  `size` Navidrome reports — no reliance on real paths.
+- A song whose size matches no file, or matches more than one (an ambiguous
+  size+extension collision), is treated as **unreadable** and skipped — never as
+  "untagged" — so `clear_rating_if_untagged` can never wipe a rating for a file
+  the plugin could not positively identify.
+- Read-only: the plugin never writes to the music files.
+
+---
+
 ## Per-user configuration
 
 - **Tag priority order** — `ratingTagOrder` list; first tag *found in the file* wins
@@ -87,7 +108,7 @@ Incremental sync skips the per-*file* work, but a naive sweep still pages the en
 ## Per-library configuration
 
 - Multiple libraries supported; each library has its own user list
-- Library scoped by Navidrome `libraryId`; empty ID searches across all libraries
+- Library scoped by Navidrome `libraryId` (the **numeric** ID); the same ID resolves the read-only filesystem mount, so a valid numeric ID is required (a blank/non-numeric ID is logged and skipped)
 
 ---
 
@@ -106,6 +127,7 @@ Incremental sync skips the per-*file* work, but a naive sweep still pages the en
 - Paginates `search3` (500 songs/page) lazily — fetches only the page the current chunk needs, so a resumed sync re-reads at most one page
 - Calls `setRating` once per song where a tag was found (idempotent)
 - Reads `userRating` from the search response to implement skip-already-rated
+- Reads `size` from the search response to locate each song's file under the library mount (Navidrome does not expose a real file path to plugins)
 - Calls the `LibraryGetLibrary` host function once per library per run to read `LastScanAt` for the change-detection gate — skipping `search3` paging entirely when the library is unchanged
 
 ---
