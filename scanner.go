@@ -177,7 +177,11 @@ func processPairChunk(lib libraryConfig, u userConfig, cfg pluginConfig, cur syn
 		for i := skip; i < len(page); i++ {
 			processSong(u, cfg, page[i], threshold, index, &tally)
 			cur.Offset = pageOffset + i + 1
-			if time.Now().After(deadline) {
+			// Check the deadline only every deadlineCheckEvery songs so the
+			// hot loop does not hammer the WASI clock import. Reducing the
+			// rate also reduces the surface area for the host-side clock
+			// panic we have seen in production (see callBudget docs).
+			if (i-skip+1)%deadlineCheckEvery == 0 && time.Now().After(deadline) {
 				tally.log(u.Username, lib.LibraryID, cfg.DryRun)
 				return cur, false
 			}

@@ -83,7 +83,20 @@ func (ratingPlugin) OnCallback(req scheduler.SchedulerCallbackRequest) error {
 // The continuation uses an empty scheduleID so the host mints a unique one:
 // the currently-firing one-time entry is still registered during its own
 // callback, so reusing its ID would be rejected as a duplicate.
-func runSyncStep(cfg pluginConfig, payload string) error {
+//
+// Any Go-side panic is recovered and returned as an error so a single hostile
+// file or unexpected host response never takes the WASM module down – the
+// next scheduled callback gets a fresh instance and can make progress.
+// (Host-side panics – e.g. a torn-down wazero Context on a clock host call –
+// cannot be recovered from inside the guest; they are mitigated by keeping
+// the call short via callBudget and reducing host call frequency.)
+func runSyncStep(cfg pluginConfig, payload string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logWarn(fmt.Sprintf("nd-rating-sync: recovered panic in sync callback: %v", r))
+			err = fmt.Errorf("recovered panic: %v", r)
+		}
+	}()
 	return runSyncStepUntil(cfg, payload, time.Now().Add(callBudget))
 }
 

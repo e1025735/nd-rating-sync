@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -340,8 +341,11 @@ func TestSyncPair_IncrementalDisabled_BypassesKV(t *testing.T) {
 // ─── Chunked / resumable sync ─────────────────────────────────────────────────
 
 // TestProcessPairChunk_StopsAtDeadlineMidPair proves the time budget yields
-// after a single song (the deadline is checked after each one) and returns an
-// advanced cursor so the next call resumes where this one stopped.
+// within a bounded number of songs after the deadline passes, and returns an
+// advanced cursor so the next call resumes where this one stopped. Yield
+// granularity is deadlineCheckEvery: we tolerate processing up to that many
+// songs past the deadline before yielding, so the test feeds 2× that many
+// already-rated songs.
 //
 // Calls processPairChunk directly so the file index is the caller's
 // responsibility; we pass nil because every song is skipped on
@@ -349,10 +353,9 @@ func TestSyncPair_IncrementalDisabled_BypassesKV(t *testing.T) {
 func TestProcessPairChunk_StopsAtDeadlineMidPair(t *testing.T) {
 	resetSubsonicMock(t)
 
-	songs := []subsonicSong{
-		{ID: "1", Title: "A", UserRating: 5},
-		{ID: "2", Title: "B", UserRating: 5},
-		{ID: "3", Title: "C", UserRating: 5},
+	songs := make([]subsonicSong, 2*deadlineCheckEvery)
+	for i := range songs {
+		songs[i] = subsonicSong{ID: fmt.Sprintf("%d", i+1), Title: "S", UserRating: 5}
 	}
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=lib1`,
@@ -365,7 +368,8 @@ func TestProcessPairChunk_StopsAtDeadlineMidPair(t *testing.T) {
 	next, pairDone := processPairChunk(lib, user, pluginConfig{}, syncCursor{}, time.Time{}, deadline, nil)
 
 	assert.False(t, pairDone, "deadline hit mid-pair → pair not done")
-	assert.Equal(t, 1, next.Offset, "exactly one song processed before yielding")
+	assert.Equal(t, deadlineCheckEvery, next.Offset,
+		"yields exactly at the deadline-check boundary (deadlineCheckEvery songs)")
 	host.SubsonicAPIMock.AssertExpectations(t)
 }
 

@@ -13,7 +13,21 @@ import (
 // plugins/manager.go defaultTimeout). We stop well short of that so the page
 // fetch, one final (possibly 64 MiB) file read, and the reschedule call all
 // have room to complete inside the host's hard limit.
-const callBudget = 20 * time.Second
+//
+// 10s was chosen after a production panic where a callback ran for ~16s and
+// then crashed inside wasi clock_time_get: the host's wazero module was set
+// up with WithCloseOnContextDone(true), and any cancellation in that window
+// turns the next host call into a nil-pointer-dereference. A 10s budget keeps
+// us comfortably under any plausible host timeout (15s, 20s, 30s) and gives
+// generous slack for the trailing host calls.
+const callBudget = 10 * time.Second
+
+// deadlineCheckEvery is the number of songs processed between time.Now()
+// deadline checks inside processPairChunk's hot loop. Each time.Now() is a
+// clock_time_get host call; reducing the rate by a factor of 8 cuts the
+// surface area of clock host calls 8x. With ~10ms per song typical, an 8-song
+// burst is ~80ms of overshoot at worst — negligible against the 10s budget.
+const deadlineCheckEvery = 8
 
 // syncCursor is the resumable position of a sync. It is serialised into the
 // scheduler callback payload so a long sync can be spread across many short
