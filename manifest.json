@@ -31,7 +31,7 @@
         "sync_schedule": {
           "type": "string",
           "title": "Sync schedule (cron expression)",
-          "description": "Cron expression for automatic recurring scans. Examples: '0 * * * *' = every houra, '0 2 * * *' = daily at 02:00. Changes take effect after the plugin is reloaded.",
+          "description": "Cron expression for automatic recurring scans. Examples: '0 * * * *' = every hour, '0 2 * * *' = daily at 02:00. Changes take effect after the plugin is reloaded.",
           "default": "0 * * * *"
         },
         "incremental_sync": {

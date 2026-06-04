@@ -88,11 +88,14 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 		// Resolve the library's sandbox mount and index its files by (size,
 		// suffix). Navidrome does not give plugins an openable path for a song
 		// (the Subsonic `path` is a synthesized fake by default), so the only
-		// way to locate a file is to walk the mount the host provides. A
-		// failure here is non-fatal and the pair is skipped WITHOUT saving the
-		// threshold – nothing was processed, so the next run retries from the
-		// same baseline.
-		index, indexOK := cachedFileIndex(indexCache, lib.LibraryID)
+		// way to locate a file is to walk the mount the host provides. The
+		// walk is also KV-cached under cachedFileIndex/resolveAndIndex so a
+		// continuation chain re-uses the index built by the first chunk
+		// instead of re-walking the mount every callback. A failure here is
+		// non-fatal and the pair is skipped WITHOUT saving the threshold –
+		// nothing was processed, so the next run retries from the same
+		// baseline.
+		index, indexOK := cachedFileIndex(indexCache, libCache, lib.LibraryID)
 		if !indexOK {
 			cur.User++
 			cur.Offset = 0
@@ -244,15 +247,15 @@ func processSong(u userConfig, cfg pluginConfig, s subsonicSong, threshold time.
 		return
 	}
 
-	if !threshold.IsZero() && entry.mtime.Before(threshold) {
+	if !threshold.IsZero() && entry.Mtime.Before(threshold) {
 		logDebug(fmt.Sprintf(
 			"nd-rating-sync: skipping %q – unchanged since last scan (mtime=%s)",
-			s.Title, entry.mtime.Format(time.RFC3339)))
+			s.Title, entry.Mtime.Format(time.RFC3339)))
 		tally.skippedUnchanged++
 		return
 	}
 
-	stars, result := extractStarsFromFile(entry.path, s.Suffix, u.RatingTagOrder)
+	stars, result := extractStarsFromFile(entry.Path, s.Suffix, u.RatingTagOrder)
 	switch result {
 	case fileUnreadable:
 		// I/O error, unsupported extension, or parse panic. Never clear here —

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -122,6 +123,111 @@ func TestRunSyncStep_NoLibraries(t *testing.T) {
 	err := runSyncStep(pluginConfig{}, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no libraries configured")
+}
+
+// ─── KV-backed file index cache (integration) ────────────────────────────────
+
+// TestRunSyncChunk_UsesCachedFileIndex proves the KV-backed file index cache
+// is actually used end-to-end: we deliberately point the library's MountPoint
+// at an EMPTY temp dir so a fresh walk would find nothing, but seed KV with
+// a cached blob whose entry points at a real tagged file elsewhere. The
+// pair only succeeds if cachedFileIndex prefers the KV blob over rebuilding.
+func TestRunSyncChunk_UsesCachedFileIndex(t *testing.T) {
+	resetSubsonicMock(t)
+	resetKVStoreMock(t)
+	resetLibraryMock(t)
+
+	// Real tagged file outside the empty mount.
+	fileDir := t.TempDir()
+	tagged := writeFMPSFileAt(t, fileDir, "song.mp3", "0.8") // 4 stars
+	taggedSize := fileSize(t, tagged)
+
+	// Empty mount + non-zero LastScanAt so the cache validity check passes.
+	emptyMount := t.TempDir()
+	lastScan := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	mockGetLibraryWithScan(1, emptyMount, lastScan.Unix())
+
+	// Seed KV with a cached blob whose only entry points at the real file.
+	blob := cachedFileIndexBlob{
+		Version:    fileIndexCacheVersion,
+		LastScanAt: lastScan.Unix(),
+		Entries:    []fileEntry{{Path: tagged, Size: taggedSize, Mtime: time.Unix(1000, 0).UTC()}},
+	}
+	raw, err := json.Marshal(blob)
+	require.NoError(t, err)
+	host.KVStoreMock.On("Get", "file-index:1").Return(raw, true, nil)
+	// No threshold and incremental off → KV last-synced not touched.
+
+	host.SubsonicAPIMock.On("Call",
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
+	).Return(subsonicOK([]subsonicSong{{ID: "song-1", Title: "T", Suffix: "mp3", Size: taggedSize}}), nil)
+	host.SubsonicAPIMock.On("Call", "setRating?id=song-1&rating=4&u=alice").
+		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
+
+	cfg := pluginConfig{Libraries: []libraryConfig{{
+		LibraryID: "1",
+		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
+	}}}
+
+	runSyncChunk(cfg, syncCursor{}, time.Now().Add(time.Hour))
+	host.SubsonicAPIMock.AssertExpectations(t)
+}
+
+// TestRunSyncChunk_StaleCacheRebuildsAndOverwrites proves that when KV holds a
+// cached index stamped at an OLDER LastScanAt, the next chunk discards it,
+// walks the mount fresh, and overwrites the cache with the new stamp.
+func TestRunSyncChunk_StaleCacheRebuildsAndOverwrites(t *testing.T) {
+	resetSubsonicMock(t)
+	resetKVStoreMock(t)
+	resetLibraryMock(t)
+
+	mount := t.TempDir()
+	path := writeFMPSFileAt(t, mount, "song.mp3", "0.6") // 3 stars
+	size := fileSize(t, path)
+
+	currentScan := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	mockGetLibraryWithScan(1, mount, currentScan.Unix())
+
+	// Stale cache: bogus path + older LastScanAt. Validation must reject it.
+	staleBlob := cachedFileIndexBlob{
+		Version:    fileIndexCacheVersion,
+		LastScanAt: currentScan.Add(-time.Hour).Unix(),
+		Entries:    []fileEntry{{Path: "/does/not/exist.mp3", Size: 9999, Mtime: time.Unix(1, 0)}},
+	}
+	raw, err := json.Marshal(staleBlob)
+	require.NoError(t, err)
+	host.KVStoreMock.On("Get", "file-index:1").Return(raw, true, nil)
+	// After the fresh walk we expect a Set with the CURRENT LastScanAt.
+	var saved []byte
+	host.KVStoreMock.On("Set", "file-index:1", mock.Anything).
+		Run(func(args mock.Arguments) { saved = append([]byte(nil), args.Get(1).([]byte)...) }).
+		Return(nil)
+
+	host.SubsonicAPIMock.On("Call",
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
+	).Return(subsonicOK([]subsonicSong{{ID: "song-1", Title: "T", Suffix: "mp3", Size: size}}), nil)
+	host.SubsonicAPIMock.On("Call", "setRating?id=song-1&rating=3&u=alice").
+		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
+
+	cfg := pluginConfig{Libraries: []libraryConfig{{
+		LibraryID: "1",
+		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
+	}}}
+	runSyncChunk(cfg, syncCursor{}, time.Now().Add(time.Hour))
+
+	host.SubsonicAPIMock.AssertExpectations(t)
+	require.NotNil(t, saved, "fresh walk after stale cache must persist a new blob")
+
+	var got cachedFileIndexBlob
+	require.NoError(t, json.Unmarshal(saved, &got))
+	assert.Equal(t, currentScan.Unix(), got.LastScanAt, "rewritten blob carries the CURRENT LastScanAt")
+}
+
+// mockGetLibraryWithScan is the LastScanAt-aware variant of mockGetLibrary;
+// the cache validation path needs a non-zero scan stamp to engage.
+func mockGetLibraryWithScan(libID int32, mountPoint string, lastScanUnix int64) {
+	host.LibraryMock.On("GetLibrary", libID).
+		Return(&host.Library{ID: libID, MountPoint: mountPoint, Path: mountPoint, LastScanAt: lastScanUnix}, nil)
 }
 
 // ─── Per-pair sync (integration) ─────────────────────────────────────────────
@@ -509,6 +615,10 @@ func TestRunSyncChunk_GateProcessesRescannedLibrary(t *testing.T) {
 		Return([]byte(threshold.Format(time.RFC3339Nano)), true, nil)
 	host.LibraryMock.On("GetLibrary", int32(1)).
 		Return(&host.Library{ID: 1, LastScanAt: lastScan.Unix(), MountPoint: t.TempDir()}, nil)
+	// Gate opens → file index cache miss → walk → persist. With LastScanAt
+	// non-zero we now expect a load attempt and a write.
+	host.KVStoreMock.On("Get", "file-index:1").Return([]byte(nil), false, nil)
+	host.KVStoreMock.On("Set", "file-index:1", mock.Anything).Return(nil)
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK([]subsonicSong{{ID: "a1", UserRating: 5}}), nil)

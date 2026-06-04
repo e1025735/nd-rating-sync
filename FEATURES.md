@@ -82,6 +82,14 @@ disk. So the plugin never opens it.
   "untagged" — so `clear_rating_if_untagged` can never wipe a rating for a file
   the plugin could not positively identify.
 - Read-only: the plugin never writes to the music files.
+- **File index is KV-cached across continuations.** Each chunk runs in a fresh
+  WASM instance, so the recursive mount walk would otherwise repeat every
+  callback — on slow filesystems that ate ~5–6 s of the 10 s budget per chunk.
+  The first chunk persists the index to KV; subsequent chunks reload it,
+  validated against Navidrome's `LastScanAt`. A rescanned library auto-rebuilds
+  on the next chunk (stamp mismatch), so no explicit cache invalidation is
+  needed. Index blobs above ~4 MiB are silently not persisted (sweep still
+  works; just falls back to per-chunk walks).
 
 ---
 

@@ -10,7 +10,7 @@ Navidrome plugin (WASM) that reads embedded star-rating tags from MP3, FLAC, Ogg
 | `config.go` | Config types (`pluginConfig`, `libraryConfig`, `userConfig`) and `loadConfig()` |
 | `cursor.go` | `syncCursor` (resumable position carried in the scheduler payload), `parseCursor` / `marshal`, `callBudget` (10 s — see *Sync execution* for why this is much lower than Navidrome's hardcoded 30 s limit), and `deadlineCheckEvery` (1 — songs between deadline checks; raising it lets slow songs blow past both the 10 s budget and the host 30 s wall) |
 | `scanner.go` | Sync engine — `runSyncChunk` (walks library/user pairs until the deadline; loads each pair's threshold and applies the **LastScanAt gate** — skips a fresh pair whose library has not been rescanned since the stored threshold, without saving), `processPairChunk` (one pair from a song offset, takes the threshold as a param, checks the deadline after each song), and `processSong`. `extractStarsFromFile` returns a `fileReadResult` (`tagFound` / `tagAbsent` / `fileUnreadable`) so I/O failures, oversize files (`maxAudioFileBytes` = 64 MiB), unsupported extensions, and parser panics never trigger `clear_rating_if_untagged`. `readAudioFile` enforces the size cap; `dispatchParser` recovers panics from any container parser so one hostile file can't kill the whole sync. |
-| `paths.go` | Filesystem-mount resolution and file matching — `resolveMountPoint` (config `libraryId` → `host.LibraryGetLibrary(int32).MountPoint`), `buildFileIndex` (recursive `os.ReadDir` walk keyed by `sizeKey(size, ext)`), `matchFile` (song → file by exact size+suffix; ambiguous/missing → not found). See **File access** below. |
+| `paths.go` | Filesystem-mount resolution and file matching — `resolveMountPoint` (config `libraryId` → `host.LibraryGetLibrary(int32).MountPoint`), `buildFileIndex` (recursive `os.ReadDir` walk keyed by `sizeKey(size, ext)`), `matchFile` (song → file by exact size+suffix; ambiguous/missing → not found), plus the KV-backed file-index cache (`loadCachedIndex` / `saveCachedIndex`, key `"file-index:" + url.QueryEscape(libraryID)`, stamped with Navidrome's `LastScanAt` for validity, capped at `maxIndexBytes` = 4 MiB). See **File access** below. |
 | `state.go` | KV-backed state — `loadLastSynced` / `saveLastSynced` (incremental threshold; KV key `"last-synced:" + url.QueryEscape(libraryID) + ":" + url.QueryEscape(username)` so a `:` in either component can't collide with a different tuple), plus the overlap-guard helpers `sweepInProgress` / `markSweepActive` / `clearSweepActive` (`sweep-active` heartbeat key, `sweepStaleAfter` = 2 min). All KV failures fail open. |
 | `subsonic.go` | Subsonic API domain — response types (incl. `subsonicSong.Size`, used to locate the file under the mount), `fetchAllSongs`, `setRating` |
 | `library.go` | `libraryLastScan` — wraps `host.LibraryGetLibrary` (empty libraryID → `LibraryGetAllLibraries`, newest `LastScanAt`) for the change-detection gate; returns `(zero,false)` on any uncertainty so the gate fails open. `cachedLibraryLastScan` memoises it per `runSyncChunk` call. |
@@ -59,6 +59,33 @@ files through the library **mount** instead:
   so an unmatched/ambiguous file can never be cleared by `clear_rating_if_untagged`.
 - There is **no** host "read file" API; `readAudioFile` uses plain `os.Open` on
   the matched mount path.
+
+### File-index cache (KV-backed)
+
+Each scheduler callback is a fresh WASM instance, so `buildFileIndex` would
+otherwise re-walk the mount on every chunk — on slow filesystems that has
+been observed to eat 5–6 s of the 10 s `callBudget` per chunk, choking
+throughput. To avoid this, the first chunk of a sweep persists the index to
+KV; subsequent chunks read it back and skip the walk.
+
+- KV key: `"file-index:" + url.QueryEscape(libraryID)`. Value: a
+  `cachedFileIndexBlob` (`{v, l, e[]}` — version, `LastScanAt` at build time,
+  flat entry list) JSON-marshalled. The bucket map is reconstructed on
+  load from each entry's size+ext, so it isn't stored.
+- Validity stamp: Navidrome's `LastScanAt`. On every chunk, `resolveAndIndex`
+  loads the blob and accepts it only if `blob.LastScanAt == current.LastScanAt`.
+  A mismatch (Navidrome rescanned mid-sweep, or this is a fresh sweep after
+  a real scan) triggers a rebuild and an overwrite — no explicit invalidation
+  needed, no "delete on sweep complete" book-keeping.
+- LastScanAt unknown (0 / host error / non-numeric ID) → no read attempt,
+  no persist. We cannot validate without it, so caching would just leak
+  stale data.
+- Size cap: `maxIndexBytes` = 4 MiB. Above that the blob is silently dropped
+  (debug-logged) and the next chunk rebuilds — better than blowing the KV
+  with a runaway library.
+- Fail-open everywhere (KV error, parse error, version mismatch, oversize
+  blob, missing scan stamp): the cache can only make things faster, never
+  less correct.
 
 ## Config model (v0.3.0+)
 
