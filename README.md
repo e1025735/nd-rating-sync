@@ -21,6 +21,8 @@ clicked the stars yourself.
 The plugin is **read-only on the filesystem**. It never writes back to your
 files.
 
+⚠️ **WARNING: This is still in beta! Use the DRY-RUN flag first and check if the ratings are recognised as expected. Only then allow the plugin to run for real.** ⚠️
+
 ---
 
 ## Supported file formats
