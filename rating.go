@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 )
 
@@ -82,13 +83,16 @@ func ratingIntToStars(s string) (int, bool) {
 	if s == "" {
 		return 0, false
 	}
-	var n int
-	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
+
+	n, err := strconv.Atoi(s)
+	if err != nil {
 		return 0, false
 	}
+
 	if n < 1 || n > 5 {
 		return 0, false
 	}
+
 	return n, true
 }
 
