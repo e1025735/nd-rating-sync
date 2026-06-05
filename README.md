@@ -4,6 +4,8 @@ A [Navidrome](https://www.navidrome.org/) plugin that reads embedded star-rating
 tags from your music files and syncs them into Navidrome's own user-rating
 system via the internal Subsonic API.
 
+⚠️ **WARNING: This is still in beta! Use the DRY-RUN flag first and check if the ratings are recognised as expected. Only then allow the plugin to run for real.** ⚠️
+
 ## Why this plugin exists
 
 Navidrome reads many tag fields during a library scan, but it does **not**
@@ -20,8 +22,6 @@ clicked the stars yourself.
 
 The plugin is **read-only on the filesystem**. It never writes back to your
 files.
-
-⚠️ **WARNING: This is still in beta! Use the DRY-RUN flag first and check if the ratings are recognised as expected. Only then allow the plugin to run for real.** ⚠️
 
 ---
 
