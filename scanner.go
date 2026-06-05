@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,14 +87,11 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 		// Resolve the library's sandbox mount and index its files by (size,
 		// suffix). Navidrome does not give plugins an openable path for a song
 		// (the Subsonic `path` is a synthesized fake by default), so the only
-		// way to locate a file is to walk the mount the host provides. The
-		// walk is also KV-cached under cachedFileIndex/resolveAndIndex so a
-		// continuation chain re-uses the index built by the first chunk
-		// instead of re-walking the mount every callback. A failure here is
-		// non-fatal and the pair is skipped WITHOUT saving the threshold –
-		// nothing was processed, so the next run retries from the same
-		// baseline.
-		index, indexOK := cachedFileIndex(indexCache, libCache, lib.LibraryID)
+		// way to locate a file is to walk the mount the host provides. A
+		// failure here is non-fatal and the pair is skipped WITHOUT saving the
+		// threshold – nothing was processed, so the next run retries from the
+		// same baseline.
+		index, indexOK := cachedFileIndex(indexCache, lib.LibraryID)
 		if !indexOK {
 			cur.User++
 			cur.Offset = 0
@@ -247,15 +243,15 @@ func processSong(u userConfig, cfg pluginConfig, s subsonicSong, threshold time.
 		return
 	}
 
-	if !threshold.IsZero() && entry.Mtime.Before(threshold) {
+	if !threshold.IsZero() && entry.mtime.Before(threshold) {
 		logDebug(fmt.Sprintf(
 			"nd-rating-sync: skipping %q – unchanged since last scan (mtime=%s)",
-			s.Title, entry.Mtime.Format(time.RFC3339)))
+			s.Title, entry.mtime.Format(time.RFC3339)))
 		tally.skippedUnchanged++
 		return
 	}
 
-	stars, result := extractStarsFromFile(entry.Path, s.Suffix, u.RatingTagOrder)
+	stars, result := extractStarsFromFile(entry.path, s.Suffix, u.RatingTagOrder)
 	switch result {
 	case fileUnreadable:
 		// I/O error, unsupported extension, or parse panic. Never clear here —
@@ -324,25 +320,40 @@ const (
 	fileUnreadable                       // I/O error, unsupported extension, or container parse failure
 )
 
-// maxAudioFileBytes caps how much of any single file we will pull into memory.
-// Embedded artwork pushes legitimate audio up to a few tens of MiB; 64 MiB
-// covers that with margin while keeping a hostile or misreported path (e.g.
-// /dev/zero) from OOM-ing the wasm sandbox.
-const maxAudioFileBytes = 64 * 1024 * 1024
+// maxMetadataReadBytes is the per-format upper bound on bytes the metadata
+// extractors will pull into memory from any single file. Each format reads
+// only its header + tag-bearing region (using Seek to jump past audio data),
+// so the actual size is normally a few KiB; the cap exists as a safety net
+// against pathological/hostile files (huge embedded artwork, /dev/zero,
+// corrupt-but-readable size fields).
+//
+// 16 MiB covers legitimate cases like multi-MiB embedded cover art in FLAC
+// PICTURE blocks or MP4 udta atoms. A file whose metadata genuinely exceeds
+// this is reported as fileUnreadable so clear_rating_if_untagged cannot
+// wipe a rating for a file we did not fully read.
+const maxMetadataReadBytes = 16 * 1024 * 1024
 
-// extractStarsFromFile reads the audio file at path and returns a 1–5 star
-// rating using the tag formats in tagOrder for priority. The fileReadResult
-// disambiguates "no tag found" (safe to clear) from "could not read"
-// (must skip — clearing on I/O errors would corrupt user state).
+// extractStarsFromFile opens the audio file at path and returns a 1–5 star
+// rating using the tag formats in tagOrder for priority. It dispatches to a
+// format-specific extractor that reads ONLY the metadata-bearing portion of
+// the file — never the audio body — so per-song I/O is bounded by
+// maxMetadataReadBytes regardless of how big the file is on disk. The
+// fileReadResult disambiguates "no tag found" (safe to clear) from "could
+// not read" (must skip — clearing on I/O errors would corrupt user state).
 func extractStarsFromFile(path, suffix string, tagOrder []string) (int, fileReadResult) {
-	data, ok := readAudioFile(path)
-	if !ok {
-		return 0, fileUnreadable
-	}
-
 	ext := strings.ToLower(suffix)
 	if ext == "" {
 		ext = strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
+	}
+	if !isSupportedExt(ext) {
+		logWarn(fmt.Sprintf(
+			"nd-rating-sync: skipping %q – supported formats are MP3, FLAC, Ogg, Opus, WAV, DSF, M4A/AAC and WMA (got .%q)", path, ext))
+		return 0, fileUnreadable
+	}
+
+	data, ok := readAudioMetadata(path, ext)
+	if !ok {
+		return 0, fileUnreadable
 	}
 
 	stars, ok, supported := dispatchParser(path, ext, data, tagOrder)
@@ -357,10 +368,12 @@ func extractStarsFromFile(path, suffix string, tagOrder []string) (int, fileRead
 	return 0, tagAbsent
 }
 
-// readAudioFile reads up to maxAudioFileBytes from path. Files that exceed
-// the cap are reported as unreadable rather than partially parsed — a
-// truncated audio file would yield arbitrary parse results.
-func readAudioFile(path string) ([]byte, bool) {
+// readAudioMetadata opens path and dispatches to the per-format extractor for
+// ext. The extractors read only the file's metadata-bearing region (header
+// + tag chunk / atom / block) using Seek to skip audio bodies, so per-song
+// I/O is bounded by maxMetadataReadBytes — independent of total file size.
+// Returns the synthesised byte slice the existing format parsers can walk.
+func readAudioMetadata(path, ext string) ([]byte, bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		// Log only the path — the raw OS error ("permission denied" vs
@@ -373,23 +386,33 @@ func readAudioFile(path string) ([]byte, bool) {
 	}
 	defer f.Close()
 
-	if info, err := f.Stat(); err == nil && info.Size() > maxAudioFileBytes {
-		logWarn(fmt.Sprintf(
-			"nd-rating-sync: skipping %q – size %d exceeds cap %d",
-			path, info.Size(), maxAudioFileBytes))
+	var (
+		data []byte
+		eerr error
+	)
+	switch ext {
+	case "mp3":
+		data, eerr = extractID3v2Metadata(f)
+	case "flac":
+		data, eerr = extractFLACMetadata(f)
+	case "ogg", "oga", "opus":
+		data, eerr = extractOggMetadata(f)
+	case "wav":
+		data, eerr = extractWAVMetadata(f)
+	case "dsf":
+		data, eerr = extractDSFMetadata(f)
+	case "m4a", "aac", "mp4":
+		data, eerr = extractM4AMetadata(f)
+	case "wma":
+		data, eerr = extractWMAMetadata(f)
+	default:
+		// extractStarsFromFile pre-filters via isSupportedExt, so this is
+		// only reached if a new extension was added there but not here.
 		return nil, false
 	}
-
-	// LimitReader guards the case where Stat lies (e.g. /dev/zero, FUSE).
-	data, err := io.ReadAll(io.LimitReader(f, maxAudioFileBytes+1))
-	if err != nil {
+	if eerr != nil {
 		logWarn(fmt.Sprintf("nd-rating-sync: cannot read %q (skipping)", path))
-		logDebug(fmt.Sprintf("nd-rating-sync: read %q error: %q", path, err.Error()))
-		return nil, false
-	}
-	if len(data) > maxAudioFileBytes {
-		logWarn(fmt.Sprintf(
-			"nd-rating-sync: skipping %q – exceeds cap %d", path, maxAudioFileBytes))
+		logDebug(fmt.Sprintf("nd-rating-sync: read %q error: %q", path, eerr.Error()))
 		return nil, false
 	}
 	return data, true

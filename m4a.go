@@ -2,7 +2,10 @@ package main
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 )
 
@@ -136,4 +139,94 @@ func parseM4ARating(data []byte, tagOrder []string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// extractM4AMetadata walks the top-level MP4 atom list, Seeks past every
+// non-moov atom (notably mdat, which holds the audio samples and can be
+// many GiB), and returns a synthesised file containing only the moov atom.
+// The existing parseM4ARating walks the synth identically; findAtom finds
+// "moov" first thing and descends into udta→meta→ilst.
+//
+// MP4 puts moov either at the start (fast-start muxing) or after mdat
+// (default ffmpeg / iTunes layout). In the slow case we Seek over mdat
+// without reading it — that single Seek is what makes large MP4s fast.
+func extractM4AMetadata(f *os.File) ([]byte, error) {
+	pos := int64(0)
+	for {
+		var hdr [8]byte
+		if _, err := io.ReadFull(f, hdr[:]); err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		size32 := binary.BigEndian.Uint32(hdr[:4])
+		typ := string(hdr[4:8])
+		var atomSize int64
+		var headerLen int64 = 8
+
+		switch size32 {
+		case 0:
+			// size32 == 0 means "this atom extends to EOF" — by the MP4
+			// spec it's always the last atom in the file. Compute the
+			// length via Seek-to-end; the loop will hit EOF on the next
+			// header read and return cleanly.
+			end, err := f.Seek(0, io.SeekEnd)
+			if err != nil {
+				return nil, err
+			}
+			atomSize = end - pos
+			// Position back to right after the header in case typ == "moov"
+			// and we need to read the body next.
+			if _, err := f.Seek(pos+headerLen, io.SeekStart); err != nil {
+				return nil, err
+			}
+		case 1:
+			var ext [8]byte
+			if _, err := io.ReadFull(f, ext[:]); err != nil {
+				return nil, err
+			}
+			atomSize = int64(binary.BigEndian.Uint64(ext[:]))
+			headerLen = 16
+			if atomSize < headerLen {
+				return nil, nil
+			}
+		default:
+			atomSize = int64(size32)
+			if atomSize < headerLen {
+				return nil, nil
+			}
+		}
+
+		if typ == "moov" {
+			bodyLen := atomSize - headerLen
+			if bodyLen < 0 {
+				return nil, nil
+			}
+			if bodyLen > maxMetadataReadBytes {
+				return nil, fmt.Errorf("MP4 moov atom size %d exceeds cap %d", bodyLen, maxMetadataReadBytes)
+			}
+			body := make([]byte, bodyLen)
+			if _, err := io.ReadFull(f, body); err != nil {
+				return nil, err
+			}
+			out := make([]byte, 0, int(headerLen)+int(bodyLen))
+			out = append(out, hdr[:]...)
+			if headerLen == 16 {
+				var ext [8]byte
+				binary.BigEndian.PutUint64(ext[:], uint64(atomSize))
+				out = append(out, ext[:]...)
+			}
+			out = append(out, body...)
+			return out, nil
+		}
+
+		// Skip non-moov atom body without reading it (this is the big win
+		// for mdat, which is the audio data — often hundreds of MiB).
+		if _, err := f.Seek(pos+atomSize, io.SeekStart); err != nil {
+			// Truncated file or unseekable past EOF; treat as "no moov".
+			return nil, nil
+		}
+		pos += atomSize
+	}
 }

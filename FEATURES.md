@@ -82,14 +82,6 @@ disk. So the plugin never opens it.
   "untagged" — so `clear_rating_if_untagged` can never wipe a rating for a file
   the plugin could not positively identify.
 - Read-only: the plugin never writes to the music files.
-- **File index is KV-cached across continuations.** Each chunk runs in a fresh
-  WASM instance, so the recursive mount walk would otherwise repeat every
-  callback — on slow filesystems that ate ~5–6 s of the 10 s budget per chunk.
-  The first chunk persists the index to KV; subsequent chunks reload it,
-  validated against Navidrome's `LastScanAt`. A rescanned library auto-rebuilds
-  on the next chunk (stamp mismatch), so no explicit cache invalidation is
-  needed. Index blobs above ~4 MiB are silently not persisted (sweep still
-  works; just falls back to per-chunk walks).
 
 ---
 
@@ -103,7 +95,8 @@ disk. So the plugin never opens it.
 
 ## Robustness
 
-- **Per-file size cap (64 MiB)** — files larger than the cap are not read into memory; they are counted under `skipped_unreadable` and never cleared. Guards the wasm sandbox against OOM on misreported paths.
+- **Format-aware partial reads** — for every supported container (MP3, FLAC, Ogg/Opus, WAV, DSF, MP4, WMA) the plugin reads ONLY the bytes the format spec puts the metadata in (header + tag chunk / atom / block), using `Seek` to jump past audio samples — never loading the audio body into memory. Per-format read is bounded by `maxMetadataReadBytes` (16 MiB), so even a multi-GiB FLAC or MP4 costs a few hundred KiB of I/O instead of the full file size. This is the dominant per-song speedup over the old "read up to 64 MiB" approach for large libraries.
+- **No file-size cap** — files of any on-disk size are processable. The 16 MiB cap is on what each extractor will pull into RAM from the metadata region, not on file size. Hostile/misreported files (e.g. `/dev/zero` masquerading as audio) are bounded by the same per-extractor cap.
 - **Per-file panic isolation** — a panic in any container parser is recovered and the file is treated as unreadable, so a single hostile file cannot abort the whole sync run.
 - **32-bit-safe chunk arithmetic** — RIFF (WAV) and ASF (WMA) chunk-size fields are evaluated in `uint64` before narrowing to `int`, so a sign-wrap on TinyGo wasip1 (32-bit `int`) cannot rewind the cursor and produce an infinite loop in the chunk walker.
 - **Vorbis comment cap** — the FLAC / Ogg / Opus comment-block parser clamps the declared entry count to 1024 so a crafted file with `count = 2^32` cannot exhaust CPU/GC before the byte budget runs out.

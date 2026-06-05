@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+	"os"
 	"strings"
 )
 
@@ -122,4 +126,90 @@ func parseASFExtContentDesc(body []byte, tagOrder []string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// asfHeaderObjectFixedSize is the fixed 30-byte ASF Header Object preamble
+// (16 GUID + 8 size + 4 numHeaders + 2 reserved).
+const asfHeaderObjectFixedSize = 30
+
+// asfObjectHeaderSize is the per-child-object header (16 GUID + 8 size).
+const asfObjectHeaderSize = 24
+
+// extractWMAMetadata reads the ASF Header Object, walks its child objects
+// (Seeking past every one that isn't the Extended Content Description
+// Object), and returns a synthesised ASF Header containing only the ECDO.
+// Audio data (which lives in a separate top-level ASF Data Object after the
+// Header Object — potentially hundreds of MiB) is never read.
+//
+// parseWMARating walks this synth identically to a real file: it sees a
+// Header Object with numHeaders=1 and the ECDO as the only child.
+func extractWMAMetadata(f *os.File) ([]byte, error) {
+	var hdr [asfHeaderObjectFixedSize]byte
+	if _, err := io.ReadFull(f, hdr[:]); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if !bytes.Equal(hdr[:16], asfHeaderObjectGUID) {
+		return nil, nil
+	}
+	numHeaders := binary.LittleEndian.Uint32(hdr[24:28])
+
+	for i := uint32(0); i < numHeaders; i++ {
+		var objHdr [asfObjectHeaderSize]byte
+		if _, err := io.ReadFull(f, objHdr[:]); err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				return wmaSynthEmpty(), nil
+			}
+			return nil, err
+		}
+		objSize := int64(binary.LittleEndian.Uint64(objHdr[16:24]))
+		if objSize < asfObjectHeaderSize {
+			return wmaSynthEmpty(), nil
+		}
+		bodyLen := objSize - asfObjectHeaderSize
+
+		if bytes.Equal(objHdr[:16], asfExtContentDescObjectGUID) {
+			if bodyLen > maxMetadataReadBytes {
+				return nil, fmt.Errorf("WMA ECDO size %d exceeds cap %d", bodyLen, maxMetadataReadBytes)
+			}
+			body := make([]byte, bodyLen)
+			if _, err := io.ReadFull(f, body); err != nil {
+				return nil, err
+			}
+			// Synth: ASF Header (numHeaders=1, adjusted size) + ECDO only.
+			totalSize := int64(asfHeaderObjectFixedSize) + objSize
+			out := make([]byte, 0, totalSize)
+			out = append(out, asfHeaderObjectGUID...)
+			var sizeBuf [8]byte
+			binary.LittleEndian.PutUint64(sizeBuf[:], uint64(totalSize))
+			out = append(out, sizeBuf[:]...)
+			var numBuf [4]byte
+			binary.LittleEndian.PutUint32(numBuf[:], 1) // exactly one child
+			out = append(out, numBuf[:]...)
+			out = append(out, hdr[28], hdr[29]) // preserve the two reserved bytes
+			out = append(out, objHdr[:]...)     // ECDO header
+			out = append(out, body...)
+			return out, nil
+		}
+
+		// Skip non-ECDO object body without reading it.
+		if _, err := f.Seek(bodyLen, io.SeekCurrent); err != nil {
+			return wmaSynthEmpty(), nil
+		}
+	}
+
+	return wmaSynthEmpty(), nil
+}
+
+// wmaSynthEmpty returns a minimal valid ASF Header Object with numHeaders=0.
+// parseWMARating walks zero child objects and reports tagAbsent.
+func wmaSynthEmpty() []byte {
+	out := make([]byte, asfHeaderObjectFixedSize)
+	copy(out[:16], asfHeaderObjectGUID)
+	binary.LittleEndian.PutUint64(out[16:24], asfHeaderObjectFixedSize)
+	binary.LittleEndian.PutUint32(out[24:28], 0) // no children
+	// bytes 28..29 reserved, leave zero
+	return out
 }

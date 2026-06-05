@@ -178,3 +178,56 @@ func TestParseWMARating_EmptyTagOrderNeverMatches(t *testing.T) {
 	_, ok := parseWMARating(data, []string{})
 	assert.False(t, ok)
 }
+
+// ─── extractor (Phase 1 partial reads) ────────────────────────────────────────
+
+// TestExtractWMAMetadata_SkipsDataObject proves the WMA extractor Seeks past
+// non-ECDO ASF objects — especially the ASF Data Object that holds the
+// audio payload. The sentinel lives inside a synthetic non-ECDO object
+// placed BEFORE the ECDO; the extractor must seek past it instead of
+// reading it.
+func TestExtractWMAMetadata_SkipsDataObject(t *testing.T) {
+	dir := t.TempDir()
+
+	// Build a real ECDO via buildWMA, then take just the ECDO portion
+	// (skipping the outer 30-byte ASF header preamble) so we can splice it
+	// behind a fake junk object.
+	realWMA := buildWMA(t, []wmaDescriptor{{
+		name: "FMPS_Rating", valueType: 0, value: encodeUTF16LE("0.4"), // 2 stars
+	}})
+	ecdoObj := realWMA[30:] // ECDO header + body
+
+	// Junk object: a non-ECDO GUID + giant body (sentinel + zeros).
+	junkGUID := bytes.Repeat([]byte{0xAA}, 16)
+	junkBody := junkAudio()
+	junkObj := make([]byte, 0, 24+len(junkBody))
+	junkObj = append(junkObj, junkGUID...)
+	szBuf := make([]byte, 8)
+	binary.LittleEndian.PutUint64(szBuf, uint64(24+len(junkBody)))
+	junkObj = append(junkObj, szBuf...)
+	junkObj = append(junkObj, junkBody...)
+
+	// Top-level ASF Header Object with 2 child objects: junk first, then ECDO.
+	totalSize := uint64(30 + len(junkObj) + len(ecdoObj))
+	var w bytes.Buffer
+	w.Write(asfHeaderObjectGUID)
+	totalBuf := make([]byte, 8)
+	binary.LittleEndian.PutUint64(totalBuf, totalSize)
+	w.Write(totalBuf)
+	numBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(numBuf, 2)
+	w.Write(numBuf)
+	w.Write([]byte{0, 0}) // reserved
+	w.Write(junkObj)
+	w.Write(ecdoObj)
+
+	path := writeBinFile(t, dir, "song.wma", w.Bytes())
+
+	data := extractedBytes(t, path, "wma")
+	assert.NotContains(t, string(data), string(sentinel),
+		"WMA extractor must Seek past non-ECDO objects")
+
+	stars, result := extractStarsFromFile(path, "wma", []string{"MediaMonkey"})
+	assert.Equal(t, tagFound, result)
+	assert.Equal(t, 2, stars)
+}

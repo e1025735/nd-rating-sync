@@ -268,3 +268,30 @@ func TestParseOggVorbisRating_TagOrderFiltersWMPiTunes(t *testing.T) {
 	_, ok := parseOggVorbisRating(data, []string{"WMP", "iTunes"})
 	assert.False(t, ok)
 }
+
+// ─── extractor (Phase 1 partial reads) ────────────────────────────────────────
+
+// TestExtractOggMetadata_CapsReadAtHint proves the Ogg extractor never reads
+// more than oggMetadataReadHint bytes from the file regardless of how big
+// the file is on disk. The Vorbis/Opus spec guarantees the comment packet
+// finishes within the first few pages, well inside that hint — so the cap
+// is what makes Ogg/Opus reads bounded for multi-GB audio files.
+func TestExtractOggMetadata_CapsReadAtHint(t *testing.T) {
+	dir := t.TempDir()
+
+	// Build a real Ogg-Vorbis file the parser can rate, then pad it with
+	// way more bytes than the hint. The extractor should still return at
+	// most oggMetadataReadHint bytes.
+	commentPkt := makeVorbisCommentPacket(t, "FMPS_RATING=0.6") // 3 stars
+	good := makeOggSinglePage(t, idHeaderPlaceholder, commentPkt)
+	huge := append(good, make([]byte, oggMetadataReadHint*4)...) // 4× the hint past the metadata
+	path := writeBinFile(t, dir, "song.ogg", huge)
+
+	data := extractedBytes(t, path, "ogg")
+	assert.LessOrEqual(t, len(data), oggMetadataReadHint,
+		"Ogg extractor must cap its read at oggMetadataReadHint")
+
+	stars, result := extractStarsFromFile(path, "ogg", []string{"MediaMonkey"})
+	assert.Equal(t, tagFound, result)
+	assert.Equal(t, 3, stars)
+}

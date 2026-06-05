@@ -206,3 +206,43 @@ func TestParseFLACRating_foobar2000VsMediaMonkeyOrder(t *testing.T) {
 	assert.Equal(t, 2, stars)
 }
 
+// ─── extractor (Phase 1 partial reads) ────────────────────────────────────────
+
+// TestExtractFLACMetadata_SkipsPictureAndAudio proves the FLAC extractor
+// Seeks past a giant PICTURE-like block AND the audio frames that follow —
+// it only reads the VORBIS_COMMENT body. The sentinel sits inside both the
+// PICTURE body and the trailing audio body; if the extractor reads through
+// either it would appear in the returned synth.
+func TestExtractFLACMetadata_SkipsPictureAndAudio(t *testing.T) {
+	dir := t.TempDir()
+
+	// makeFLAC builds "fLaC" + a single VORBIS_COMMENT (last). For this test
+	// we splice a PICTURE-like block BEFORE the comment so the extractor
+	// must Seek past it.
+	cmt := makeFLAC(t, "FMPS_RATING=0.6") // 3 stars
+	pictureBody := junkAudio()
+
+	var withPicture bytes.Buffer
+	withPicture.WriteString("fLaC")
+	// PICTURE block (type 6), not last.
+	withPicture.WriteByte(0x06)
+	withPicture.WriteByte(byte(len(pictureBody) >> 16))
+	withPicture.WriteByte(byte(len(pictureBody) >> 8))
+	withPicture.WriteByte(byte(len(pictureBody)))
+	withPicture.Write(pictureBody)
+	// Append the VORBIS_COMMENT block from makeFLAC (drop its "fLaC" prefix).
+	withPicture.Write(cmt[4:])
+	// And junk "audio frames" after the metadata.
+	withPicture.Write(junkAudio())
+
+	path := writeBinFile(t, dir, "song.flac", withPicture.Bytes())
+
+	data := extractedBytes(t, path, "flac")
+	assert.NotContains(t, string(data), string(sentinel),
+		"FLAC extractor must Seek past PICTURE block and audio frames")
+
+	stars, result := extractStarsFromFile(path, "flac", []string{"MediaMonkey"})
+	assert.Equal(t, tagFound, result)
+	assert.Equal(t, 3, stars)
+}
+

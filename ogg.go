@@ -2,7 +2,17 @@ package main
 
 import (
 	"errors"
+	"io"
+	"os"
 )
+
+// oggMetadataReadHint is the upper bound on bytes the Ogg extractor reads
+// from the start of the file. The Vorbis/Opus comment packet always sits
+// in the second logical packet, which by spec finishes within the first few
+// pages (each ≤ 65307 bytes). 512 KiB safely covers comment packets that
+// span pages because of large METADATA_BLOCK_PICTURE entries; anything
+// beyond that is pathological for a comment header.
+const oggMetadataReadHint = 512 * 1024
 
 // extractOggPackets walks an Ogg bitstream, defragments segments into packets,
 // and returns up to maxPackets packets from the leading logical bitstream.
@@ -80,4 +90,20 @@ func parseOggVorbisRating(data []byte, tagOrder []string) (int, bool) {
 		return 0, false
 	}
 	return ratingFromVorbisComments(cmts, tagOrder)
+}
+
+// extractOggMetadata reads just enough of the Ogg bitstream from the start
+// of the file for the parser to recover the comment packet. The comment
+// packet lives in the second logical packet of the leading stream, which
+// the spec puts within the first few pages — so we cap the read at
+// oggMetadataReadHint regardless of total file length. For audio files
+// up to multi-GiB this is many orders of magnitude less I/O than reading
+// the whole file.
+func extractOggMetadata(f *os.File) ([]byte, error) {
+	buf := make([]byte, oggMetadataReadHint)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return nil, err
+	}
+	return buf[:n], nil
 }

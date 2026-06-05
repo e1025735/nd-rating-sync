@@ -226,3 +226,29 @@ func TestParseID3v2Rating_foobar2000VsMediaMonkeyOrder(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, 2, stars)
 }
+
+// ─── extractor (Phase 1 partial reads) ────────────────────────────────────────
+
+// TestExtractID3v2Metadata_StopsAtTagEnd proves the MP3 extractor reads the
+// 10-byte ID3v2 header, takes the syncsafe tag size, reads exactly that many
+// bytes, and stops — never touching the MP3 audio frames that follow. The
+// sentinel sits at the very start of the junk audio body; if the extractor
+// read past the tag it would show up in the returned slice. Helpers
+// (sentinel, junkAudio, writeBinFile, realID3v2, extractedBytes) live in
+// testhelpers_test.go because the FLAC/WAV/DSF/MP4/WMA extractor tests share
+// them.
+func TestExtractID3v2Metadata_StopsAtTagEnd(t *testing.T) {
+	dir := t.TempDir()
+	content := append(realID3v2(t, "0.6"), junkAudio()...) // 3 stars
+	path := writeBinFile(t, dir, "song.mp3", content)
+
+	data := extractedBytes(t, path, "mp3")
+	assert.NotContains(t, string(data), string(sentinel),
+		"MP3 extractor must not read past the ID3v2 tag")
+	assert.Less(t, len(data), junkAudioBytes/2,
+		"MP3 extractor output must be much smaller than the junk body")
+
+	stars, result := extractStarsFromFile(path, "mp3", []string{"MediaMonkey"})
+	assert.Equal(t, tagFound, result)
+	assert.Equal(t, 3, stars)
+}

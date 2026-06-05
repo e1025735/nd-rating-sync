@@ -164,3 +164,62 @@ func TestParseM4ARating_EmptyTagOrderNeverMatches(t *testing.T) {
 	_, ok := parseM4ARating(data, []string{})
 	assert.False(t, ok)
 }
+
+// ─── extractor (Phase 1 partial reads) ────────────────────────────────────────
+
+// TestExtractM4AMetadata_SkipsMdat proves the MP4 extractor walks top-level
+// atoms and Seeks past `mdat` — the audio data, often the overwhelming
+// majority of an MP4's bytes — when `moov` comes after it (the layout
+// ffmpeg / iTunes produce by default for non-fast-start output). The
+// sentinel lives inside the `mdat` body; if the extractor reads it instead
+// of seeking past it would show up in the returned synth.
+func TestExtractM4AMetadata_SkipsMdat(t *testing.T) {
+	dir := t.TempDir()
+
+	// buildM4A returns ftyp(16 bytes) + moov. Slice off the ftyp to get a
+	// standalone moov atom we can place AFTER mdat.
+	full := buildM4A(map[string]string{"FMPS_Rating": "0.6"}) // 3 stars
+	moov := full[16:]
+	ftyp := buildAtom("ftyp", []byte("M4A \x00\x00\x00\x00"))
+	mdat := buildAtom("mdat", junkAudio())
+
+	var content []byte
+	content = append(content, ftyp...)
+	content = append(content, mdat...)
+	content = append(content, moov...)
+
+	path := writeBinFile(t, dir, "song.m4a", content)
+
+	data := extractedBytes(t, path, "m4a")
+	if bytesContains(data, sentinel) {
+		t.Fatalf("MP4 extractor must Seek past the mdat atom (sentinel found in %d-byte output)", len(data))
+	}
+
+	stars, result := extractStarsFromFile(path, "m4a", []string{"MediaMonkey"})
+	assert.Equal(t, tagFound, result)
+	assert.Equal(t, 3, stars)
+}
+
+// bytesContains is a tiny local helper so this file doesn't need to import
+// the standard "bytes" package just for the regression check.
+func bytesContains(haystack, needle []byte) bool {
+	if len(needle) == 0 {
+		return true
+	}
+	if len(needle) > len(haystack) {
+		return false
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		match := true
+		for j, b := range needle {
+			if haystack[i+j] != b {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}

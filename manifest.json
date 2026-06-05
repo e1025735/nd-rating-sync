@@ -166,7 +166,7 @@
                     "ratingTagOrder": {
                       "type": "array",
                       "title": "Rating tag priority order",
-                      "description": "Ordered list of embedded tag formats to try when reading a rating from a file. The first tag found in a file wins. Remove formats this user does not use. Supported values: WMP (POPM in MP3/WAV/DSF), iTunes (POPM in MP3/WAV/DSF; lowercase 'rating' atom in M4A/AAC), MediaMonkey (FMPS_Rating TXXX in MP3/WAV/DSF; FMPS_RATING Vorbis comment in FLAC/Ogg/Opus; FMPS_Rating atom in M4A/AAC; FMPS_Rating Unicode string in WMA), foobar2000 (RATING TXXX in MP3/WAV/DSF; RATING Vorbis comment in FLAC/Ogg/Opus; uppercase RATING atom in M4A/AAC). Sources with no representation in a given container are silently skipped.",
+                      "description": "Ordered list of embedded tag formats to try when reading a rating from a file. The first tag found in a file wins. Remove formats this user does not use. Supported values: WMP = Windows Media Player (POPM in MP3/WAV/DSF; WM/SharedUserRating in WMA), iTunes (POPM in MP3/WAV/DSF; lowercase 'rating' atom in M4A/AAC), MediaMonkey (FMPS_Rating TXXX in MP3/WAV/DSF; FMPS_RATING Vorbis comment in FLAC/Ogg/Opus; FMPS_Rating atom in M4A/AAC; FMPS_Rating Unicode string in WMA), foobar2000 (RATING TXXX in MP3/WAV/DSF; RATING Vorbis comment in FLAC/Ogg/Opus; uppercase RATING atom in M4A/AAC). Sources with no representation in a given container are silently skipped.",
                       "minItems": 1,
                       "default": [
                         "WMP",

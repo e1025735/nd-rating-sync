@@ -106,3 +106,37 @@ func TestParseDSFRating_TagOrderRespected(t *testing.T) {
 	_, ok = parseDSFRating(data, []string{"WMP"})
 	assert.False(t, ok)
 }
+
+// ─── extractor (Phase 1 partial reads) ────────────────────────────────────────
+
+// TestExtractDSFMetadata_SkipsSamples proves the DSF extractor follows the
+// id3 offset in the DSD header DIRECTLY — never reading the (potentially
+// gigabytes of) DSD samples sitting between header and tag. The sentinel
+// lives in the samples region; if the extractor ever read instead of
+// seeking, the synth output would include it.
+func TestExtractDSFMetadata_SkipsSamples(t *testing.T) {
+	dir := t.TempDir()
+	id3Body := realID3v2(t, "0.4") // 2 stars
+
+	samples := junkAudio()
+	id3Off := uint64(28 + len(samples))
+
+	var w bytes.Buffer
+	w.WriteString("DSD ")
+	w.Write(make([]byte, 16)) // bytes 4..19 placeholder
+	off := make([]byte, 8)
+	binary.LittleEndian.PutUint64(off, id3Off)
+	w.Write(off)     // bytes 20..27 = ID3 offset
+	w.Write(samples) // DSD audio samples (sentinel hides here)
+	w.Write(id3Body) // ID3 tag at the offset
+
+	path := writeBinFile(t, dir, "song.dsf", w.Bytes())
+
+	data := extractedBytes(t, path, "dsf")
+	assert.NotContains(t, string(data), string(sentinel),
+		"DSF extractor must Seek directly to the ID3 offset")
+
+	stars, result := extractStarsFromFile(path, "dsf", []string{"MediaMonkey"})
+	assert.Equal(t, tagFound, result)
+	assert.Equal(t, 2, stars)
+}

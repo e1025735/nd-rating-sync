@@ -17,10 +17,10 @@ import (
 // 10s was chosen after a production panic where a callback ran for ~16s and
 // then crashed inside wasi clock_time_get: the host's wazero module was set
 // up with WithCloseOnContextDone(true), and any cancellation in that window
-// turns the next host call into a nil-pointer-dereference. A 10s budget keeps
-// us comfortably under any plausible host timeout (15s, 20s, 30s) and gives
+// turns the next host call into a nil-pointer-dereference. A 15s budget keeps
+// us comfortably under any plausible host timeout (20s, 30s) and gives
 // generous slack for the trailing host calls.
-const callBudget = 10 * time.Second
+const callBudget = 15 * time.Second
 
 // deadlineCheckEvery is the number of songs processed between time.Now()
 // deadline checks inside processPairChunk's hot loop. Per-song cost varies

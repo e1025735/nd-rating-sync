@@ -132,3 +132,44 @@ func TestParseWAVRating_TagOrderRespected(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, 2, stars)
 }
+
+// ─── extractor (Phase 1 partial reads) ────────────────────────────────────────
+
+// TestExtractWAVMetadata_SkipsDataChunk proves the WAV extractor Seeks past
+// the `data` chunk (audio samples — usually the largest part of the file)
+// and only reads the `id3 ` chunk body. The data chunk's body holds the
+// sentinel; if the extractor reads through instead of seeking past, the
+// returned synth would include it.
+func TestExtractWAVMetadata_SkipsDataChunk(t *testing.T) {
+	dir := t.TempDir()
+	id3Body := realID3v2(t, "0.8") // 4 stars
+	dataBody := junkAudio()
+
+	var w bytes.Buffer
+	w.WriteString("RIFF")
+	w.Write([]byte{0, 0, 0, 0}) // RIFF size placeholder
+	w.WriteString("WAVE")
+	// fmt chunk (16 byte placeholder body)
+	w.WriteString("fmt ")
+	fmtBody := make([]byte, 16)
+	require.NoError(t, binary.Write(&w, binary.LittleEndian, uint32(len(fmtBody))))
+	w.Write(fmtBody)
+	// giant data chunk
+	w.WriteString("data")
+	require.NoError(t, binary.Write(&w, binary.LittleEndian, uint32(len(dataBody))))
+	w.Write(dataBody)
+	// id3 chunk LAST so the extractor must skip data first
+	w.WriteString("id3 ")
+	require.NoError(t, binary.Write(&w, binary.LittleEndian, uint32(len(id3Body))))
+	w.Write(id3Body)
+
+	path := writeBinFile(t, dir, "song.wav", w.Bytes())
+
+	data := extractedBytes(t, path, "wav")
+	assert.NotContains(t, string(data), string(sentinel),
+		"WAV extractor must Seek past the data chunk")
+
+	stars, result := extractStarsFromFile(path, "wav", []string{"MediaMonkey"})
+	assert.Equal(t, tagFound, result)
+	assert.Equal(t, 4, stars)
+}

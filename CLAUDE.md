@@ -9,18 +9,18 @@ Navidrome plugin (WASM) that reads embedded star-rating tags from MP3, FLAC, Ogg
 | `main.go` | Entry points — lifecycle init (`OnInit` clears the in-progress guard on load), scheduler callback registration, and `runSyncStep` / `runSyncStepUntil` (one budgeted slice of a sync; checks/refreshes the `sweep-active` overlap guard, reschedules a continuation when the budget is hit) via `ratingPlugin` |
 | `config.go` | Config types (`pluginConfig`, `libraryConfig`, `userConfig`) and `loadConfig()` |
 | `cursor.go` | `syncCursor` (resumable position carried in the scheduler payload), `parseCursor` / `marshal`, `callBudget` (10 s — see *Sync execution* for why this is much lower than Navidrome's hardcoded 30 s limit), and `deadlineCheckEvery` (1 — songs between deadline checks; raising it lets slow songs blow past both the 10 s budget and the host 30 s wall) |
-| `scanner.go` | Sync engine — `runSyncChunk` (walks library/user pairs until the deadline; loads each pair's threshold and applies the **LastScanAt gate** — skips a fresh pair whose library has not been rescanned since the stored threshold, without saving), `processPairChunk` (one pair from a song offset, takes the threshold as a param, checks the deadline after each song), and `processSong`. `extractStarsFromFile` returns a `fileReadResult` (`tagFound` / `tagAbsent` / `fileUnreadable`) so I/O failures, oversize files (`maxAudioFileBytes` = 64 MiB), unsupported extensions, and parser panics never trigger `clear_rating_if_untagged`. `readAudioFile` enforces the size cap; `dispatchParser` recovers panics from any container parser so one hostile file can't kill the whole sync. |
-| `paths.go` | Filesystem-mount resolution and file matching — `resolveMountPoint` (config `libraryId` → `host.LibraryGetLibrary(int32).MountPoint`), `buildFileIndex` (recursive `os.ReadDir` walk keyed by `sizeKey(size, ext)`), `matchFile` (song → file by exact size+suffix; ambiguous/missing → not found), plus the KV-backed file-index cache (`loadCachedIndex` / `saveCachedIndex`, key `"file-index:" + url.QueryEscape(libraryID)`, stamped with Navidrome's `LastScanAt` for validity, capped at `maxIndexBytes` = 4 MiB). See **File access** below. |
+| `scanner.go` | Sync engine — `runSyncChunk` (walks library/user pairs until the deadline; loads each pair's threshold and applies the **LastScanAt gate** — skips a fresh pair whose library has not been rescanned since the stored threshold, without saving), `processPairChunk` (one pair from a song offset, takes the threshold as a param, checks the deadline after each song), and `processSong`. `extractStarsFromFile` returns a `fileReadResult` (`tagFound` / `tagAbsent` / `fileUnreadable`) so I/O failures, unsupported extensions, and parser panics never trigger `clear_rating_if_untagged`. Files are read via `readAudioMetadata`, which dispatches to a per-format extractor that touches only the metadata-bearing region of the file (`maxMetadataReadBytes` = 16 MiB per format, vs the audio body which can be many GiB). `dispatchParser` recovers panics from any container parser so one hostile file can't kill the whole sync. |
+| `paths.go` | Filesystem-mount resolution and file matching — `resolveMountPoint` (config `libraryId` → `host.LibraryGetLibrary(int32).MountPoint`), `buildFileIndex` (recursive `os.ReadDir` walk keyed by `sizeKey(size, ext)`), `matchFile` (song → file by exact size+suffix; ambiguous/missing → not found). See **File access** below. |
 | `state.go` | KV-backed state — `loadLastSynced` / `saveLastSynced` (incremental threshold; KV key `"last-synced:" + url.QueryEscape(libraryID) + ":" + url.QueryEscape(username)` so a `:` in either component can't collide with a different tuple), plus the overlap-guard helpers `sweepInProgress` / `markSweepActive` / `clearSweepActive` (`sweep-active` heartbeat key, `sweepStaleAfter` = 2 min). All KV failures fail open. |
 | `subsonic.go` | Subsonic API domain — response types (incl. `subsonicSong.Size`, used to locate the file under the mount), `fetchAllSongs`, `setRating` |
 | `library.go` | `libraryLastScan` — wraps `host.LibraryGetLibrary` (empty libraryID → `LibraryGetAllLibraries`, newest `LastScanAt`) for the change-detection gate; returns `(zero,false)` on any uncertainty so the gate fails open. `cachedLibraryLastScan` memoises it per `runSyncChunk` call. |
-| `id3.go` | ID3v2 tag parsing (`parseID3v2Rating`) — dispatches by per-user `tagOrder` |
-| `flac.go` | FLAC + Vorbis comment parsing (`parseFLACVorbisComments`, `parseFLACRating`) plus the shared `ratingFromVorbisComments` resolver — hand-rolled, no external dep. Comment count is clamped to `maxVorbisComments` (1024) so a crafted block declaring `count = 2^32` can't burn millions of allocations before the byte budget runs out. |
-| `ogg.go` | Ogg page walker (`extractOggPackets`) and Vorbis/Opus comment dispatch (`parseOggVorbisRating`) — hand-rolled, no external dep |
-| `wav.go` | WAV RIFF chunk walker (`parseWAVRating`) — extracts `id3 `/`ID3 ` chunk and delegates to `parseID3v2Rating`. Chunk-size arithmetic stays in `uint64` before narrowing to `int` so a high-bit-set `uint32` can't sign-wrap on 32-bit `wasip1` and rewind `pos` into an infinite loop (mirrors the wma.go pattern). |
-| `dsf.go` | DSD Stream File parser (`parseDSFRating`) — reads ID3v2 offset from DSD header and delegates to `parseID3v2Rating` |
-| `m4a.go` | MP4 atom walker (`walkAtoms`, `findAtom`, `parseM4ARating`) — resolves freeform `----` atoms for FMPS_Rating, RATING, and rating |
-| `wma.go` | ASF header walker (`parseWMARating`, `parseASFExtContentDesc`, `decodeUTF16LE`) — reads `WM/SharedUserRating` and `FMPS_Rating` from Extended Content Description Object |
+| `id3.go` | ID3v2 tag parsing (`parseID3v2Rating`, `id3v2SyncsafeSize`) and the partial-read extractor `extractID3v2Metadata` — reads the 10-byte header, takes the syncsafe tag size, reads exactly that many bytes and stops. Also exposes `readID3v2TagAt` for WAV/DSF delegation. |
+| `flac.go` | FLAC + Vorbis comment parsing (`parseFLACVorbisComments`, `parseFLACRating`, `ratingFromVorbisComments`) plus the partial-read extractor `extractFLACMetadata` — walks 4-byte metadata block headers and `Seek`s past non-VORBIS_COMMENT bodies (PICTURE blocks can be many MiB) so we never load the audio frames. Comment count is clamped to `maxVorbisComments` (1024) to bound allocations. |
+| `ogg.go` | Ogg page walker (`extractOggPackets`) and Vorbis/Opus comment dispatch (`parseOggVorbisRating`) plus the partial-read extractor `extractOggMetadata` — reads the first `oggMetadataReadHint` bytes (512 KiB) which by spec covers the comment packet wherever it lands in the leading pages. |
+| `wav.go` | WAV RIFF chunk walker (`parseWAVRating`) plus the partial-read extractor `extractWAVMetadata` — walks chunk headers and `Seek`s past audio (`data`/`fmt `) chunks; synthesises a minimal RIFF/WAVE container holding only the `id3 ` chunk. Chunk-size arithmetic stays in `uint64` before narrowing to `int` so a high-bit-set `uint32` can't sign-wrap on 32-bit `wasip1`. |
+| `dsf.go` | DSD Stream File parser (`parseDSFRating`) plus the partial-read extractor `extractDSFMetadata` — reads the 28-byte DSD header, follows the embedded ID3 offset (which can sit GiB into the file past all the DSD samples) and reads only the tag. |
+| `m4a.go` | MP4 atom walker (`walkAtoms`, `findAtom`, `parseM4ARating`) plus the partial-read extractor `extractM4AMetadata` — walks top-level atom headers and `Seek`s past `mdat` (audio data, often hundreds of MiB), returns a synth containing only the `moov` atom. Handles atoms with `size==0` (extends to EOF) and `size==1` (extended 64-bit size). |
+| `wma.go` | ASF header walker (`parseWMARating`, `parseASFExtContentDesc`, `decodeUTF16LE`) plus the partial-read extractor `extractWMAMetadata` — walks ASF object headers and `Seek`s past non-ECDO objects (notably the ASF Data Object that holds the audio). Returns a synth Header Object with the ECDO as the only child. |
 | `rating.go` | Pure converters: `fmpsToStars`, `ratingIntToStars`, `popmWMPToStars`, `popmITunesToStars` |
 | `manifest.json` | Plugin metadata, capabilities, permissions (`library` + `filesystem:true` for read-only file access — NOT the invalid `libraries`/`allowWrite` shape), JSON Schema config definition |
 
@@ -59,33 +59,6 @@ files through the library **mount** instead:
   so an unmatched/ambiguous file can never be cleared by `clear_rating_if_untagged`.
 - There is **no** host "read file" API; `readAudioFile` uses plain `os.Open` on
   the matched mount path.
-
-### File-index cache (KV-backed)
-
-Each scheduler callback is a fresh WASM instance, so `buildFileIndex` would
-otherwise re-walk the mount on every chunk — on slow filesystems that has
-been observed to eat 5–6 s of the 10 s `callBudget` per chunk, choking
-throughput. To avoid this, the first chunk of a sweep persists the index to
-KV; subsequent chunks read it back and skip the walk.
-
-- KV key: `"file-index:" + url.QueryEscape(libraryID)`. Value: a
-  `cachedFileIndexBlob` (`{v, l, e[]}` — version, `LastScanAt` at build time,
-  flat entry list) JSON-marshalled. The bucket map is reconstructed on
-  load from each entry's size+ext, so it isn't stored.
-- Validity stamp: Navidrome's `LastScanAt`. On every chunk, `resolveAndIndex`
-  loads the blob and accepts it only if `blob.LastScanAt == current.LastScanAt`.
-  A mismatch (Navidrome rescanned mid-sweep, or this is a fresh sweep after
-  a real scan) triggers a rebuild and an overwrite — no explicit invalidation
-  needed, no "delete on sweep complete" book-keeping.
-- LastScanAt unknown (0 / host error / non-numeric ID) → no read attempt,
-  no persist. We cannot validate without it, so caching would just leak
-  stale data.
-- Size cap: `maxIndexBytes` = 4 MiB. Above that the blob is silently dropped
-  (debug-logged) and the next chunk rebuilds — better than blowing the KV
-  with a runaway library.
-- Fail-open everywhere (KV error, parse error, version mismatch, oversize
-  blob, missing scan stamp): the cache can only make things faster, never
-  less correct.
 
 ## Config model (v0.3.0+)
 
