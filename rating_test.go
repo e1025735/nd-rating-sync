@@ -44,17 +44,16 @@ func TestPopmWMPToStars(t *testing.T) {
 		input byte
 		want  int
 	}{
-		{0, 0},   // unrated
-		{1, 1},   // 1 star range [1,24]
-		{24, 1},
-		{25, 2},  // 2 star range [25,49]
-		{49, 2},
-		{50, 3},  // 3 star range [50,74]
-		{74, 3},
-		{75, 4},  // 4 star range [75,98]
-		{98, 4},
-		{99, 5},  // 5 stars at exactly 99
-		{100, 5}, // anything above 99
+		{0, 0}, // unrated
+		{1, 1}, // 1 star range [1,1]
+		{2, 2},
+		{44, 2}, // 2 star range [2,64]
+		{64, 2},
+		{90, 3}, // 3 star range [65,128]
+		{128, 3},
+		{196, 4}, // 4 star range [129,196]
+		{145, 4},
+		{197, 5}, // 5 stars range [197,255]
 		{255, 5}, // max byte
 	}
 
@@ -69,16 +68,16 @@ func TestPopmITunesToStars(t *testing.T) {
 		input byte
 		want  int
 	}{
-		{0, 0},   // unrated
-		{1, 1},   // 1 star range (0,20]
+		{0, 0}, // unrated
+		{1, 1}, // 1 star range (0,20]
 		{20, 1},
-		{21, 2},  // 2 star range (20,40]
+		{21, 2}, // 2 star range (20,40]
 		{40, 2},
-		{41, 3},  // 3 star range (40,60]
+		{41, 3}, // 3 star range (40,60]
 		{60, 3},
-		{61, 4},  // 4 star range (60,80]
+		{61, 4}, // 4 star range (60,80]
 		{80, 4},
-		{81, 5},  // 5 star range (80,255]
+		{81, 5}, // 5 star range (80,255]
 		{100, 5},
 		{255, 5},
 	}

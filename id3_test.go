@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"math/big"
+
 	"github.com/bogem/id3v2/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -79,7 +80,10 @@ func TestParseID3v2Rating_EmptySlice(t *testing.T) {
 // ─── MediaMonkey (FMPS_Rating TXXX) ──────────────────────────────────────────
 
 func TestParseID3v2Rating_MediaMonkeyCanonicalValues(t *testing.T) {
-	cases := []struct{ fmps string; want int }{
+	cases := []struct {
+		fmps string
+		want int
+	}{
 		{"0.2", 1}, {"0.4", 2}, {"0.6", 3}, {"0.8", 4}, {"1.0", 5},
 	}
 	for _, tc := range cases {
@@ -106,8 +110,11 @@ func TestParseID3v2Rating_MediaMonkeyCaseInsensitiveDescription(t *testing.T) {
 // ─── WMP (POPM) ───────────────────────────────────────────────────────────────
 
 func TestParseID3v2Rating_WMPCanonicalValues(t *testing.T) {
-	cases := []struct{ rating byte; want int }{
-		{1, 1}, {25, 2}, {50, 3}, {75, 4}, {99, 5},
+	cases := []struct {
+		rating byte
+		want   int
+	}{
+		{1, 1}, {64, 2}, {128, 3}, {196, 4}, {255, 5},
 	}
 	for _, tc := range cases {
 		data := makeTagWithPOPM(t, "Windows Media Player 9 Series", tc.rating)
@@ -159,7 +166,7 @@ func TestParseID3v2Rating_TagOrderWMPBeatsMediaMonkey(t *testing.T) {
 	// FMPS → 3 stars; WMP POPM → 5 stars; tagOrder prefers WMP.
 	data := makeTagWithTXXXAndPOPM(t,
 		id3v2.UserDefinedTextFrame{Encoding: id3v2.EncodingUTF8, Description: "FMPS_Rating", Value: "0.6"},
-		id3v2.PopularimeterFrame{Email: "Windows Media Player 9 Series", Rating: 99, Counter: big.NewInt(0)},
+		id3v2.PopularimeterFrame{Email: "Windows Media Player 9 Series", Rating: 255, Counter: big.NewInt(0)},
 	)
 	stars, ok := parseID3v2Rating(data, []string{"WMP", "MediaMonkey"})
 	assert.True(t, ok)

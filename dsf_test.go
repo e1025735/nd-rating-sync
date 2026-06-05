@@ -80,7 +80,7 @@ func TestParseDSFRating_foobar2000(t *testing.T) {
 }
 
 func TestParseDSFRating_WMP(t *testing.T) {
-	data := makeDSF(t, makeTagWithPOPM(t, "Windows Media Player 9 Series", 50))
+	data := makeDSF(t, makeTagWithPOPM(t, "Windows Media Player 9 Series", 90))
 	stars, ok := parseDSFRating(data, []string{"WMP"})
 	assert.True(t, ok)
 	assert.Equal(t, 3, stars)

@@ -93,7 +93,7 @@ func TestParseWAVRating_foobar2000(t *testing.T) {
 }
 
 func TestParseWAVRating_WMP(t *testing.T) {
-	data := makeWAV(t, makeTagWithPOPM(t, "Windows Media Player 9 Series", 75))
+	data := makeWAV(t, makeTagWithPOPM(t, "Windows Media Player 9 Series", 196))
 	stars, ok := parseWAVRating(data, []string{"WMP"})
 	assert.True(t, ok)
 	assert.Equal(t, 4, stars)
@@ -120,7 +120,7 @@ func TestParseWAVRating_UpperCaseFourCC(t *testing.T) {
 func TestParseWAVRating_TagOrderRespected(t *testing.T) {
 	id3Data := makeTagWithTXXXAndPOPM(t,
 		id3v2.UserDefinedTextFrame{Encoding: id3v2.EncodingUTF8, Description: "FMPS_Rating", Value: "0.4"},
-		id3v2.PopularimeterFrame{Email: "Windows Media Player 9 Series", Rating: 99, Counter: big.NewInt(0)},
+		id3v2.PopularimeterFrame{Email: "Windows Media Player 9 Series", Rating: 255, Counter: big.NewInt(0)},
 	)
 	data := makeWAV(t, id3Data)
 

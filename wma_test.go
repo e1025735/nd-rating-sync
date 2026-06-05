@@ -98,7 +98,7 @@ func TestParseWMARating_WMPCanonicalValues(t *testing.T) {
 		rating uint16
 		want   int
 	}{
-		{1, 1}, {25, 2}, {50, 3}, {75, 4}, {99, 5},
+		{1, 1}, {64, 2}, {128, 3}, {196, 4}, {255, 5},
 	}
 	for _, tc := range cases {
 		data := buildWMA(t, []wmaDescriptor{
@@ -158,7 +158,7 @@ func TestParseWMARating_MediaMonkeyZeroIsUnrated(t *testing.T) {
 
 func TestParseWMARating_TagOrderWMPBeatsMediaMonkey(t *testing.T) {
 	data := buildWMA(t, []wmaDescriptor{
-		{name: "WM/SharedUserRating", valueType: 5, value: wmaWordValue(99)},
+		{name: "WM/SharedUserRating", valueType: 5, value: wmaWordValue(255)},
 		{name: "FMPS_Rating", valueType: 0, value: encodeUTF16LE("0.2")},
 	})
 
