@@ -75,17 +75,17 @@ order is harmless.
 | `1` – `5` | ★ – ★★★★★ |
 
 **WMP POPM** — non-linear: WMP itself writes one of five fixed bytes
-(`1`, `25`, `50`, `75`, `99`); the ranges between those points all collapse
+(`1`, `64`, `128`, `196`, `255`); the ranges between those points all collapse
 to the lower star:
 
 | POPM byte | Stars |
 |-----------|-------|
 | `0` | (unrated → skip) |
-| `1` – `24` | ★ |
-| `25` – `49` | ★★ |
-| `50` – `74` | ★★★ |
-| `75` – `98` | ★★★★ |
-| `99` – `255` | ★★★★★ |
+| `1` – `1` | ★ |
+| `2` – `64` | ★★ |
+| `65` – `128` | ★★★ |
+| `129` – `196` | ★★★★ |
+| `197` – `255` | ★★★★★ |
 
 **iTunes POPM** — linear in steps of 20 across 0–100:
 

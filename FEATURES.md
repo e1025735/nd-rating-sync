@@ -57,7 +57,7 @@ Incremental sync skips the per-*file* work, but a naive sweep still pages the en
 
 | Key | MP3 / WAV / DSF (ID3v2) | FLAC / Ogg / Opus (Vorbis) | M4A / AAC (MP4 atom) | WMA (ASF) | Scale / notes |
 |-----|-------------------------|----------------------------|----------------------|-----------|---------------|
-| `WMP` | POPM ("windows media player") | — | — | `WM/SharedUserRating` WORD | Non-linear: 1/25/50/75/99 → 1–5 stars |
+| `WMP` | POPM ("windows media player") | — | — | `WM/SharedUserRating` WORD | Non-linear: 1/64/128/196/255 → 1–5 stars |
 | `iTunes` | POPM ("itunes" / "com.apple.itunes") | — | `rating` freeform (lowercase) | — | Linear 0–100 in steps of 20 → 1–5 stars |
 | `MediaMonkey` | TXXX `FMPS_Rating` | `FMPS_RATING` | `FMPS_Rating` freeform | `FMPS_Rating` Unicode string | Float 0.0–1.0, ceiling × 5 → 1–5 stars |
 | `foobar2000` | TXXX `RATING` | `RATING` | `RATING` freeform (uppercase) | — | Integer 1–5 (0 / empty / out-of-range = unrated) |

@@ -50,9 +50,9 @@ func fmpsToStars(s string) (int, bool) {
 
 /*
 popmWMPToStars decodes a POPM byte written by Windows Media Player.
-WMP's internal scale runs 0–99 with fixed star breakpoints (1, 25, 50, 75, 99),
+WMP's internal scale runs 0–255 with fixed star breakpoints (1, 64, 128, 196, 255),
 so the byte ranges between those points all collapse to the lower star.
-Byte 0 means unrated; anything above 99 is treated as 5 stars.
+Byte 0 means unrated; anything above 197 is treated as 5 stars.
 */
 func popmWMPToStars(b byte) int {
 	switch {

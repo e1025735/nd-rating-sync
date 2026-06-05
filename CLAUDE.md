@@ -76,7 +76,7 @@ Config is a hierarchical JSON Schema (not a flat key-value list):
 
 | `ratingTagOrder` key | MP3 / WAV / DSF (ID3v2) | FLAC / Ogg / Opus (Vorbis) | M4A / AAC (MP4 atom) | WMA (ASF) | Scale |
 |----------------------|-------------------------|----------------------------|-----------------------|-----------|-------|
-| `"WMP"` | POPM ("windows media player") | — | — | `WM/SharedUserRating` WORD | Non-linear fixed points (1/25/50/75/99) |
+| `"WMP"` | POPM ("windows media player") | — | — | `WM/SharedUserRating` WORD | Non-linear fixed points (1/64/128/196/25) |
 | `"iTunes"` | POPM ("itunes" / "com.apple.itunes") | — | `rating` freeform (lowercase) | — | Linear 0–100 (20/40/60/80/100) |
 | `"MediaMonkey"` | TXXX `FMPS_Rating` | `FMPS_RATING` | `FMPS_Rating` freeform | `FMPS_Rating` Unicode | Float 0.0–1.0 → ceiling×5 |
 | `"foobar2000"` | TXXX `RATING` | `RATING` | `RATING` freeform (uppercase) | — | Integer 1–5 (0/empty = unrated) |

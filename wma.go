@@ -67,7 +67,7 @@ func parseWMARating(data []byte, tagOrder []string) (int, bool) {
 // Object (after its 24-byte GUID+size header) and extracts a star rating.
 // Recognised descriptors:
 //
-//   - "WM/SharedUserRating" (WORD/type 5): WMP 0/25/50/75/99 byte scale
+//   - "WM/SharedUserRating" (WORD/type 5): WMP 0/64/128/196/255 byte scale
 //   - "FMPS_Rating"         (Unicode/type 0): MediaMonkey float 0.0–1.0
 func parseASFExtContentDesc(body []byte, tagOrder []string) (int, bool) {
 	if len(body) < 2 {
@@ -103,7 +103,7 @@ func parseASFExtContentDesc(body []byte, tagOrder []string) (int, bool) {
 
 		switch strings.ToUpper(name) {
 		case "WM/SHAREDUSERRATING":
-			// WORD (type 5): same 0/25/50/75/99 breakpoints as the WMP POPM byte.
+			// WORD (type 5): same 0/64/128/196/255 breakpoints as the WMP POPM byte.
 			if valueType == 5 && valueLen >= 2 {
 				v := binary.LittleEndian.Uint16(valueBytes)
 				if stars := popmWMPToStars(byte(v)); stars > 0 {
