@@ -6,6 +6,17 @@ import (
 	"strings"
 )
 
+const (
+	wmp1Star       = 1
+	wmp2Star       = 64
+	wmp3Star       = 128
+	wmp4Star       = 196
+	iTunes1StarMax = 20
+	iTunes2StarMax = 40
+	iTunes3StarMax = 60
+	iTunes4StarMax = 80
+)
+
 /*
 fmpsToStars reads the FMPS_Rating float (0.0–1.0) and turns it into a 1–5 star value.
 Uses ceiling so the canonical values (0.2, 0.4 … 1.0) land exactly on whole stars.
@@ -46,16 +57,16 @@ Byte 0 means unrated; anything above 99 is treated as 5 stars.
 func popmWMPToStars(b byte) int {
 	switch {
 	case b == 0:
-		return 0
-	case b < 25:
+		return 0 // unrated
+	case b <= wmp1Star:
 		return 1
-	case b < 50:
+	case b <= wmp2Star:
 		return 2
-	case b < 75:
+	case b <= wmp3Star:
 		return 3
-	case b < 99:
+	case b <= wmp4Star:
 		return 4
-	default: // 99–255
+	default:
 		return 5
 	}
 }
@@ -89,16 +100,16 @@ mapping is straightforward. Values between steps round up to the next star.
 func popmITunesToStars(b byte) int {
 	switch {
 	case b == 0:
-		return 0
-	case b <= 20:
+		return 0 // unrated
+	case b <= iTunes1StarMax:
 		return 1
-	case b <= 40:
+	case b <= iTunes2StarMax:
 		return 2
-	case b <= 60:
+	case b <= iTunes3StarMax:
 		return 3
-	case b <= 80:
+	case b <= iTunes4StarMax:
 		return 4
-	default: // 81–255
+	default:
 		return 5
 	}
 }
