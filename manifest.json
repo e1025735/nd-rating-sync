@@ -16,7 +16,7 @@
       "reason": "Required by the subsonicapi permission for per-user authorisation and to scope scrobble/scan events"
     },
     "scheduler": {
-      "reason": "Schedule periodic scans of the music library and handle manual scan trigger requests"
+      "reason": "Schedule periodic scans of the music library"
     },
     "kvstore": {
       "reason": "Persist the last successful scan timestamp per (library, user) so recurring scans can skip files whose mtime has not changed since"
