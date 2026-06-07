@@ -3,6 +3,10 @@
   "extends": ["config:recommended"],
   "packageRules": [
     {
+      "matchManagers": ["gomod"],
+      "ignoreUnstable": true
+    },
+    {
       "matchUpdateTypes": ["patch"],
       "addLabels": ["renovate-patch"]
     },
