@@ -21,7 +21,9 @@ library, reads the embedded rating tag from each file, and calls
 clicked the stars yourself.
 
 The plugin is **read-only on the filesystem**. It never writes back to your
-files.
+files. Still the "Library Permission" "Allow write access" must be set since
+this "only" means that the plugin is allowed filesystem access. Since you therefore also
+could do potentially write to it Navidrome worded it like this.
 
 ---
 
