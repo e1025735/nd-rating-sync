@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -344,7 +345,7 @@ func TestProcessPairChunk_StopsAtDeadlineMidPair(t *testing.T) {
 	user := userConfig{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}
 
 	deadline := time.Now().Add(-time.Second) // already past
-	next, pairDone := processPairChunk(lib, user, pluginConfig{}, syncCursor{}, time.Time{}, deadline, nil)
+	next, pairDone := processPairChunk(lib, user, pluginConfig{}, syncCursor{}, time.Time{}, deadline, nil, false, nil)
 
 	assert.False(t, pairDone, "deadline hit mid-pair → pair not done")
 	assert.Equal(t, deadlineCheckEvery, next.Offset,
@@ -381,6 +382,46 @@ func TestRunSyncChunk_AdvancesAcrossPairsToCompletion(t *testing.T) {
 	assert.True(t, done, "both pairs processed → sweep complete")
 	assert.Equal(t, 1, next.Lib, "cursor advanced past the only library")
 	host.SubsonicAPIMock.AssertExpectations(t)
+}
+
+func TestRunSyncChunk_UsesPersistentIndexWhenEnabled(t *testing.T) {
+	resetSubsonicMock(t)
+	resetKVStoreMock(t)
+	resetLibraryMock(t)
+
+	mount := t.TempDir()
+	path := writeFMPSFileAt(t, mount, "song.mp3", "0.6")
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	mockGetLibrary(1, mount)
+
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Size: info.Size()}}
+	host.SubsonicAPIMock.On("Call",
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
+	).Return(subsonicOK(songs), nil)
+	host.SubsonicAPIMock.On("Call", "setRating?id=song-1&rating=3&u=alice").
+		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
+
+	host.KVStoreMock.On("Get", libraryScanStateKey("1")).Return([]byte(nil), false, nil)
+	bucketKeyName := bucketKey("1", info.Size(), "mp3")
+	bucketValue, err := json.Marshal([]FileRecord{{Path: path, Mtime: info.ModTime().Unix()}})
+	require.NoError(t, err)
+	host.KVStoreMock.On("Get", bucketKeyName).Return([]byte(nil), false, nil).Once()
+	host.KVStoreMock.On("Get", bucketKeyName).Return(bucketValue, true, nil).Once()
+	host.KVStoreMock.On("Set", bucketKeyName, mock.Anything).Return(nil)
+	host.KVStoreMock.On("Set", libraryScanStateKey("1"), mock.Anything).Return(nil)
+
+	cfg := pluginConfig{CacheLibrariesFilesystemTree: true, Libraries: []libraryConfig{{
+		LibraryID: "1",
+		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
+	}}}
+
+	next, done := runSyncChunk(cfg, syncCursor{}, time.Now().Add(time.Hour))
+	require.True(t, done)
+	assert.Equal(t, 1, next.Lib)
+	host.SubsonicAPIMock.AssertExpectations(t)
+	host.KVStoreMock.AssertExpectations(t)
+	host.LibraryMock.AssertExpectations(t)
 }
 
 // TestRunSyncStepUntil_ReschedulesWhenBudgetExceeded proves an unfinished sweep

@@ -120,6 +120,7 @@ disk. So the plugin never opens it.
 | `sync_schedule` | `0 * * * *` | Cron expression for recurring sync (hourly default; idle runs are cheap via the change-detection gate, so a frequent schedule is fine) |
 | `incremental_sync` | `true` | Skip files whose mtime predates the last successful scan; set false to force a full rescan every run |
 | `dry_run` | `false` | Run the full scan pipeline without writing any ratings; logs `[DRY RUN] would_rate / would_clear` instead of calling `setRating`; does not advance the incremental-sync threshold |
+| `cache_libraries_filesystem_tree` | `false` | Persist a per-library file-index bucket cache in KV for very large or slow library mounts. Use only when repeated filesystem walks are too expensive. |
 
 ---
 

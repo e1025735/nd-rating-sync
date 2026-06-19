@@ -24,6 +24,7 @@ type pluginConfig struct {
 	MaxSongsPerRun               int
 	IncrementalSync              bool
 	DryRun                       bool
+	CacheLibrariesFilesystemTree bool
 	DefaultSkipAlreadyRated      *bool
 	DefaultClearRatingIfUntagged *bool
 	Libraries                    []libraryConfig
@@ -104,6 +105,12 @@ func loadConfigFrom(get configGetter) pluginConfig {
 		switch strings.ToLower(strings.TrimSpace(v)) {
 		case "true", "1", "yes", "on":
 			cfg.DryRun = true
+		}
+	}
+	if v, ok := get("cache_libraries_filesystem_tree"); ok {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1", "yes", "on":
+			cfg.CacheLibrariesFilesystemTree = true
 		}
 	}
 	if v, ok := get("default_skip_already_rated"); ok {

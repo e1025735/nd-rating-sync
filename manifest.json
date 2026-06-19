@@ -19,7 +19,8 @@
       "reason": "Schedule periodic scans of the music library"
     },
     "kvstore": {
-      "reason": "Persist the last successful scan timestamp per (library, user) so recurring scans can skip files whose mtime has not changed since"
+      "reason": "Persist the last successful scan timestamp per (library, user) so recurring scans can skip files whose mtime has not changed since",
+      "maxSize": "1MB"
     }
   },
   "config": {
@@ -44,6 +45,12 @@
           "type": "boolean",
           "title": "Dry run",
           "description": "When true, the plugin executes the full scan pipeline (fetch songs, read files, parse tags, apply all skip logic) but does not call setRating. Every rating that would be written or cleared is logged with a [DRY RUN] prefix instead. The incremental-sync threshold is not updated, so the next real run will re-process the same files. Useful for verifying tag parsing before the first import. Default: false.",
+          "default": false
+        },
+        "cache_libraries_filesystem_tree": {
+          "type": "boolean",
+          "title": "Cache Libraries Filesystem Tree",
+          "description": "When true, the plugin caches the libraries filesystem tree. Only enabled this if the libraries are very huge or on a slow media (like CIFS share for example). Default: false.",
           "default": false
         },
         "default_skip_already_rated": {
@@ -217,6 +224,10 @@
         {
           "type": "Control",
           "scope": "#/properties/dry_run"
+        },
+        {
+          "type": "Control",
+          "scope": "#/properties/cache_libraries_filesystem_tree"
         },
         {
           "type": "Control",

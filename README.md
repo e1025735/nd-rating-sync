@@ -130,6 +130,7 @@ the same example. You enter these settings via the Navidrome UI:
 | `dry_run` | `false` | When true, the full scan pipeline runs but no `setRating` calls are made. Every rating that would be written or cleared is logged with a `[DRY RUN]` prefix. The incremental-sync threshold is not updated. Use this to verify tag parsing before the first real import. |
 | `default_skip_already_rated` | `null` | Admin-level default for `skip_already_rated`. Applied to any user whose per-user setting is `null`. `null` here means no admin default — the plugin falls back to `true`. |
 | `default_clear_rating_if_untagged` | `null` | Admin-level default for `clear_rating_if_untagged`. Applied to any user whose per-user setting is `null`. `null` here means no admin default — the plugin falls back to `false`. |
+| `cache_libraries_filesystem_tree` | `false` | When true, the plugin persists a per-library file-index bucket cache in KV to reduce repeated filesystem walks on very large or slow mounts. Only enable this for huge or slow libraries. |
 
 ### Per-library settings
 
@@ -223,6 +224,17 @@ State is stored under the KV key `last-synced:{libraryId}:{username}` and
 survives plugin reloads. KV-store failures are non-fatal: a missing or
 malformed value falls back to a full scan; a failed write means the next
 run does redundant work, never incorrect work.
+
+The plugin requests Navidrome `kvstore` permission for this state. If you
+later enable the library filesystem tree cache, the default `permissions.kvstore.maxSize`
+value of `1MB` may need to be increased to accommodate the cached index.
+
+**KV size requirements for filesystem tree cache:**
+- Each file entry requires approximately 100–200 bytes (path + metadata)
+- Per-library state (scan progress) requires ~500 bytes
+- **Estimate**: For 10,000 songs: ~1–2 MB; for 100,000 songs: ~10–20 MB
+- If your library is 50,000+ songs, increase `kvstore.maxSize` to `10MB` or higher
+- Start with `5MB` if unsure and monitor KV store usage in Navidrome logs
 
 ---
 

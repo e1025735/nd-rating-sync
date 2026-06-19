@@ -68,6 +68,27 @@ func TestLoadConfig_Libraries(t *testing.T) {
 	assert.Equal(t, []string{"WMP", "iTunes"}, u.RatingTagOrder)
 }
 
+func TestLoadConfig_CacheLibrariesFilesystemTreeDefaultsFalse(t *testing.T) {
+	libs := []map[string]any{
+		{"libraryId": "lib1", "users": []map[string]any{{"username": "bob"}}},
+	}
+	raw, _ := json.Marshal(libs)
+	cfg := loadConfigFrom(mapGetter(map[string]string{"libraries": string(raw)}))
+	assert.False(t, cfg.CacheLibrariesFilesystemTree)
+}
+
+func TestLoadConfig_CacheLibrariesFilesystemTreeCanBeEnabled(t *testing.T) {
+	libs := []map[string]any{
+		{
+			"libraryId": "lib1",
+			"users":     []map[string]any{{"username": "carol", "skip_already_rated": "no"}},
+		},
+	}
+	raw, _ := json.Marshal(libs)
+	cfg := loadConfigFrom(mapGetter(map[string]string{"cache_libraries_filesystem_tree": "true", "libraries": string(raw)}))
+	assert.True(t, cfg.CacheLibrariesFilesystemTree)
+}
+
 func TestLoadConfig_SkipAlreadyRatedDefaultsTrue(t *testing.T) {
 	libs := []map[string]any{
 		{"libraryId": "lib1", "users": []map[string]any{{"username": "bob"}}},

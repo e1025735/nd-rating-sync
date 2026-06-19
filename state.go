@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
@@ -134,4 +136,58 @@ func clearSweepActive() {
 	if err := host.KVStoreDelete(kvKeySweepActive); err != nil {
 		logDebug(fmt.Sprintf("nd-rating-sync: KVStoreDelete(%q) failed: %q", kvKeySweepActive, err.Error()))
 	}
+}
+
+func bucketKey(libraryID string, size int64, ext string) string {
+	return fmt.Sprintf("bucket:%s:%d:%s", libraryID, size, strings.ToLower(ext))
+}
+
+func loadBucket(libraryID string, size int64, ext string) ([]FileRecord, error) {
+	key := bucketKey(libraryID, size, ext)
+	data, found, err := host.KVStoreGet(key)
+	if err != nil {
+		return nil, err
+	}
+	if !found || len(data) == 0 {
+		return nil, nil
+	}
+	var records []FileRecord
+	err = json.Unmarshal(data, &records)
+	return records, err
+}
+
+func saveBucket(libraryID string, size int64, ext string, records []FileRecord) error {
+	key := bucketKey(libraryID, size, ext)
+	data, err := json.Marshal(records)
+	if err != nil {
+		return err
+	}
+	return host.KVStoreSet(key, data)
+}
+
+func libraryScanStateKey(libraryID string) string {
+	return fmt.Sprintf("libraryState:%s", libraryID)
+}
+
+func loadLibraryScanState(libraryID string) (ScanState, error) {
+	key := libraryScanStateKey(libraryID)
+	data, found, err := host.KVStoreGet(key)
+	if err != nil {
+		return ScanState{}, err
+	}
+	if !found || len(data) == 0 {
+		return ScanState{}, nil
+	}
+	var scanState ScanState
+	err = json.Unmarshal(data, &scanState)
+	return scanState, err
+}
+
+func saveLibraryScanState(libraryID string, state *ScanState) error {
+	key := libraryScanStateKey(libraryID)
+	data, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return host.KVStoreSet(key, data)
 }
