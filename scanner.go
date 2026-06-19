@@ -98,10 +98,7 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 		usePersistentIndex := cfg.CacheLibrariesFilesystemTree
 
 		if usePersistentIndex {
-			ready, err := ensureLibraryIndexed(
-				lib.LibraryID,
-				deadline,
-			)
+			ready, err := ensureLibraryIndexed(lib.LibraryID, deadline)
 
 			if err != nil {
 				logWarn(fmt.Sprintf(
@@ -117,7 +114,7 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 				return cur, false
 			}
 		} else {
-			indexTmp, indexOK := cachedFileIndex(indexCache, cfg, lib.LibraryID, deadline)
+			indexTmp, indexOK := cachedFileIndex(indexCache, lib.LibraryID, deadline)
 			index = indexTmp
 			if time.Now().After(deadline) {
 				logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, deadline hit without cache lib=%q user=%q, offset=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))

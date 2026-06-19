@@ -37,6 +37,7 @@ type fileEntry struct {
 type ScanState struct {
 	Complete    bool
 	PendingDirs []string
+	VisitedDirs map[string]struct{}
 	LastScanAt  int64
 }
 
@@ -212,12 +213,12 @@ type fileIndexResult struct {
 // call. State does not survive across callbacks, so the cache is created fresh
 // per call. N users of one library therefore share one walk; an unchanged
 // library that the LastScanAt gate skips never reaches this cache at all.
-func cachedFileIndex(cache map[string]fileIndexResult, cfg pluginConfig, libraryID string, deadline time.Time) (map[string][]fileEntry, bool) {
+func cachedFileIndex(cache map[string]fileIndexResult, libraryID string, deadline time.Time) (map[string][]fileEntry, bool) {
 	logTrace(fmt.Sprintf("nd-rating-sync: cachedFileIndex start libraryID=%q", libraryID))
 	if r, found := cache[libraryID]; found {
 		return r.index, r.ok
 	}
-	idx, ok := resolveAndIndex(cfg, libraryID, deadline)
+	idx, ok := resolveAndIndex(libraryID, deadline)
 	cache[libraryID] = fileIndexResult{index: idx, ok: ok}
 	logTrace(fmt.Sprintf("nd-rating-sync: cachedFileIndex done libraryID=%q", libraryID))
 	return idx, ok
@@ -227,7 +228,7 @@ func cachedFileIndex(cache map[string]fileIndexResult, cfg pluginConfig, library
 // walk it. Both stages fail-closed by skipping the pair (caller responsibility):
 // without a real file index we cannot match songs to files and any read
 // attempt would just regress to the s.Path bug.
-func resolveAndIndex(cfg pluginConfig, libraryID string, deadline time.Time) (map[string][]fileEntry, bool) {
+func resolveAndIndex(libraryID string, deadline time.Time) (map[string][]fileEntry, bool) {
 	logTrace(fmt.Sprintf("nd-rating-sync: resolveAndIndex start libraryID=%q", libraryID))
 	mountPoint, err := resolveMountPoint(libraryID)
 	if err != nil {
@@ -255,81 +256,145 @@ func resolveAndIndex(cfg pluginConfig, libraryID string, deadline time.Time) (ma
 }
 
 func scanChunk(libraryID string, state *ScanState, deadline time.Time) error {
-	logTrace(fmt.Sprintf("nd-rating-sync: scanChunk start lib=%q pending_dirs=%d", libraryID, len(state.PendingDirs)))
-	dirty := false
+	logTrace(fmt.Sprintf("scanChunk start lib=%q pending=%d", libraryID, len(state.PendingDirs)))
+
+	if state.VisitedDirs == nil {
+		state.VisitedDirs = make(map[string]struct{})
+	}
+
+	changed := false
+	mark := func() { changed = true }
+
 	for len(state.PendingDirs) > 0 {
 		if time.Now().After(deadline) {
-			logTrace(fmt.Sprintf("nd-rating-sync: scanChunk stop, deadline reached lib=%q pending_dirs=%d", libraryID, len(state.PendingDirs)))
 			break
 		}
 
-		dir := state.PendingDirs[0]
-		state.PendingDirs = state.PendingDirs[1:]
+		dir, ok := state.PopDir()
+		if !ok {
+			break
+		}
+		mark()
+
+		if _, seen := state.VisitedDirs[dir]; seen {
+			continue
+		}
+		state.MarkVisited(dir)
+
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			logWarn(fmt.Sprintf("nd-rating-sync: cannot read directory %q for library=%q (retrying later): %v", dir, libraryID, err))
-			state.PendingDirs = append([]string{dir}, state.PendingDirs...)
-			logTrace(fmt.Sprintf("nd-rating-sync: scanChunk stop, unreadable directory lib=%q dir=%q", libraryID, dir))
-			break
+			logWarn(fmt.Sprintf("nd-rating-sync: cannot read directory %q for library=%q: %v", dir, libraryID, err))
+			state.RequeueDir(dir)
+			mark()
+
+			continue
 		}
-		dirty = true
-		logDebug(fmt.Sprintf("nd-rating-sync: scanChunk scanning directory %q for library=%q entries=%d", dir, libraryID, len(entries)))
 
 		updates := map[string]map[string]FileRecord{}
+
 		for _, e := range entries {
-			full := filepath.Join(dir, e.Name())
-			if e.IsDir() {
-				state.PendingDirs = append(state.PendingDirs, full)
+			if time.Now().After(deadline) {
+				state.RequeueDir(dir)
+				mark()
 				continue
 			}
+			full := filepath.Join(dir, e.Name())
+
+			if e.IsDir() {
+				if _, seen := state.VisitedDirs[full]; !seen {
+					state.RequeueDir(full)
+				}
+				continue
+			}
+
 			ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(e.Name()), "."))
 			if !isSupportedExt(ext) {
 				continue
 			}
+
 			info, err := e.Info()
 			if err != nil {
-				logDebug(fmt.Sprintf("nd-rating-sync: cannot stat file %q for library=%q (skipping): %v", full, libraryID, err))
+				logWarn(fmt.Sprintf("failed to stat file %q: %v", full, err))
 				continue
 			}
 
 			key := sizeKey(info.Size(), ext)
-			bucket, ok := updates[key]
-			if !ok {
+
+			bucket := updates[key]
+			if bucket == nil {
 				bucket = map[string]FileRecord{}
 				updates[key] = bucket
 			}
-			bucket[full] = FileRecord{Path: full, Mtime: info.ModTime().Unix()}
+
+			bucket[full] = FileRecord{
+				Path:  full,
+				Mtime: info.ModTime().Unix(),
+			}
 		}
 
-		for key, currentRecords := range updates {
+		for key, current := range updates {
 			parts := strings.SplitN(key, ":", 2)
-			size, _ := strconv.ParseInt(parts[0], 10, 64)
+			if len(parts) != 2 {
+				return fmt.Errorf("invalid bucket key %q", key)
+			}
+			size, err := strconv.ParseInt(parts[0], 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid size in bucket key %q: %w", key, err)
+			}
 			ext := parts[1]
 			existing, err := loadBucket(libraryID, size, ext)
 			if err != nil {
 				return err
 			}
-			merged := mergeBucketRecords(existing, currentRecords, dir)
+
+			merged := mergeBucketRecords(existing, current, dir)
+
 			if !bucketRecordsEqual(existing, merged) {
-				logDebug(fmt.Sprintf("nd-rating-sync: scanChunk saving updated bucket libraryID=%q size=%d ext=%q old=%d new=%d", libraryID, size, ext, len(existing), len(merged)))
 				if err := saveBucket(libraryID, size, ext, merged); err != nil {
 					return err
 				}
-			} else {
-				logTrace(fmt.Sprintf("nd-rating-sync: scanChunk bucket unchanged libraryID=%q size=%d ext=%q records=%d", libraryID, size, ext, len(existing)))
+				mark()
 			}
 		}
 	}
+
 	if len(state.PendingDirs) == 0 {
 		state.Complete = true
-		logInfo(fmt.Sprintf("nd-rating-sync: scanChunk complete libraryID=%q", libraryID))
+		mark()
 	}
-	if !dirty {
-		logTrace(fmt.Sprintf("nd-rating-sync: scanChunk no state change libraryID=%q complete=%v pending_dirs=%d", libraryID, state.Complete, len(state.PendingDirs)))
+
+	if !changed {
 		return nil
 	}
-	logTrace(fmt.Sprintf("nd-rating-sync: scanChunk save state libraryID=%q complete=%v pending_dirs=%d", libraryID, state.Complete, len(state.PendingDirs)))
+
 	return saveLibraryScanState(libraryID, state)
+}
+
+func (s *ScanState) PopDir() (string, bool) {
+	if len(s.PendingDirs) == 0 {
+		return "", false
+	}
+
+	dir := s.PendingDirs[0]
+	s.PendingDirs = s.PendingDirs[1:]
+	return dir, true
+}
+
+func (s *ScanState) RequeueDir(dir string) {
+	s.PendingDirs = append(s.PendingDirs, dir)
+}
+
+func (s *ScanState) MarkVisited(dir string) bool {
+	if s.VisitedDirs == nil {
+		s.VisitedDirs = make(map[string]struct{})
+	}
+
+	if _, ok := s.VisitedDirs[dir]; ok {
+		return false
+	}
+
+	s.VisitedDirs[dir] = struct{}{}
+	return true
 }
 
 func mergeBucketRecords(existing []FileRecord, currentRecords map[string]FileRecord, dir string) []FileRecord {

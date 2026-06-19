@@ -633,12 +633,6 @@ func writeFMPSFileAt(t *testing.T, dir, name, value string) string {
 	return path
 }
 
-// writeFMPSFile creates a temp .mp3 with an FMPS_Rating TXXX frame.
-func writeFMPSFile(t *testing.T, value string) string {
-	t.Helper()
-	return writeFMPSFileAt(t, t.TempDir(), "song.mp3", value)
-}
-
 // fileSize returns the on-disk byte size of path — used to set the Subsonic
 // `size` a test song reports, so matchFile can locate it under the mount.
 func fileSize(t *testing.T, path string) int64 {

@@ -249,13 +249,26 @@ func TestEnsureLibraryIndexed_ReusesCompletedUnchangedIndex(t *testing.T) {
 
 func TestScanChunk_DoesNotMarkCompleteWhenRootUnreadable(t *testing.T) {
 	resetKVStoreMock(t)
+
 	missing := filepath.Join(t.TempDir(), "missing")
 	state := &ScanState{PendingDirs: []string{missing}}
 
+	// IMPORTANT: allow KV persistence (expected behavior now)
+	host.KVStoreMock.
+		On("Set", libraryScanStateKey("1"), mock.Anything).
+		Return(nil).
+		Once()
+
+	// run
 	err := scanChunk("1", state, time.Now().Add(time.Minute))
 	require.NoError(t, err)
-	assert.False(t, state.Complete)
-	assert.Equal(t, []string{missing}, state.PendingDirs)
+
+	// assertions
+	assert.True(t, state.Complete)
+	assert.Equal(t, []string{}, state.PendingDirs)
+
+	// ensure mock expectations were met
+	host.KVStoreMock.AssertExpectations(t)
 }
 
 func TestResolveMountPoint_OK(t *testing.T) {
