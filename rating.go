@@ -23,18 +23,22 @@ fmpsToStars reads the FMPS_Rating float (0.0–1.0) and turns it into a 1–5 st
 Uses ceiling so the canonical values (0.2, 0.4 … 1.0) land exactly on whole stars.
 */
 func fmpsToStars(s string) (int, bool) {
+	logTrace(fmt.Sprintf("nd-rating-sync: fmpsToStars start s=%q", s))
 	s = strings.TrimSpace(s)
 	if s == "" || s == "0" || s == "0.0" {
+		logTrace(fmt.Sprintf("nd-rating-sync: fmpsToStars stop, zero s=%q", s))
 		return 0, false
 	}
 
 	var f float64
 	if _, err := fmt.Sscanf(s, "%f", &f); err != nil {
+		logTrace(fmt.Sprintf("nd-rating-sync: fmpsToStars stop, error s=%q", s))
 		return 0, false
 	}
 	// Reject NaN/Inf explicitly: comparisons with NaN are all false, so
 	// `f <= 0` would let it slip through and produce garbage from math.Ceil.
 	if math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 {
+		logTrace(fmt.Sprintf("nd-rating-sync: fmpsToStars stop, NaN s=%q", s))
 		return 0, false
 	}
 	if f > 1 {
@@ -46,6 +50,7 @@ func fmpsToStars(s string) (int, bool) {
 	if stars > 5 {
 		stars = 5
 	}
+	logTrace(fmt.Sprintf("nd-rating-sync: fmpsToStars done s=%q", s))
 	return stars, true
 }
 
@@ -79,20 +84,25 @@ in FLAC / Ogg / Opus) where the value is just the star count as a string.
 Empty, "0", or out-of-range values are reported as unrated.
 */
 func ratingIntToStars(s string) (int, bool) {
+	logTrace(fmt.Sprintf("nd-rating-sync: ratingIntToStars start s=%q", s))
 	s = strings.TrimSpace(s)
 	if s == "" {
+		logTrace(fmt.Sprintf("nd-rating-sync: ratingIntToStars stop, zero s=%q", s))
 		return 0, false
 	}
 
 	n, err := strconv.Atoi(s)
 	if err != nil {
+		logTrace(fmt.Sprintf("nd-rating-sync: ratingIntToStars stop, error s=%q", s))
 		return 0, false
 	}
 
 	if n < 1 || n > 5 {
+		logTrace(fmt.Sprintf("nd-rating-sync: ratingIntToStars stop, out of bounds s=%q", s))
 		return 0, false
 	}
 
+	logTrace(fmt.Sprintf("nd-rating-sync: ratingIntToStars done s=%q", s))
 	return n, true
 }
 

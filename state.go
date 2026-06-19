@@ -31,22 +31,27 @@ func kvKeyLastSynced(libraryID, username string) string {
 // causes the caller to treat the upcoming scan as a full one. This keeps
 // rating ingestion working even if the KV store is temporarily unavailable.
 func loadLastSynced(libraryID, username string) time.Time {
+	logTrace(fmt.Sprintf("nd-rating-sync: loadLastSynced start lib=%q user=%q", libraryID, username))
 	key := kvKeyLastSynced(libraryID, username)
 	raw, found, err := host.KVStoreGet(key)
 	if err != nil {
+		logTrace(fmt.Sprintf("nd-rating-sync: loadLastSynced stop, error lib=%q user=%q", libraryID, username))
 		logWarn(fmt.Sprintf(
 			"nd-rating-sync: KVStoreGet(%q) failed: %q – falling back to full scan", key, err.Error()))
 		return time.Time{}
 	}
 	if !found || len(raw) == 0 {
+		logTrace(fmt.Sprintf("nd-rating-sync: loadLastSynced stop, not found lib=%q user=%q", libraryID, username))
 		return time.Time{}
 	}
 	t, err := time.Parse(time.RFC3339Nano, string(raw))
 	if err != nil {
+		logTrace(fmt.Sprintf("nd-rating-sync: loadLastSynced stop, time error lib=%q user=%q", libraryID, username))
 		logWarn(fmt.Sprintf(
 			"nd-rating-sync: stored last-synced for %q is malformed (%q) – falling back to full scan", key, raw))
 		return time.Time{}
 	}
+	logTrace(fmt.Sprintf("nd-rating-sync: loadLastSynced done lib=%q user=%q", libraryID, username))
 	return t
 }
 
@@ -54,11 +59,14 @@ func loadLastSynced(libraryID, username string) time.Time {
 // files whose mtime predates it. Errors are logged but not propagated — a
 // failed write means the next run does redundant work, never incorrect work.
 func saveLastSynced(libraryID, username string, t time.Time) {
+	logTrace(fmt.Sprintf("nd-rating-sync: saveLastSynced start lib=%q user=%q, time=%q", libraryID, username, t))
 	key := kvKeyLastSynced(libraryID, username)
 	value := []byte(t.UTC().Format(time.RFC3339Nano))
 	if err := host.KVStoreSet(key, value); err != nil {
+		logTrace(fmt.Sprintf("nd-rating-sync: saveLastSynced stop, error lib=%q user=%q, time=%q", libraryID, username, t))
 		logWarn(fmt.Sprintf("nd-rating-sync: KVStoreSet(%q) failed: %q", key, err.Error()))
 	}
+	logTrace(fmt.Sprintf("nd-rating-sync: saveLastSynced done lib=%q user=%q, time=%q", libraryID, username, t))
 }
 
 // ─── In-progress guard ──────────────────────────────────────────────────────
@@ -83,18 +91,22 @@ const sweepStaleAfter = 2 * time.Minute
 // blocked by KV trouble — at worst two sweeps overlap, which setRating
 // idempotency tolerates.
 func sweepInProgress() bool {
+	logTrace("nd-rating-sync: sweepInProgress start")
 	raw, found, err := host.KVStoreGet(kvKeySweepActive)
 	if err != nil {
+		logTrace("nd-rating-sync: sweepInProgress stop, assume no sweep active")
 		logWarn(fmt.Sprintf(
 			"nd-rating-sync: KVStoreGet(%q) failed: %q – assuming no sweep active", kvKeySweepActive, err.Error()))
 		return false
 	}
 	if !found || len(raw) == 0 {
+		logTrace("nd-rating-sync: sweepInProgress done, not found")
 		return false
 	}
 	t, err := time.Parse(time.RFC3339Nano, string(raw))
 	if err != nil {
 		// Malformed heartbeat: treat as stale so a fresh sweep can overwrite it.
+		logTrace("nd-rating-sync: sweepInProgress done, malformed heartbeat")
 		return false
 	}
 	// A future-dated heartbeat (age < 0) means the system clock stepped backward
@@ -102,6 +114,7 @@ func sweepInProgress() bool {
 	// Treat it as stale too — fail open like every other uncertain case here,
 	// rather than suppressing sweeps until real time catches up.
 	age := time.Since(t)
+	logTrace("nd-rating-sync: sweepInProgress done")
 	return age >= 0 && age < sweepStaleAfter
 }
 

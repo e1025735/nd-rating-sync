@@ -11,7 +11,7 @@ build, test, and extend the plugin.
 main.go          – lifecycle init and scheduler callback (entry points only)
 config.go        – pluginConfig / libraryConfig / userConfig types + loadConfig()
 scanner.go       – runSyncChunk, processPairChunk, processSong, and extractStarsFromFile (dispatches per file extension)
-subsonic.go      – Subsonic API types and helpers: fetchAllSongs, setRating
+subsonic.go      – Subsonic API types and helpers: fetchSongPage, setRating
 id3.go           – ID3v2 tag parsing: reads frames once, picks winner by tagOrder
 rating.go        – pure star converters: fmpsToStars, popmWMPToStars, popmITunesToStars
 pdk_stub.go      – build-tag stub (!wasip1): no-op log helpers + getConfig, so tests

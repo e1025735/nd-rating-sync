@@ -40,6 +40,7 @@ type fileEntry struct {
 // host did not grant filesystem access (missing `library`+`filesystem:true`
 // permission, or the library is not assigned to the plugin).
 func resolveMountPoint(libraryID string) (string, error) {
+	logTrace(fmt.Sprintf("nd-rating-sync: resolveMountPoint start libraryID=%q", libraryID))
 	id, err := strconv.Atoi(strings.TrimSpace(libraryID))
 	if err != nil {
 		return "", fmt.Errorf("library ID %q is not numeric", libraryID)
@@ -51,6 +52,7 @@ func resolveMountPoint(libraryID string) (string, error) {
 	if lib == nil || lib.MountPoint == "" {
 		return "", errors.New("no filesystem mount point returned (grant the 'library' permission with filesystem access and assign this library to the plugin)")
 	}
+	logTrace(fmt.Sprintf("nd-rating-sync: resolveMountPoint done libraryID=%q", libraryID))
 	return lib.MountPoint, nil
 }
 
@@ -77,6 +79,7 @@ func sizeKey(size int64, ext string) string {
 // by sizeKey. A bucket may hold more than one file when two files share an exact
 // size and extension; matchFile treats that as ambiguous rather than guessing.
 func buildFileIndex(mountPoint string) (map[string][]fileEntry, error) {
+	logTrace(fmt.Sprintf("nd-rating-sync: buildFileIndex start mountPoint=%q", mountPoint))
 	index := map[string][]fileEntry{}
 	err := walkAudioFiles(mountPoint, func(path string, size int64, mtime time.Time) {
 		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
@@ -86,6 +89,7 @@ func buildFileIndex(mountPoint string) (map[string][]fileEntry, error) {
 	if err != nil {
 		return nil, err
 	}
+	logTrace(fmt.Sprintf("nd-rating-sync: buildFileIndex done mountPoint=%q", mountPoint))
 	return index, nil
 }
 
@@ -95,6 +99,7 @@ func buildFileIndex(mountPoint string) (map[string][]fileEntry, error) {
 // sub-directory is logged and skipped so one bad folder cannot abort the scan;
 // only a failure to read the root is returned as an error.
 func walkAudioFiles(root string, fn func(path string, size int64, mtime time.Time)) error {
+	logTrace(fmt.Sprintf("nd-rating-sync: walkAudioFiles start root=%q", root))
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return err
@@ -117,6 +122,7 @@ func walkAudioFiles(root string, fn func(path string, size int64, mtime time.Tim
 		}
 		fn(full, info.Size(), info.ModTime())
 	}
+	logTrace(fmt.Sprintf("nd-rating-sync: walkAudioFiles done root=%q", root))
 	return nil
 }
 
@@ -126,10 +132,13 @@ func walkAudioFiles(root string, fn func(path string, size int64, mtime time.Tim
 // A missing match is handled by the caller as "unreadable" — never as
 // "untagged" — so a file the plugin cannot locate is never cleared.
 func matchFile(index map[string][]fileEntry, s subsonicSong) (fileEntry, bool) {
+	logTrace(fmt.Sprintf("nd-rating-sync: matchFile start song=%q", s.ID))
 	cands := index[sizeKey(s.Size, strings.ToLower(s.Suffix))]
 	if len(cands) != 1 {
+		logTrace(fmt.Sprintf("nd-rating-sync: matchFile stop, ambigous match song=%q", s.ID))
 		return fileEntry{}, false
 	}
+	logTrace(fmt.Sprintf("nd-rating-sync: matchFile done song=%q", s.ID))
 	return cands[0], true
 }
 
@@ -148,11 +157,13 @@ type fileIndexResult struct {
 // per call. N users of one library therefore share one walk; an unchanged
 // library that the LastScanAt gate skips never reaches this cache at all.
 func cachedFileIndex(cache map[string]fileIndexResult, libraryID string) (map[string][]fileEntry, bool) {
+	logTrace(fmt.Sprintf("nd-rating-sync: cachedFileIndex start libraryID=%q", libraryID))
 	if r, found := cache[libraryID]; found {
 		return r.index, r.ok
 	}
 	idx, ok := resolveAndIndex(libraryID)
 	cache[libraryID] = fileIndexResult{index: idx, ok: ok}
+	logTrace(fmt.Sprintf("nd-rating-sync: cachedFileIndex done libraryID=%q", libraryID))
 	return idx, ok
 }
 
@@ -161,6 +172,7 @@ func cachedFileIndex(cache map[string]fileIndexResult, libraryID string) (map[st
 // without a real file index we cannot match songs to files and any read
 // attempt would just regress to the s.Path bug.
 func resolveAndIndex(libraryID string) (map[string][]fileEntry, bool) {
+	logTrace(fmt.Sprintf("nd-rating-sync: resolveAndIndex start libraryID=%q", libraryID))
 	mountPoint, err := resolveMountPoint(libraryID)
 	if err != nil {
 		logWarn(fmt.Sprintf(
@@ -175,6 +187,7 @@ func resolveAndIndex(libraryID string) (map[string][]fileEntry, bool) {
 			"nd-rating-sync: read mount %q error: %q", mountPoint, err.Error()))
 		return nil, false
 	}
+	logTrace(fmt.Sprintf("nd-rating-sync: resolveAndIndex done libraryID=%q", libraryID))
 	logDebug(fmt.Sprintf(
 		"nd-rating-sync: indexed mount %q for library=%q – %d size buckets",
 		mountPoint, libraryID, len(idx)))

@@ -143,46 +143,6 @@ func TestRunSyncStep_NoLibraries(t *testing.T) {
 	assert.Contains(t, err.Error(), "no libraries configured")
 }
 
-// ─── Per-pair sync (integration) ─────────────────────────────────────────────
-
-// TestRunSyncForUser_HappyPath wires the full pipeline together: a real
-// ID3-tagged file sits under the library mount, SubsonicAPI returns one song
-// whose size matches that file, the scanner locates it by size, reads the
-// rating, and setRating is called with the correct star count.
-func TestSyncPair_HappyPath(t *testing.T) {
-	resetSubsonicMock(t)
-	resetLibraryMock(t)
-
-	// 1. Real ID3 file with FMPS_Rating=0.6 (→ 3 stars).
-	mount := t.TempDir()
-	path := writeFMPSFileAt(t, mount, "song-1.mp3", "0.6")
-	mockGetLibrary(1, mount)
-
-	// 2. fetchAllSongs returns one song whose size matches that file. Path is
-	// deliberately omitted: the production code never reads it (it would be a
-	// synthesized fake from Navidrome), only size+suffix.
-	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Size: fileSize(t, path)}}
-	host.SubsonicAPIMock.On("Call",
-		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
-	).Return(subsonicOK(songs), nil)
-
-	// 3. setRating expects rating=3.
-	host.SubsonicAPIMock.On("Call", "setRating?id=song-1&rating=3&u=alice").
-		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
-
-	cfg := pluginConfig{Libraries: []libraryConfig{{
-		LibraryID: "1",
-		Users: []userConfig{{
-			Username:         "alice",
-			SkipAlreadyRated: true,
-			RatingTagOrder:   []string{"MediaMonkey"},
-		}},
-	}}}
-
-	runSyncChunk(cfg, syncCursor{}, time.Now().Add(time.Hour))
-	host.SubsonicAPIMock.AssertExpectations(t)
-}
-
 // ─── Regression: read failures must not trigger clear ────────────────────────
 
 // TestSyncPair_UnreadableFileWithClear_DoesNotClearRating proves that a

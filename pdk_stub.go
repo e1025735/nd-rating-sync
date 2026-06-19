@@ -5,6 +5,7 @@ package main
 func logInfo(msg string)  {}
 func logDebug(msg string) {}
 func logWarn(msg string)  {}
+func logTrace(msg string) {}
 
 // getConfig returns ("", false) for every key in non-WASM builds. Tests do
 // not interact with this function — they call loadConfigFrom with their own

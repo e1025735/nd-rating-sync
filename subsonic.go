@@ -32,9 +32,9 @@ type subsonicSong struct {
 	ID         string `json:"id"`
 	Title      string `json:"title"`
 	Artist     string `json:"artist"`
-	Path       string `json:"path"`   // Navidrome's reported path — synthesized/fake by default, NOT used to open the file
-	Suffix     string `json:"suffix"` // file extension without the dot, e.g. "mp3"
-	Size       int64  `json:"size"`   // file size in bytes — used to locate the real file under the library mount
+	Path       string `json:"path"`       // Navidrome's reported path — synthesized/fake by default, NOT used to open the file
+	Suffix     string `json:"suffix"`     // file extension without the dot, e.g. "mp3"
+	Size       int64  `json:"size"`       // file size in bytes — used to locate the real file under the library mount
 	UserRating int    `json:"userRating"` // 0 = unrated, 1–5 = stars
 }
 
@@ -50,6 +50,7 @@ const songPageSize = 500
 // well-defined stopping condition even if the server mishandles songOffset
 // (preventing an unbounded paging loop).
 func fetchSongPage(username, libraryID string, offset, pageSize int) (songs []subsonicSong, more bool, err error) {
+	logTrace(fmt.Sprintf("nd-rating-sync: fetchSongPage start username=%q, lib=%q, offset=%q, pageSize=%q", username, libraryID, offset, pageSize))
 	uri := fmt.Sprintf(
 		"search3?query=%%22%%22&songCount=%d&songOffset=%d&albumCount=0&artistCount=0&u=%s",
 		pageSize, offset, url.QueryEscape(username))
@@ -81,51 +82,36 @@ func fetchSongPage(username, libraryID string, offset, pageSize int) (songs []su
 		return nil, false, nil
 	}
 	page := wrapper.Response.SearchResult3.Song
+	logTrace(fmt.Sprintf("nd-rating-sync: fetchSongPage done username=%q, lib=%q, offset=%q, pageSize=%q", username, libraryID, offset, pageSize))
 	logDebug(fmt.Sprintf(
 		"nd-rating-sync: page offset=%d returned %d songs", offset, len(page)))
 	return page, len(page) == pageSize, nil
 }
 
-// fetchAllSongs pages through search3 and returns every song accessible by
-// username in the given library. Pass an empty libraryID to search across all
-// libraries. It is a convenience wrapper over fetchSongPage for callers that
-// want the whole list in one shot.
-func fetchAllSongs(username, libraryID string) ([]subsonicSong, error) {
-	var all []subsonicSong
-	for offset := 0; ; offset += songPageSize {
-		page, more, err := fetchSongPage(username, libraryID, offset, songPageSize)
-		if err != nil {
-			return nil, err
-		}
-		all = append(all, page...)
-		if !more {
-			break
-		}
-	}
-
-	logInfo(fmt.Sprintf(
-		"nd-rating-sync: found %d songs for user=%q library=%s", len(all), username, libraryID))
-	return all, nil
-}
-
 // setRating calls the Subsonic setRating endpoint.
 func setRating(username, songID string, stars int) error {
+	logTrace(fmt.Sprintf("nd-rating-sync: setRating start song=%q, username=%q", songID, username))
 	uri := fmt.Sprintf("setRating?id=%s&rating=%d&u=%s", songID, stars, username)
 	raw, err := host.SubsonicAPICall(uri)
 	if err != nil {
+		logTrace(fmt.Sprintf("nd-rating-sync: setRating stop, subsonic call error song=%q, username=%q", songID, username))
 		return err
 	}
 
 	var wrapper subsonicWrapper
 	if err := json.Unmarshal([]byte(raw), &wrapper); err != nil {
+		logTrace(fmt.Sprintf("nd-rating-sync: setRating stop, unmarshal error song=%q, username=%q", songID, username))
 		return fmt.Errorf("unmarshal setRating response: %w", err)
 	}
 	if wrapper.Response.Status != "ok" {
 		if wrapper.Response.Error != nil {
+			logTrace(fmt.Sprintf("nd-rating-sync: setRating sop, API error song=%q, username=%q", songID, username))
 			return fmt.Errorf("API error %d: %s",
 				wrapper.Response.Error.Code, wrapper.Response.Error.Message)
 		}
+		logTrace(fmt.Sprintf("nd-rating-sync: setRating stop non ok status song=%q, username=%q", songID, username))
 		return errors.New("setRating returned non-ok status")
 	}
+	logTrace(fmt.Sprintf("nd-rating-sync: setRating done song=%q, username=%q", songID, username))
 	return nil
 }

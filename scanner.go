@@ -31,6 +31,7 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 	libCache := map[string]libScanResult{}
 	indexCache := map[string]fileIndexResult{}
 
+	logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk start lib=%q user=%q, offsett=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
 	for {
 		// Skip exhausted users/libraries. Also tolerates indices that point
 		// past the end after a config change between continuations.
@@ -41,10 +42,12 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 			cur.PairStart = ""
 		}
 		if cur.Lib >= len(cfg.Libraries) {
+			logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, sweep complete lib=%q user=%q, offsett=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
 			return cur, true // whole sweep complete
 		}
 		// A valid pair is selected. If the budget is gone, resume here.
 		if time.Now().After(deadline) {
+			logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, deadline reached lib=%q user=%q, offsett=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
 			return cur, false
 		}
 
@@ -106,6 +109,7 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 		next, pairDone := processPairChunk(lib, u, cfg, cur, threshold, deadline, index)
 		cur = next
 		if !pairDone {
+			logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, deadline hit lib=%q user=%q, offsett=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
 			return cur, false // deadline hit (or fetch failed) mid-pair
 		}
 
@@ -134,6 +138,7 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 // page, so the next run retries the same offset; the cursor already points at
 // the first unprocessed song.
 func processPairChunk(lib libraryConfig, u userConfig, cfg pluginConfig, cur syncCursor, threshold time.Time, deadline time.Time, index map[string][]fileEntry) (syncCursor, bool) {
+	logTrace(fmt.Sprintf("nd-rating-sync: processPairChunk start lib=%q user=%q, offsett=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
 	if cfg.DryRun {
 		logInfo(fmt.Sprintf(
 			"nd-rating-sync: [DRY RUN] user=%q – no ratings will be written", u.Username))
@@ -166,6 +171,7 @@ func processPairChunk(lib libraryConfig, u userConfig, cfg pluginConfig, cur syn
 		// page came back shorter than expected). Advance or finish.
 		if skip >= len(page) {
 			if !more {
+				logTrace(fmt.Sprintf("nd-rating-sync: processPairChunk stop, no more lib=%q user=%q, offsett=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
 				tally.log(u.Username, lib.LibraryID, cfg.DryRun)
 				return cur, true
 			}
@@ -181,12 +187,14 @@ func processPairChunk(lib libraryConfig, u userConfig, cfg pluginConfig, cur syn
 			// rate also reduces the surface area for the host-side clock
 			// panic we have seen in production (see callBudget docs).
 			if (i-skip+1)%deadlineCheckEvery == 0 && time.Now().After(deadline) {
+				logTrace(fmt.Sprintf("nd-rating-sync: processPairChunk stop, deadline reached lib=%q user=%q, offsett=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
 				tally.log(u.Username, lib.LibraryID, cfg.DryRun)
 				return cur, false
 			}
 		}
 
 		if !more {
+			logTrace(fmt.Sprintf("nd-rating-sync: processPairChunk done lib=%q user=%q, offsett=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
 			tally.log(u.Username, lib.LibraryID, cfg.DryRun)
 			return cur, true
 		}
@@ -220,7 +228,9 @@ func (t syncTally) log(username, libraryID string, dryRun bool) {
 // fileUnreadable – never as "untagged" – so clear_rating_if_untagged can never
 // wipe a rating on a transient I/O error or an unmatched file.
 func processSong(u userConfig, cfg pluginConfig, s subsonicSong, threshold time.Time, index map[string][]fileEntry, tally *syncTally) {
+	logTrace(fmt.Sprintf("nd-rating-sync: processSong start song=%q, threshold=%q", s.ID, threshold))
 	if u.SkipAlreadyRated && s.UserRating > 0 {
+		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, already rated song=%q, threshold=%q", s.ID, threshold))
 		logDebug(fmt.Sprintf(
 			"nd-rating-sync: skipping %q – already rated (%d stars in Navidrome)", s.Title, s.UserRating))
 		tally.skippedRated++
@@ -236,6 +246,7 @@ func processSong(u userConfig, cfg pluginConfig, s subsonicSong, threshold time.
 	// for a file we could not positively identify on disk.
 	entry, found := matchFile(index, s)
 	if !found {
+		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, ambigous file song=%q, threshold=%q", s.ID, threshold))
 		logDebug(fmt.Sprintf(
 			"nd-rating-sync: no unique file for %q (size=%d suffix=%q) – skipping",
 			s.Title, s.Size, s.Suffix))
@@ -244,6 +255,7 @@ func processSong(u userConfig, cfg pluginConfig, s subsonicSong, threshold time.
 	}
 
 	if !threshold.IsZero() && entry.mtime.Before(threshold) {
+		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, no change song=%q, threshold=%q", s.ID, threshold))
 		logDebug(fmt.Sprintf(
 			"nd-rating-sync: skipping %q – unchanged since last scan (mtime=%s)",
 			s.Title, entry.mtime.Format(time.RFC3339)))
@@ -258,24 +270,29 @@ func processSong(u userConfig, cfg pluginConfig, s subsonicSong, threshold time.
 		// clearing on a transient read failure would corrupt the user's
 		// existing Navidrome rating. The warning was already logged inside
 		// extractStarsFromFile; just count and move on.
+		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, file unreadable song=%q, threshold=%q", s.ID, threshold))
 		tally.skippedUnreadable++
 		return
 	case tagAbsent:
 		if !u.ClearRatingIfUntagged {
+			logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, no tag song=%q, threshold=%q", s.ID, threshold))
 			tally.skippedNoTag++
 			return
 		}
 		if cfg.DryRun {
+			logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, not allowed to clear song=%q, threshold=%q", s.ID, threshold))
 			logInfo(fmt.Sprintf("nd-rating-sync: [DRY RUN] would clear rating for %q (no tag found)", s.Title))
 			tally.wouldClear++
 			return
 		}
 		if err := setRating(u.Username, s.ID, 0); err != nil {
+			logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, rating failed song=%q, threshold=%q", s.ID, threshold))
 			logWarn(fmt.Sprintf(
 				"nd-rating-sync: setRating(0) failed for %q (id=%q): %v", s.Title, s.ID, err))
 			tally.errored++
 			return
 		}
+		logTrace(fmt.Sprintf("nd-rating-sync: processSong done, file unreadable song=%q, threshold=%q", s.ID, threshold))
 		logDebug(fmt.Sprintf("nd-rating-sync: cleared rating for %q (no tag found)", s.Title))
 		tally.cleared++
 		return
@@ -283,16 +300,19 @@ func processSong(u userConfig, cfg pluginConfig, s subsonicSong, threshold time.
 
 	// result == tagFound
 	if cfg.DryRun {
+		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, done song=%q, threshold=%q", s.ID, threshold))
 		logInfo(fmt.Sprintf("nd-rating-sync: [DRY RUN] would rate %q → %d stars", s.Title, stars))
 		tally.wouldRate++
 		return
 	}
 	if err := setRating(u.Username, s.ID, stars); err != nil {
+		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, rating failed song=%q, threshold=%q", s.ID, threshold))
 		logWarn(fmt.Sprintf(
 			"nd-rating-sync: setRating failed for %q (id=%q): %v", s.Title, s.ID, err))
 		tally.errored++
 		return
 	}
+	logTrace(fmt.Sprintf("nd-rating-sync: setRating done song=%q, threshold=%q", s.ID, threshold))
 	logDebug(fmt.Sprintf("nd-rating-sync: rated %q → %d stars", s.Title, stars))
 	tally.rated++
 }
@@ -341,11 +361,13 @@ const maxMetadataReadBytes = 16 * 1024 * 1024
 // fileReadResult disambiguates "no tag found" (safe to clear) from "could
 // not read" (must skip — clearing on I/O errors would corrupt user state).
 func extractStarsFromFile(path, suffix string, tagOrder []string) (int, fileReadResult) {
+	logTrace(fmt.Sprintf("nd-rating-sync: extractStarsFromFile start path=%q, suffix=%q", path, suffix))
 	ext := strings.ToLower(suffix)
 	if ext == "" {
 		ext = strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
 	}
 	if !isSupportedExt(ext) {
+		logTrace(fmt.Sprintf("nd-rating-sync: extractStarsFromFile stop, unsupported file path=%q, suffix=%q", path, suffix))
 		logWarn(fmt.Sprintf(
 			"nd-rating-sync: skipping %q – supported formats are MP3, FLAC, Ogg, Opus, WAV, DSF, M4A/AAC and WMA (got .%q)", path, ext))
 		return 0, fileUnreadable
@@ -353,17 +375,21 @@ func extractStarsFromFile(path, suffix string, tagOrder []string) (int, fileRead
 
 	data, ok := readAudioMetadata(path, ext)
 	if !ok {
+		logTrace(fmt.Sprintf("nd-rating-sync: extractStarsFromFile stop, file unreadable path=%q, suffix=%q", path, suffix))
 		return 0, fileUnreadable
 	}
 
 	stars, ok, supported := dispatchParser(path, ext, data, tagOrder)
 	if !supported {
+		logTrace(fmt.Sprintf("nd-rating-sync: extractStarsFromFile stop, not supported path=%q, suffix=%q", path, suffix))
 		return 0, fileUnreadable
 	}
 	if ok {
+		logTrace(fmt.Sprintf("nd-rating-sync: extractStarsFromFile done, rating found path=%q, suffix=%q", path, suffix))
 		logDebug(fmt.Sprintf("nd-rating-sync: %q – found rating tag → %d stars", path, stars))
 		return stars, tagFound
 	}
+	logTrace(fmt.Sprintf("nd-rating-sync: extractStarsFromFile done, no rating path=%q, suffix=%q", path, suffix))
 	logDebug(fmt.Sprintf("nd-rating-sync: %q – no rating tag found", path))
 	return 0, tagAbsent
 }
@@ -374,12 +400,14 @@ func extractStarsFromFile(path, suffix string, tagOrder []string) (int, fileRead
 // I/O is bounded by maxMetadataReadBytes — independent of total file size.
 // Returns the synthesised byte slice the existing format parsers can walk.
 func readAudioMetadata(path, ext string) ([]byte, bool) {
+	logTrace(fmt.Sprintf("nd-rating-sync: readAudioMetadata start path=%q, etx=%q", path, ext))
 	f, err := os.Open(path)
 	if err != nil {
 		// Log only the path — the raw OS error ("permission denied" vs
 		// "no such file or directory") would let an admin who can plant
 		// a symlink in the music tree probe arbitrary paths' existence
 		// via plugin warnings. Path alone is enough for diagnostics.
+		logTrace(fmt.Sprintf("nd-rating-sync: readAudioMetadata stop, cannot open path=%q, etx=%q", path, ext))
 		logWarn(fmt.Sprintf("nd-rating-sync: cannot open %q (skipping)", path))
 		logDebug(fmt.Sprintf("nd-rating-sync: open %q error: %q", path, err.Error()))
 		return nil, false
@@ -408,13 +436,16 @@ func readAudioMetadata(path, ext string) ([]byte, bool) {
 	default:
 		// extractStarsFromFile pre-filters via isSupportedExt, so this is
 		// only reached if a new extension was added there but not here.
+		logTrace(fmt.Sprintf("nd-rating-sync: readAudioMetadata stop, unsupported extension path=%q, etx=%q", path, ext))
 		return nil, false
 	}
 	if eerr != nil {
+		logTrace(fmt.Sprintf("nd-rating-sync: readAudioMetadata stop, cannot read path=%q, etx=%q", path, ext))
 		logWarn(fmt.Sprintf("nd-rating-sync: cannot read %q (skipping)", path))
 		logDebug(fmt.Sprintf("nd-rating-sync: read %q error: %q", path, eerr.Error()))
 		return nil, false
 	}
+	logTrace(fmt.Sprintf("nd-rating-sync: readAudioMetadata done path=%q, etx=%q", path, ext))
 	return data, true
 }
 
@@ -422,6 +453,7 @@ func readAudioMetadata(path, ext string) ([]byte, bool) {
 // any panic the parser raises on hostile input so a single bad file cannot
 // abort the whole sync. Returns (stars, tagFound, formatSupported).
 func dispatchParser(path, ext string, data []byte, tagOrder []string) (stars int, ok, supported bool) {
+	logTrace(fmt.Sprintf("nd-rating-sync: dispatchParser start path=%q, etx=%q", path, ext))
 	supported = true
 	defer func() {
 		if r := recover(); r != nil {
@@ -447,9 +479,11 @@ func dispatchParser(path, ext string, data []byte, tagOrder []string) (stars int
 	case "wma":
 		stars, ok = parseWMARating(data, tagOrder)
 	default:
+		logTrace(fmt.Sprintf("nd-rating-sync: dispatchParser stop, unsupported extension path=%q, etx=%q", path, ext))
 		logWarn(fmt.Sprintf(
 			"nd-rating-sync: skipping %q – supported formats are MP3, FLAC, Ogg, Opus, WAV, DSF, M4A/AAC and WMA (got .%q)", path, ext))
 		supported = false
 	}
+	logTrace(fmt.Sprintf("nd-rating-sync: dispatchParser done path=%q, etx=%q", path, ext))
 	return stars, ok, supported
 }
