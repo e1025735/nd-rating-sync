@@ -131,6 +131,7 @@ the same example. You enter these settings via the Navidrome UI:
 | `default_skip_already_rated` | `null` | Admin-level default for `skip_already_rated`. Applied to any user whose per-user setting is `null`. `null` here means no admin default — the plugin falls back to `true`. |
 | `default_clear_rating_if_untagged` | `null` | Admin-level default for `clear_rating_if_untagged`. Applied to any user whose per-user setting is `null`. `null` here means no admin default — the plugin falls back to `false`. |
 | `cache_libraries_filesystem_tree` | `false` | When true, the plugin persists a per-library file-index bucket cache in KV to reduce repeated filesystem walks on very large or slow mounts. Only enable this for huge or slow libraries. |
+| `kv_storage_max_size` | `1MB` | This is only needed if `cache_linraries_filesystem_tree` is enabled (aka `true`). It must set to the same value as permissions.kvstore.maxSize in the manifest.json |
 
 ### Per-library settings
 
