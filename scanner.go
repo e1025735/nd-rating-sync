@@ -42,7 +42,15 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 			cur.PairStart = ""
 		}
 		if cur.Lib >= len(cfg.Libraries) {
-			logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, sweep complete lib=%q user=%q, offset=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
+			kvStorageUsage, err := getPercentageKVStorageUsage(cfg.KVStorageMaxSize)
+			if err != nil {
+				logWarn("nd-rating-sync: kv storage usage could not be fetched")
+				logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, sweep complete lib=%q user=%q, offset=%q, deadline=%q",
+					cur.Lib, cur.User, cur.Offset, deadline))
+				return cur, true
+			}
+			logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, sweep complete lib=%q user=%q, offset=%q, deadline=%q, kvStorageUsage=%.2f%%",
+				cur.Lib, cur.User, cur.Offset, deadline, kvStorageUsage))
 			return cur, true // whole sweep complete
 		}
 		// A valid pair is selected. If the budget is gone, resume here.
@@ -110,7 +118,17 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 			}
 
 			if !ready {
-				logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, deadline reached with cache lib=%q user=%q, offset=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
+				kvStorageUsage, err := getPercentageKVStorageUsage(cfg.KVStorageMaxSize)
+				if err != nil {
+					logDebug("nd-rating-sync: kv storage usage could not be fetched")
+					logTrace(fmt.Sprintf(
+						"nd-rating-sync: runSyncChunk stop, deadline reached with cache lib=%q user=%q, offset=%q, deadline=%q",
+						cur.Lib, cur.User, cur.Offset, deadline))
+					return cur, false
+				}
+				logTrace(fmt.Sprintf(
+					"nd-rating-sync: runSyncChunk stop, deadline reached with cache lib=%q user=%q, offset=%q, deadline=%q, kvStorageUsage=%.2f%%",
+					cur.Lib, cur.User, cur.Offset, deadline, kvStorageUsage))
 				return cur, false
 			}
 		} else {

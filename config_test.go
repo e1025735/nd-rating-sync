@@ -14,6 +14,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	assert.Equal(t, "0 * * * *", cfg.SyncSchedule)
 	assert.True(t, cfg.IncrementalSync, "IncrementalSync should default to true")
 	assert.Empty(t, cfg.Libraries)
+	assert.Equal(t, "1MB", cfg.KVStorageMaxSize)
 }
 
 func TestLoadConfig_IncrementalSync(t *testing.T) {
@@ -108,6 +109,16 @@ func TestLoadConfig_SkipAlreadyRatedCanBeDisabled(t *testing.T) {
 	raw, _ := json.Marshal(libs)
 	cfg := loadConfigFrom(mapGetter(map[string]string{"libraries": string(raw)}))
 	assert.False(t, cfg.Libraries[0].Users[0].SkipAlreadyRated)
+}
+
+func TestLoadConfig_KVStorageMaxSize(t *testing.T) {
+	cfg := loadConfigFrom(mapGetter(map[string]string{"kv_storage_max_size": "2MB"}))
+	assert.Equal(t, "2MB", cfg.KVStorageMaxSize)
+}
+
+func TestLoadConfig_KVStorageMaxSizeWhitespaceOnlyUsesDefault(t *testing.T) {
+	cfg := loadConfigFrom(mapGetter(map[string]string{"kv_storage_max_size": "   "}))
+	assert.Equal(t, "1MB", cfg.KVStorageMaxSize)
 }
 
 func TestLoadConfig_TristateStringValues(t *testing.T) {

@@ -93,6 +93,12 @@
           ],
           "default": "inherit"
         },
+        "kv_storage_max_size": {
+          "type": "string",
+          "title": "KV storage max size",
+          "description": "Define the KV storage max size. Only change this is you also changed this in the manifest.json. Default: 1MB",
+          "default": "1MB"
+        },
         "libraries": {
           "type": "array",
           "title": "Library configurations",
@@ -236,6 +242,10 @@
         {
           "type": "Control",
           "scope": "#/properties/default_clear_rating_if_untagged"
+        },
+        {
+          "type": "Control",
+          "scope": "#/properties/kv_storage_max_size"
         },
         {
           "type": "Control",

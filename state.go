@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dustin/go-humanize"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 )
 
@@ -190,4 +191,22 @@ func saveLibraryScanState(libraryID string, state *ScanState) error {
 		return err
 	}
 	return host.KVStoreSet(key, data)
+}
+
+func getPercentageKVStorageUsage(kvStorageSize string) (float64, error) {
+	bytes, err := humanize.ParseBytes(kvStorageSize)
+	if err != nil {
+		return 0, err
+	}
+
+	kvStorageUsed, err := host.KVStoreGetStorageUsed()
+	if err != nil {
+		return 0, err
+	}
+	if kvStorageUsed == 0 {
+		return 0, nil
+	}
+
+	return float64(bytes) / float64(kvStorageUsed) * 100, nil
+
 }
