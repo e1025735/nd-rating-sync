@@ -34,6 +34,18 @@ type fileEntry struct {
 	mtime time.Time
 }
 
+type ScanState struct {
+	Complete    bool
+	PendingDirs []string
+	VisitedDirs map[string]struct{}
+	LastScanAt  int64
+}
+
+type FileRecord struct {
+	Path  string
+	Mtime int64
+}
+
 // resolveMountPoint maps a configured library ID to its in-sandbox mount point.
 // The plugin config stores libraryId as a string, but the Library host service
 // keys on the numeric ID, so we parse it here. An empty MountPoint means the
@@ -78,10 +90,10 @@ func sizeKey(size int64, ext string) string {
 // buildFileIndex walks mountPoint recursively and indexes supported audio files
 // by sizeKey. A bucket may hold more than one file when two files share an exact
 // size and extension; matchFile treats that as ambiguous rather than guessing.
-func buildFileIndex(mountPoint string) (map[string][]fileEntry, error) {
-	logTrace(fmt.Sprintf("nd-rating-sync: buildFileIndex start mountPoint=%q", mountPoint))
+func buildFileIndexWithoutCache(mountPoint string, deadline time.Time) (map[string][]fileEntry, error) {
+	logTrace(fmt.Sprintf("nd-rating-sync: buildFileIndexWithoutCache start mountPoint=%q", mountPoint))
 	index := map[string][]fileEntry{}
-	err := walkAudioFiles(mountPoint, func(path string, size int64, mtime time.Time) {
+	err := walkAudioFiles(mountPoint, deadline, func(path string, size int64, mtime time.Time) {
 		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
 		k := sizeKey(size, ext)
 		index[k] = append(index[k], fileEntry{path: path, size: size, mtime: mtime})
@@ -89,7 +101,7 @@ func buildFileIndex(mountPoint string) (map[string][]fileEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	logTrace(fmt.Sprintf("nd-rating-sync: buildFileIndex done mountPoint=%q", mountPoint))
+	logTrace(fmt.Sprintf("nd-rating-sync: buildFileIndexWithoutCache done mountPoint=%q", mountPoint))
 	return index, nil
 }
 
@@ -98,8 +110,13 @@ func buildFileIndex(mountPoint string) (map[string][]fileEntry, error) {
 // fn for every regular file with a supported extension. An unreadable
 // sub-directory is logged and skipped so one bad folder cannot abort the scan;
 // only a failure to read the root is returned as an error.
-func walkAudioFiles(root string, fn func(path string, size int64, mtime time.Time)) error {
+func walkAudioFiles(root string, deadline time.Time, fn func(path string, size int64, mtime time.Time)) error {
 	logTrace(fmt.Sprintf("nd-rating-sync: walkAudioFiles start root=%q", root))
+	if time.Now().After(deadline) {
+		logTrace(fmt.Sprintf("nd-rating-sync: walkAudioFiles stop, deadline reached root=%q", root))
+		logWarn("nd-rating-sync: the deadline was reached while scanning the library. If this happens often, consider enabling cache_libraries_filesystem_tree.")
+		return nil
+	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return err
@@ -107,7 +124,7 @@ func walkAudioFiles(root string, fn func(path string, size int64, mtime time.Tim
 	for _, e := range entries {
 		full := filepath.Join(root, e.Name())
 		if e.IsDir() {
-			if subErr := walkAudioFiles(full, fn); subErr != nil {
+			if subErr := walkAudioFiles(full, deadline, fn); subErr != nil {
 				logWarn(fmt.Sprintf("nd-rating-sync: cannot read directory %q (skipping)", full))
 			}
 			continue
@@ -135,11 +152,51 @@ func matchFile(index map[string][]fileEntry, s subsonicSong) (fileEntry, bool) {
 	logTrace(fmt.Sprintf("nd-rating-sync: matchFile start song=%q", s.ID))
 	cands := index[sizeKey(s.Size, strings.ToLower(s.Suffix))]
 	if len(cands) != 1 {
-		logTrace(fmt.Sprintf("nd-rating-sync: matchFile stop, ambigous match song=%q", s.ID))
+		logTrace(fmt.Sprintf("nd-rating-sync: matchFile stop, ambiguous match song=%q", s.ID))
 		return fileEntry{}, false
 	}
 	logTrace(fmt.Sprintf("nd-rating-sync: matchFile done song=%q", s.ID))
 	return cands[0], true
+}
+
+func matchFileFromBucketCache(libraryID string, song subsonicSong, cache map[string][]FileRecord) (fileEntry, bool) {
+	ext := strings.ToLower(song.Suffix)
+	key := sizeKey(song.Size, ext)
+	logTrace(fmt.Sprintf("nd-rating-sync: matchFileFromBucketCache start libraryID=%q song=%q size=%d ext=%q", libraryID, song.ID, song.Size, ext))
+	if cache == nil {
+		records, err := loadBucket(libraryID, song.Size, ext)
+		if err != nil {
+			logWarn(fmt.Sprintf("nd-rating-sync: KV store lookup failed for library=%q size=%d ext=%q: %v", libraryID, song.Size, ext, err))
+			return fileEntry{}, false
+		}
+		if len(records) != 1 {
+			logTrace(fmt.Sprintf("nd-rating-sync: matchFileFromBucketCache stop, ambiguous bucket libraryID=%q song=%q size=%d ext=%q records=%d", libraryID, song.ID, song.Size, ext, len(records)))
+			return fileEntry{}, false
+		}
+		logTrace(fmt.Sprintf("nd-rating-sync: matchFileFromBucketCache done libraryID=%q song=%q path=%q", libraryID, song.ID, records[0].Path))
+		return fileEntry{path: records[0].Path, size: song.Size, mtime: time.Unix(records[0].Mtime, 0)}, true
+	}
+
+	records, found := cache[key]
+	if found {
+		logDebug(fmt.Sprintf("nd-rating-sync: matchFileFromBucketCache cache hit libraryID=%q key=%q records=%d", libraryID, key, len(records)))
+	} else {
+		var err error
+		records, err = loadBucket(libraryID, song.Size, ext)
+		if err != nil {
+			logWarn(fmt.Sprintf("nd-rating-sync: KV store lookup failed for library=%q size=%d ext=%q: %v", libraryID, song.Size, ext, err))
+			cache[key] = nil
+			return fileEntry{}, false
+		}
+		logDebug(fmt.Sprintf("nd-rating-sync: matchFileFromBucketCache loaded bucket libraryID=%q key=%q records=%d", libraryID, key, len(records)))
+		cache[key] = records
+	}
+	if len(records) != 1 {
+		logTrace(fmt.Sprintf("nd-rating-sync: matchFileFromBucketCache stop, ambiguous bucket libraryID=%q key=%q records=%d", libraryID, key, len(records)))
+		return fileEntry{}, false
+	}
+	logTrace(fmt.Sprintf("nd-rating-sync: matchFileFromBucketCache done libraryID=%q key=%q path=%q", libraryID, key, records[0].Path))
+	return fileEntry{path: records[0].Path, size: song.Size, mtime: time.Unix(records[0].Mtime, 0)}, true
 }
 
 // fileIndexResult is a memoised resolve+walk outcome: the file index for a
@@ -156,12 +213,12 @@ type fileIndexResult struct {
 // call. State does not survive across callbacks, so the cache is created fresh
 // per call. N users of one library therefore share one walk; an unchanged
 // library that the LastScanAt gate skips never reaches this cache at all.
-func cachedFileIndex(cache map[string]fileIndexResult, libraryID string) (map[string][]fileEntry, bool) {
+func cachedFileIndex(cache map[string]fileIndexResult, libraryID string, deadline time.Time) (map[string][]fileEntry, bool) {
 	logTrace(fmt.Sprintf("nd-rating-sync: cachedFileIndex start libraryID=%q", libraryID))
 	if r, found := cache[libraryID]; found {
 		return r.index, r.ok
 	}
-	idx, ok := resolveAndIndex(libraryID)
+	idx, ok := resolveAndIndex(libraryID, deadline)
 	cache[libraryID] = fileIndexResult{index: idx, ok: ok}
 	logTrace(fmt.Sprintf("nd-rating-sync: cachedFileIndex done libraryID=%q", libraryID))
 	return idx, ok
@@ -171,7 +228,7 @@ func cachedFileIndex(cache map[string]fileIndexResult, libraryID string) (map[st
 // walk it. Both stages fail-closed by skipping the pair (caller responsibility):
 // without a real file index we cannot match songs to files and any read
 // attempt would just regress to the s.Path bug.
-func resolveAndIndex(libraryID string) (map[string][]fileEntry, bool) {
+func resolveAndIndex(libraryID string, deadline time.Time) (map[string][]fileEntry, bool) {
 	logTrace(fmt.Sprintf("nd-rating-sync: resolveAndIndex start libraryID=%q", libraryID))
 	mountPoint, err := resolveMountPoint(libraryID)
 	if err != nil {
@@ -179,7 +236,11 @@ func resolveAndIndex(libraryID string) (map[string][]fileEntry, bool) {
 			"nd-rating-sync: cannot access filesystem for library=%q: %v – skipping pair", libraryID, err))
 		return nil, false
 	}
-	idx, err := buildFileIndex(mountPoint)
+	idx, err := buildFileIndexWithoutCache(mountPoint, deadline)
+	if time.Now().After(deadline) {
+		logTrace(fmt.Sprintf("nd-rating-sync: resolveAndIndex stop, deadline reached libraryID=%q", libraryID))
+		return idx, true
+	}
 	if err != nil {
 		logWarn(fmt.Sprintf(
 			"nd-rating-sync: cannot read library mount %q – skipping pair", mountPoint))
@@ -192,4 +253,184 @@ func resolveAndIndex(libraryID string) (map[string][]fileEntry, bool) {
 		"nd-rating-sync: indexed mount %q for library=%q – %d size buckets",
 		mountPoint, libraryID, len(idx)))
 	return idx, true
+}
+
+func scanChunk(libraryID string, state *ScanState, deadline time.Time) error {
+	logTrace(fmt.Sprintf("scanChunk start lib=%q pending=%d", libraryID, len(state.PendingDirs)))
+
+	if state.VisitedDirs == nil {
+		state.VisitedDirs = make(map[string]struct{})
+	}
+
+	changed := false
+	mark := func() { changed = true }
+
+	for len(state.PendingDirs) > 0 {
+		if time.Now().After(deadline) {
+			break
+		}
+
+		dir, ok := state.PopDir()
+		if !ok {
+			break
+		}
+		mark()
+
+		if _, seen := state.VisitedDirs[dir]; seen {
+			continue
+		}
+		state.MarkVisited(dir)
+
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			logWarn(fmt.Sprintf("nd-rating-sync: cannot read directory %q for library=%q: %v", dir, libraryID, err))
+			state.RequeueDir(dir)
+			mark()
+
+			continue
+		}
+
+		updates := map[string]map[string]FileRecord{}
+
+		for _, e := range entries {
+			if time.Now().After(deadline) {
+				state.RequeueDir(dir)
+				mark()
+				continue
+			}
+			full := filepath.Join(dir, e.Name())
+
+			if e.IsDir() {
+				if _, seen := state.VisitedDirs[full]; !seen {
+					state.RequeueDir(full)
+				}
+				continue
+			}
+
+			ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(e.Name()), "."))
+			if !isSupportedExt(ext) {
+				continue
+			}
+
+			info, err := e.Info()
+			if err != nil {
+				logWarn(fmt.Sprintf("failed to stat file %q: %v", full, err))
+				continue
+			}
+
+			key := sizeKey(info.Size(), ext)
+
+			bucket := updates[key]
+			if bucket == nil {
+				bucket = map[string]FileRecord{}
+				updates[key] = bucket
+			}
+
+			bucket[full] = FileRecord{
+				Path:  full,
+				Mtime: info.ModTime().Unix(),
+			}
+		}
+
+		for key, current := range updates {
+			parts := strings.SplitN(key, ":", 2)
+			if len(parts) != 2 {
+				return fmt.Errorf("invalid bucket key %q", key)
+			}
+			size, err := strconv.ParseInt(parts[0], 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid size in bucket key %q: %w", key, err)
+			}
+			ext := parts[1]
+			existing, err := loadBucket(libraryID, size, ext)
+			if err != nil {
+				return err
+			}
+
+			merged := mergeBucketRecords(existing, current, dir)
+
+			if !bucketRecordsEqual(existing, merged) {
+				if err := saveBucket(libraryID, size, ext, merged); err != nil {
+					return err
+				}
+				mark()
+			}
+		}
+	}
+
+	if len(state.PendingDirs) == 0 {
+		state.Complete = true
+		mark()
+	}
+
+	if !changed {
+		return nil
+	}
+
+	return saveLibraryScanState(libraryID, state)
+}
+
+func (s *ScanState) PopDir() (string, bool) {
+	if len(s.PendingDirs) == 0 {
+		return "", false
+	}
+
+	dir := s.PendingDirs[0]
+	s.PendingDirs = s.PendingDirs[1:]
+	return dir, true
+}
+
+func (s *ScanState) RequeueDir(dir string) {
+	s.PendingDirs = append(s.PendingDirs, dir)
+}
+
+func (s *ScanState) MarkVisited(dir string) bool {
+	if s.VisitedDirs == nil {
+		s.VisitedDirs = make(map[string]struct{})
+	}
+
+	if _, ok := s.VisitedDirs[dir]; ok {
+		return false
+	}
+
+	s.VisitedDirs[dir] = struct{}{}
+	return true
+}
+
+func mergeBucketRecords(existing []FileRecord, currentRecords map[string]FileRecord, dir string) []FileRecord {
+	// Normalize the directory path for consistent prefix matching
+	prefix := filepath.Clean(dir) + string(os.PathSeparator)
+	seen := make(map[string]FileRecord, len(existing)+len(currentRecords))
+	for _, r := range existing {
+		cleanPath := filepath.Clean(r.Path)
+		if strings.HasPrefix(cleanPath, prefix) {
+			continue
+		}
+		seen[r.Path] = r
+	}
+	for _, r := range currentRecords {
+		seen[r.Path] = r
+	}
+	merged := make([]FileRecord, 0, len(seen))
+	for _, r := range seen {
+		merged = append(merged, r)
+	}
+	return merged
+}
+
+func bucketRecordsEqual(a, b []FileRecord) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := map[string]int64{}
+	for _, r := range a {
+		seen[r.Path] = r.Mtime
+	}
+	for _, r := range b {
+		mtime, ok := seen[r.Path]
+		if !ok || mtime != r.Mtime {
+			return false
+		}
+	}
+	return true
 }

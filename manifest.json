@@ -1,6 +1,6 @@
 {
   "name": "nd-rating-sync",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Reads embedded rating tags from MP3, FLAC, Ogg-Vorbis, Opus, WAV, DSF, M4A/AAC and WMA files (ID3v2 TXXX FMPS_Rating / POPM iTunes / POPM WMP / TXXX:RATING; Vorbis comments FMPS_RATING / RATING; MP4 freeform atoms; ASF Extended Content Description Object) and syncs them to Navidrome's user ratings via the Subsonic API, with per-user per-library tag priority and overwrite control.",
   "author": "e1025735",
   "website": "https://github.com/e1025735/nd-rating-sync",
@@ -19,7 +19,8 @@
       "reason": "Schedule periodic scans of the music library"
     },
     "kvstore": {
-      "reason": "Persist the last successful scan timestamp per (library, user) so recurring scans can skip files whose mtime has not changed since"
+      "reason": "Persist the last successful scan timestamp per (library, user) so recurring scans can skip files whose mtime has not changed since",
+      "maxSize": "1MB"
     }
   },
   "config": {
@@ -85,6 +86,18 @@
             }
           ],
           "default": "inherit"
+        },
+        "cache_libraries_filesystem_tree": {
+          "type": "boolean",
+          "title": "Cache Libraries Filesystem Tree",
+          "description": "When true, the plugin caches the libraries filesystem tree. Only enabled this if the libraries are very huge or on a slow media (like CIFS share for example). Default: false.",
+          "default": false
+        },
+        "kv_storage_max_size": {
+          "type": "string",
+          "title": "KV storage max size",
+          "description": "This only needs to be changed if: \"Cache Libraries Filesystem Tree\" is enabled and you changed permissions.kvstore.maxSize in the manifest. Add the same value here as in the manifest. Default: 1MB",
+          "default": "1MB"
         },
         "libraries": {
           "type": "array",
@@ -220,11 +233,19 @@
         },
         {
           "type": "Control",
+          "scope": "#/properties/cache_libraries_filesystem_tree"
+        },
+        {
+          "type": "Control",
           "scope": "#/properties/default_skip_already_rated"
         },
         {
           "type": "Control",
           "scope": "#/properties/default_clear_rating_if_untagged"
+        },
+        {
+          "type": "Control",
+          "scope": "#/properties/kv_storage_max_size"
         },
         {
           "type": "Control",

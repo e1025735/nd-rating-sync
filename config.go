@@ -24,8 +24,10 @@ type pluginConfig struct {
 	MaxSongsPerRun               int
 	IncrementalSync              bool
 	DryRun                       bool
+	CacheLibrariesFilesystemTree bool
 	DefaultSkipAlreadyRated      *bool
 	DefaultClearRatingIfUntagged *bool
+	KVStorageMaxSize             string
 	Libraries                    []libraryConfig
 }
 
@@ -80,8 +82,9 @@ func loadConfig() pluginConfig { return loadConfigFrom(getConfig) }
 
 func loadConfigFrom(get configGetter) pluginConfig {
 	cfg := pluginConfig{
-		SyncSchedule:    "0 * * * *",
-		IncrementalSync: true,
+		SyncSchedule:     "0 * * * *",
+		IncrementalSync:  true,
+		KVStorageMaxSize: "1MB",
 	}
 
 	if v, ok := get("sync_schedule"); ok {
@@ -106,11 +109,22 @@ func loadConfigFrom(get configGetter) pluginConfig {
 			cfg.DryRun = true
 		}
 	}
+	if v, ok := get("cache_libraries_filesystem_tree"); ok {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1", "yes", "on":
+			cfg.CacheLibrariesFilesystemTree = true
+		}
+	}
 	if v, ok := get("default_skip_already_rated"); ok {
 		cfg.DefaultSkipAlreadyRated = parseTristateConfig(v)
 	}
 	if v, ok := get("default_clear_rating_if_untagged"); ok {
 		cfg.DefaultClearRatingIfUntagged = parseTristateConfig(v)
+	}
+	if v, ok := get("kv_storage_max_size"); ok {
+		if s := strings.TrimSpace(v); s != "" {
+			cfg.KVStorageMaxSize = s
+		}
 	}
 	if v, ok := get("libraries"); ok && v != "" {
 		var rawLibs []jsonLibraryConfig

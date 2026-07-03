@@ -6,6 +6,7 @@ go 1.25
 
 require (
 	github.com/bogem/id3v2/v2 v2.1.4
+	github.com/dustin/go-humanize v1.0.1
 	github.com/extism/go-pdk v1.1.3
 	github.com/navidrome/navidrome/plugins/pdk/go v0.0.0-20260602123857-dad4203f9a93
 	github.com/stretchr/testify v1.11.1
