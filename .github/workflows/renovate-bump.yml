@@ -48,7 +48,7 @@ jobs:
           jq --arg v "${{ steps.version.outputs.version }}" '.version = $v' manifest.json > manifest.tmp
           mv manifest.tmp manifest.json
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
