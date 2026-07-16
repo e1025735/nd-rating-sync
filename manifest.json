@@ -1,6 +1,6 @@
 {
   "name": "nd-rating-sync",
-  "version": "0.14.1",
+  "version": "0.15.0",
   "description": "Reads embedded rating tags from MP3, FLAC, Ogg-Vorbis, Opus, WAV, DSF, M4A/AAC and WMA files (ID3v2 TXXX FMPS_Rating / POPM iTunes / POPM WMP / TXXX:RATING; Vorbis comments FMPS_RATING / RATING; MP4 freeform atoms; ASF Extended Content Description Object) and syncs them to Navidrome's user ratings via the Subsonic API, with per-user per-library tag priority and overwrite control.",
   "author": "e1025735",
   "website": "https://github.com/e1025735/nd-rating-sync",
