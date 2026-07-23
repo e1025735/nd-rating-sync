@@ -160,6 +160,21 @@ func TestParseID3v2Rating_UnknownPOPMEmailIgnored(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestParseID3v2Rating_MusicBeeCanonicalValues(t *testing.T) {
+	cases := []struct {
+		rating byte
+		want   int
+	}{
+		{1, 1}, {64, 2}, {128, 3}, {196, 4}, {255, 5},
+	}
+	for _, tc := range cases {
+		data := makeTagWithPOPM(t, "MusicBee", tc.rating)
+		stars, ok := parseID3v2Rating(data, []string{"MusicBee"})
+		assert.True(t, ok, "MusicBee rating=%d", tc.rating)
+		assert.Equal(t, tc.want, stars, "MusicBee rating=%d", tc.rating)
+	}
+}
+
 // ─── tag order / priority ─────────────────────────────────────────────────────
 
 func TestParseID3v2Rating_TagOrderWMPBeatsMediaMonkey(t *testing.T) {

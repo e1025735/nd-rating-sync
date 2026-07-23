@@ -28,6 +28,7 @@ The plugin supports these embedded rating sources:
 
 - `MediaMonkey`
 - `foobar2000`
+- `MusicBee`
 - `WMP` (Windows Media Player; also used by MusicBee)
 - `iTunes`
 

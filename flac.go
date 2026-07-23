@@ -103,6 +103,7 @@ func parseVorbisCommentBlock(body []byte) (vorbisComments, error) {
 //
 //   - "MediaMonkey" – FMPS_RATING (float 0.0–1.0)
 //   - "foobar2000"  – RATING (integer 1–5)
+//   - "MusicBee" - RATING (0 - 100)
 //
 // "WMP" and "iTunes" have no canonical Vorbis representation and are silently
 // skipped — listing them in tagOrder is harmless, they just never match.
@@ -116,6 +117,9 @@ func ratingFromVorbisComments(cmts vorbisComments, tagOrder []string) (int, bool
 	if vs := cmts["RATING"]; len(vs) > 0 {
 		if stars, ok := ratingIntToStars(vs[0]); ok {
 			found["foobar2000"] = stars
+		}
+		if stars, ok := ratingMusicBeeToStars(vs[0]); ok {
+			found["MusicBee"] = stars
 		}
 	}
 	for _, format := range tagOrder {

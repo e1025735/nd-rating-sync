@@ -129,6 +129,9 @@ func parseM4ARating(data []byte, tagOrder []string) (int, bool) {
 			if stars, ok := ratingIntToStars(value); ok {
 				found["foobar2000"] = stars
 			}
+			if stars, ok := ratingMusicBeeToStars(value); ok {
+				found["MusicBee"] = stars
+			}
 		}
 		return true
 	})

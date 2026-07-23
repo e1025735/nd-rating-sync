@@ -143,6 +143,21 @@ func TestParseM4ARating_iTunesZeroIsUnrated(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestParseM4ARating_MusicBeeCanonicalValues(t *testing.T) {
+	cases := []struct {
+		value string
+		want  int
+	}{
+		{"20", 1}, {"40", 2}, {"60", 3}, {"80", 4}, {"100", 5},
+	}
+	for _, tc := range cases {
+		data := buildM4A(map[string]string{"RATING": tc.value})
+		stars, ok := parseM4ARating(data, []string{"MusicBee"})
+		assert.True(t, ok, "RATING=%s", tc.value)
+		assert.Equal(t, tc.want, stars, "RATING=%s", tc.value)
+	}
+}
+
 // ─── tag order / priority ─────────────────────────────────────────────────────
 
 func TestParseM4ARating_TagOrderFMPSBeatsRATING(t *testing.T) {

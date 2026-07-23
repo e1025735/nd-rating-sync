@@ -185,7 +185,8 @@
                         "WMP",
                         "iTunes",
                         "MediaMonkey",
-                        "foobar2000"
+                        "foobar2000",
+                        "MusicBee"
                       ],
                       "items": {
                         "oneOf": [
@@ -204,6 +205,10 @@
                           {
                             "const": "foobar2000",
                             "title": "foobar2000"
+                          },
+                          {
+                            "const": "MusicBee",
+                            "title": "MusicBee"
                           }
                         ]
                       }

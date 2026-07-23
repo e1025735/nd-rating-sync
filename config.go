@@ -44,7 +44,7 @@ type jsonLibraryConfig struct {
 	Users       []jsonUserConfig `json:"users"`
 }
 
-var defaultTagOrder = []string{"WMP", "iTunes", "MediaMonkey", "foobar2000"}
+var defaultTagOrder = []string{"WMP", "iTunes", "MediaMonkey", "foobar2000", "MusicBee"}
 
 // parseTristateConfig parses a PDK string value into a tristate bool pointer.
 // "true"/"1"/"yes"/"on" → &true; "false"/"0"/"no"/"off" → &false; anything else → nil (not set).

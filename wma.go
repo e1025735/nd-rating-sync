@@ -105,9 +105,10 @@ func parseASFExtContentDesc(body []byte, tagOrder []string) (int, bool) {
 		case "WM/SHAREDUSERRATING":
 			// WORD (type 5): same 0/64/128/196/255 breakpoints as the WMP POPM byte.
 			if valueType == 5 && valueLen >= 2 {
-				v := binary.LittleEndian.Uint16(valueBytes)
+				v := binary.LittleEndian.Uint16(valueBytes[:2])
 				if stars := popmWMPToStars(byte(v)); stars > 0 {
 					found["WMP"] = stars
+					found["MusicBee"] = stars
 				}
 			}
 		case "FMPS_RATING":
