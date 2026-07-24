@@ -154,6 +154,25 @@ func TestParseWMARating_MediaMonkeyZeroIsUnrated(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestParseWMARating_MusicBeeCanonicalValues(t *testing.T) {
+	cases := []struct {
+		rating uint16
+		want   int
+	}{
+		{1, 1}, {64, 2}, {128, 3}, {196, 4}, {255, 5},
+	}
+	for _, tc := range cases {
+		data := buildWMA(t, []wmaDescriptor{{
+			name:      "WM/SharedUserRating",
+			valueType: 5,
+			value:     wmaWordValue(tc.rating),
+		}})
+		stars, ok := parseWMARating(data, []string{"MusicBee"})
+		assert.True(t, ok, "WM/SharedUserRating=%d", tc.rating)
+		assert.Equal(t, tc.want, stars, "WM/SharedUserRating=%d", tc.rating)
+	}
+}
+
 // ─── tag order / priority ─────────────────────────────────────────────────────
 
 func TestParseWMARating_TagOrderWMPBeatsMediaMonkey(t *testing.T) {

@@ -87,3 +87,32 @@ func TestPopmITunesToStars(t *testing.T) {
 		assert.Equal(t, tc.want, got, "input byte=%d", tc.input)
 	}
 }
+
+func TestRatingMusicBeeToStars(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		wantOK bool
+		want   int
+	}{
+		{"empty string", "", false, 0},
+		{"zero", "0", false, 0},
+		{"one star", "20", true, 1},
+		{"two stars", "40", true, 2},
+		{"three stars", "60", true, 3},
+		{"four stars", "80", true, 4},
+		{"five stars", "100", true, 5},
+		{"out of range", "101", false, 0},
+		{"non-numeric", "abc", false, 0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := ratingMusicBeeToStars(tc.input)
+			assert.Equal(t, tc.wantOK, ok)
+			if tc.wantOK {
+				assert.Equal(t, tc.want, got)
+			}
+		})
+	}
+}

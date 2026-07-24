@@ -206,6 +206,21 @@ func TestParseFLACRating_foobar2000VsMediaMonkeyOrder(t *testing.T) {
 	assert.Equal(t, 2, stars)
 }
 
+func TestParseFLACRating_MusicBeeCanonicalValues(t *testing.T) {
+	cases := []struct {
+		value string
+		want  int
+	}{
+		{"20", 1}, {"40", 2}, {"60", 3}, {"80", 4}, {"100", 5},
+	}
+	for _, tc := range cases {
+		data := makeFLAC(t, "RATING="+tc.value)
+		stars, ok := parseFLACRating(data, []string{"MusicBee"})
+		assert.True(t, ok, "RATING=%s", tc.value)
+		assert.Equal(t, tc.want, stars, "RATING=%s", tc.value)
+	}
+}
+
 // ─── extractor (Phase 1 partial reads) ────────────────────────────────────────
 
 // TestExtractFLACMetadata_SkipsPictureAndAudio proves the FLAC extractor
@@ -245,4 +260,3 @@ func TestExtractFLACMetadata_SkipsPictureAndAudio(t *testing.T) {
 	assert.Equal(t, tagFound, result)
 	assert.Equal(t, 3, stars)
 }
-

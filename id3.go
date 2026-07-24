@@ -75,7 +75,6 @@ func readID3v2TagAt(f *os.File, off int64) ([]byte, error) {
 	return extractID3v2Metadata(f)
 }
 
-
 // parseID3v2Rating inspects raw MP3 (or any file with an ID3v2 header) data
 // and returns a 1–5 star rating. It first collects every recognised rating
 // frame from the file (one pass), then picks the winner by tagOrder.
@@ -123,9 +122,13 @@ func parseID3v2Rating(data []byte, tagOrder []string) (int, bool) {
 			if stars := popmWMPToStars(popm.Rating); stars > 0 {
 				found["WMP"] = stars
 			}
-		case strings.Contains(e, "itunes") || e == "com.apple.itunes":
+		case strings.Contains(e, "itunes") || "com.apple.itunes" == e:
 			if stars := popmITunesToStars(popm.Rating); stars > 0 {
 				found["iTunes"] = stars
+			}
+		case "musicbee" == e:
+			if stars := popmWMPToStars(popm.Rating); stars > 0 {
+				found["MusicBee"] = stars
 			}
 		}
 	}

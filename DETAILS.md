@@ -109,6 +109,21 @@ iTunes ratings use a linear scale in steps of 20 across 0–100.
 | `61` – `80` | ★★★★ |
 | `81` – `255` | ★★★★★ |
 
+### MusicBee
+
+MusicBee uses a simple 0–100 scale in steps of 20 for tags written in the
+freeform `RATING` style used by Vorbis/MP4 containers. For POPM / WMA-style
+ratings, the plugin uses the same WMP-style non-linear breakpoints.
+
+| Tag value | Stars |
+|-----------|-------|
+| `0`, empty, missing | (unrated → skip) |
+| `20` | ★ |
+| `40` | ★★ |
+| `60` | ★★★ |
+| `80` | ★★★★ |
+| `100` | ★★★★★ |
+
 ## How the plugin works
 
 The plugin is executed inside the Navidrome sandbox and is subject to a hard 30-second callback timeout. It therefore works in short budgeted chunks and reschedules continuations until the scan completes.

@@ -45,8 +45,13 @@ jobs:
             patch) PATCH=$((PATCH+1)) ;;
           esac
           NEW="${MAJOR}.${MINOR}.${PATCH}"
+          SUFFIX=""
+          if [ "${{ inputs.pre_release }}" = "true" ]; then
+            SUFFIX="-pre"
+          fi
           echo "version=${NEW}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${NEW}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${NEW}${SUFFIX}" >> "$GITHUB_OUTPUT"
+          echo "release_name=v${NEW}${SUFFIX}" >> "$GITHUB_OUTPUT"
 
       - name: Bump manifest.json
         run: |
@@ -79,7 +84,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.release_name }}
           generate_release_notes: true
           prerelease: ${{ inputs.pre_release }}
           files: nd-rating-sync.ndp

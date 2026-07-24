@@ -16,6 +16,11 @@ const (
 	iTunes2StarMax = 40
 	iTunes3StarMax = 60
 	iTunes4StarMax = 80
+	musicBee1Star  = 20
+	musicBee2Star  = 40
+	musicBee3Star  = 60
+	musicBee4Star  = 80
+	musicBee5Star  = 100
 )
 
 /*
@@ -104,6 +109,48 @@ func ratingIntToStars(s string) (int, bool) {
 
 	logTrace(fmt.Sprintf("nd-rating-sync: ratingIntToStars done s=%q", s))
 	return n, true
+}
+
+/*
+ratingMusicBeeToStars parses a musicBee star count in the range 1–5.
+Used by foobar2000-style tags (RATING Vorbis comment
+in FLAC / Ogg / Opus).
+Empty or out-of-range values are reported as unrated.
+*/
+func ratingMusicBeeToStars(s string) (int, bool) {
+	logTrace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars start s=%q", s))
+	s = strings.TrimSpace(s)
+	if s == "" {
+		logTrace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars stop, zero s=%q", s))
+		return 0, false
+	}
+
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		logTrace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars stop, error s=%q", s))
+		return 0, false
+	}
+
+	if n < 0 || n > musicBee5Star {
+		logTrace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars stop, out of bounds s=%q", s))
+		return 0, false
+	}
+
+	logTrace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars done s=%q", s))
+	switch strings.TrimSpace(s) {
+	case strconv.Itoa(musicBee1Star):
+		return 1, true
+	case strconv.Itoa(musicBee2Star):
+		return 2, true
+	case strconv.Itoa(musicBee3Star):
+		return 3, true
+	case strconv.Itoa(musicBee4Star):
+		return 4, true
+	case strconv.Itoa(musicBee5Star):
+		return 5, true
+	default:
+		return 0, false
+	}
 }
 
 /*
