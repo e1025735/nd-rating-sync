@@ -72,7 +72,7 @@ jobs:
         uses: acifani/setup-tinygo@v3
         with:
           # check https://github.com/tinygo-org/tinygo/releases for the latest version
-          tinygo-version: '0.41.1'
+          tinygo-version: '0.42.0'
 
       - name: Build WASM
         run: tinygo build -o plugin.wasm -target wasip1 -buildmode=c-shared .
