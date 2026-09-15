@@ -61,6 +61,7 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 
 		lib := cfg.Libraries[cur.Lib]
 		u := lib.Users[cur.User]
+		logDebug(fmt.Sprintf("nd-rating-sync: will look for the following ratings: %v", u.RatingTagOrder))
 		if u.Username == "" {
 			logWarn(fmt.Sprintf(
 				"nd-rating-sync: skipping library=%q user#%d – empty username in config", lib.LibraryID, cur.User))
@@ -472,7 +473,7 @@ const maxMetadataReadBytes = 16 * 1024 * 1024
 // maxMetadataReadBytes regardless of how big the file is on disk. The
 // fileReadResult disambiguates "no tag found" (safe to clear) from "could
 // not read" (must skip — clearing on I/O errors would corrupt user state).
-func extractStarsFromFile(path, suffix string, tagOrder []string) (int, fileReadResult) {
+func extractStarsFromFile(path string, suffix string, tagOrder []string) (int, fileReadResult) {
 	logTrace(fmt.Sprintf("nd-rating-sync: extractStarsFromFile start path=%q, suffix=%q", path, suffix))
 	ext := strings.ToLower(suffix)
 	if ext == "" {
@@ -564,7 +565,7 @@ func readAudioMetadata(path, ext string) ([]byte, bool) {
 // dispatchParser routes data to the right container parser, recovering from
 // any panic the parser raises on hostile input so a single bad file cannot
 // abort the whole sync. Returns (stars, tagFound, formatSupported).
-func dispatchParser(path, ext string, data []byte, tagOrder []string) (stars int, ok, supported bool) {
+func dispatchParser(path string, ext string, data []byte, tagOrder []string) (stars int, ok, supported bool) {
 	logTrace(fmt.Sprintf("nd-rating-sync: dispatchParser start path=%q, etx=%q", path, ext))
 	supported = true
 	defer func() {
@@ -577,19 +578,19 @@ func dispatchParser(path, ext string, data []byte, tagOrder []string) (stars int
 
 	switch ext {
 	case "mp3":
-		stars, ok = parseID3v2Rating(data, tagOrder)
+		stars, ok = parseID3v2Rating(data, path, tagOrder)
 	case "flac":
-		stars, ok = parseFLACRating(data, tagOrder)
+		stars, ok = parseFLACRating(data, path, tagOrder)
 	case "ogg", "oga", "opus":
-		stars, ok = parseOggVorbisRating(data, tagOrder)
+		stars, ok = parseOggVorbisRating(data, path, tagOrder)
 	case "wav":
-		stars, ok = parseWAVRating(data, tagOrder)
+		stars, ok = parseWAVRating(data, path, tagOrder)
 	case "dsf":
-		stars, ok = parseDSFRating(data, tagOrder)
+		stars, ok = parseDSFRating(data, path, tagOrder)
 	case "m4a", "aac", "mp4":
-		stars, ok = parseM4ARating(data, tagOrder)
+		stars, ok = parseM4ARating(data, path, tagOrder)
 	case "wma":
-		stars, ok = parseWMARating(data, tagOrder)
+		stars, ok = parseWMARating(data, path, tagOrder)
 	default:
 		logTrace(fmt.Sprintf("nd-rating-sync: dispatchParser stop, unsupported extension path=%q, etx=%q", path, ext))
 		logWarn(fmt.Sprintf(

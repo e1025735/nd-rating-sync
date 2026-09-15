@@ -12,7 +12,7 @@ import (
 // parseWAVRating finds the ID3v2 chunk inside a RIFF/WAVE container and
 // delegates to parseID3v2Rating. Both "id3 " and "ID3 " fourCCs are accepted
 // (different tag editors write different cases).
-func parseWAVRating(data []byte, tagOrder []string) (int, bool) {
+func parseWAVRating(data []byte, path string, tagOrder []string) (int, bool) {
 	if len(data) < 12 || string(data[:4]) != "RIFF" || string(data[8:12]) != "WAVE" {
 		return 0, false
 	}
@@ -26,7 +26,7 @@ func parseWAVRating(data []byte, tagOrder []string) (int, bool) {
 			break
 		}
 		if fourCC == "id3 " {
-			return parseID3v2Rating(data[pos:end], tagOrder)
+			return parseID3v2Rating(data[pos:end], path, tagOrder)
 		}
 		// RIFF chunks are padded to even byte boundaries.
 		if chunkSize%2 != 0 {
@@ -88,10 +88,10 @@ func extractWAVMetadata(f *os.File) ([]byte, error) {
 			}
 			// Synthesise: RIFF + (size) + WAVE + id3 chunk header + body.
 			out := make([]byte, 0, 12+8+int(chunkSize))
-			out = append(out, hdr[:4]...)             // "RIFF"
-			out = append(out, 0, 0, 0, 0)             // RIFF size (filled below)
-			out = append(out, hdr[8:12]...)           // "WAVE"
-			out = append(out, chHdr[:]...)            // id3 chunk header (fourCC + size)
+			out = append(out, hdr[:4]...)   // "RIFF"
+			out = append(out, 0, 0, 0, 0)   // RIFF size (filled below)
+			out = append(out, hdr[8:12]...) // "WAVE"
+			out = append(out, chHdr[:]...)  // id3 chunk header (fourCC + size)
 			out = append(out, body...)
 			binary.LittleEndian.PutUint32(out[4:8], uint32(len(out)-8))
 			return out, nil

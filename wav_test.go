@@ -45,23 +45,23 @@ func makeWAVUpperCase(t *testing.T, id3Data []byte) []byte {
 // ─── invalid / edge cases ─────────────────────────────────────────────────────
 
 func TestParseWAVRating_EmptySlice(t *testing.T) {
-	_, ok := parseWAVRating([]byte{}, []string{"WMP"})
+	_, ok := parseWAVRating([]byte{}, "", []string{"WMP"})
 	assert.False(t, ok)
 }
 
 func TestParseWAVRating_InvalidRIFFMagic(t *testing.T) {
-	_, ok := parseWAVRating([]byte("JUNK\x00\x00\x00\x00WAVE"), []string{"WMP"})
+	_, ok := parseWAVRating([]byte("JUNK\x00\x00\x00\x00WAVE"), "", []string{"WMP"})
 	assert.False(t, ok)
 }
 
 func TestParseWAVRating_NotWAVE(t *testing.T) {
-	_, ok := parseWAVRating([]byte("RIFF\x04\x00\x00\x00AIFF"), []string{"WMP"})
+	_, ok := parseWAVRating([]byte("RIFF\x04\x00\x00\x00AIFF"), "", []string{"WMP"})
 	assert.False(t, ok)
 }
 
 func TestParseWAVRating_NoID3Chunk(t *testing.T) {
 	// Valid WAVE header with no chunks.
-	_, ok := parseWAVRating([]byte("RIFF\x04\x00\x00\x00WAVE"), []string{"WMP"})
+	_, ok := parseWAVRating([]byte("RIFF\x04\x00\x00\x00WAVE"), "", []string{"WMP"})
 	assert.False(t, ok)
 }
 
@@ -72,7 +72,7 @@ func TestParseWAVRating_TruncatedChunkBody(t *testing.T) {
 	out.WriteString("WAVE")
 	out.WriteString("id3 ")
 	require.NoError(t, binary.Write(&out, binary.LittleEndian, uint32(999))) // claims 999 but file ends here
-	_, ok := parseWAVRating(out.Bytes(), []string{"WMP"})
+	_, ok := parseWAVRating(out.Bytes(), "", []string{"WMP"})
 	assert.False(t, ok)
 }
 
@@ -80,28 +80,28 @@ func TestParseWAVRating_TruncatedChunkBody(t *testing.T) {
 
 func TestParseWAVRating_MediaMonkey(t *testing.T) {
 	data := makeWAV(t, makeTagWithTXXX(t, "FMPS_Rating", "0.6"))
-	stars, ok := parseWAVRating(data, []string{"MediaMonkey"})
+	stars, ok := parseWAVRating(data, "", []string{"MediaMonkey"})
 	assert.True(t, ok)
 	assert.Equal(t, 3, stars)
 }
 
 func TestParseWAVRating_foobar2000(t *testing.T) {
 	data := makeWAV(t, makeTagWithTXXX(t, "RATING", "4"))
-	stars, ok := parseWAVRating(data, []string{"foobar2000"})
+	stars, ok := parseWAVRating(data, "", []string{"foobar2000"})
 	assert.True(t, ok)
 	assert.Equal(t, 4, stars)
 }
 
 func TestParseWAVRating_WMP(t *testing.T) {
 	data := makeWAV(t, makeTagWithPOPM(t, "Windows Media Player 9 Series", 196))
-	stars, ok := parseWAVRating(data, []string{"WMP"})
+	stars, ok := parseWAVRating(data, "", []string{"WMP"})
 	assert.True(t, ok)
 	assert.Equal(t, 4, stars)
 }
 
 func TestParseWAVRating_iTunes(t *testing.T) {
 	data := makeWAV(t, makeTagWithPOPM(t, "iTunes", 100))
-	stars, ok := parseWAVRating(data, []string{"iTunes"})
+	stars, ok := parseWAVRating(data, "", []string{"iTunes"})
 	assert.True(t, ok)
 	assert.Equal(t, 5, stars)
 }
@@ -110,7 +110,7 @@ func TestParseWAVRating_iTunes(t *testing.T) {
 
 func TestParseWAVRating_UpperCaseFourCC(t *testing.T) {
 	data := makeWAVUpperCase(t, makeTagWithTXXX(t, "FMPS_Rating", "0.8"))
-	stars, ok := parseWAVRating(data, []string{"MediaMonkey"})
+	stars, ok := parseWAVRating(data, "", []string{"MediaMonkey"})
 	assert.True(t, ok)
 	assert.Equal(t, 4, stars)
 }
@@ -124,11 +124,11 @@ func TestParseWAVRating_TagOrderRespected(t *testing.T) {
 	)
 	data := makeWAV(t, id3Data)
 
-	stars, ok := parseWAVRating(data, []string{"WMP", "MediaMonkey"})
+	stars, ok := parseWAVRating(data, "", []string{"WMP", "MediaMonkey"})
 	assert.True(t, ok)
 	assert.Equal(t, 5, stars)
 
-	stars, ok = parseWAVRating(data, []string{"MediaMonkey", "WMP"})
+	stars, ok = parseWAVRating(data, "", []string{"MediaMonkey", "WMP"})
 	assert.True(t, ok)
 	assert.Equal(t, 2, stars)
 }

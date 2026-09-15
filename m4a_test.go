@@ -51,25 +51,25 @@ func buildM4A(freeformTags map[string]string) []byte {
 // ─── invalid / edge cases ─────────────────────────────────────────────────────
 
 func TestParseM4ARating_EmptySlice(t *testing.T) {
-	_, ok := parseM4ARating([]byte{}, []string{"MediaMonkey"})
+	_, ok := parseM4ARating([]byte{}, "", []string{"MediaMonkey"})
 	assert.False(t, ok)
 }
 
 func TestParseM4ARating_NoMoov(t *testing.T) {
 	data := buildAtom("ftyp", []byte("M4A \x00\x00\x00\x00"))
-	_, ok := parseM4ARating(data, []string{"MediaMonkey"})
+	_, ok := parseM4ARating(data, "", []string{"MediaMonkey"})
 	assert.False(t, ok)
 }
 
 func TestParseM4ARating_NoIlst(t *testing.T) {
 	data := buildM4A(nil)
-	_, ok := parseM4ARating(data, []string{"MediaMonkey"})
+	_, ok := parseM4ARating(data, "", []string{"MediaMonkey"})
 	assert.False(t, ok)
 }
 
 func TestParseM4ARating_TruncatedAtom(t *testing.T) {
 	// atom header claims 100 bytes but only 8 present
-	_, ok := parseM4ARating([]byte{0, 0, 0, 100, 'm', 'o', 'o', 'v'}, []string{"MediaMonkey"})
+	_, ok := parseM4ARating([]byte{0, 0, 0, 100, 'm', 'o', 'o', 'v'}, "", []string{"MediaMonkey"})
 	assert.False(t, ok)
 }
 
@@ -84,7 +84,7 @@ func TestParseM4ARating_MediaMonkeyCanonicalValues(t *testing.T) {
 	}
 	for _, tc := range cases {
 		data := buildM4A(map[string]string{"FMPS_Rating": tc.fmps})
-		stars, ok := parseM4ARating(data, []string{"MediaMonkey"})
+		stars, ok := parseM4ARating(data, "", []string{"MediaMonkey"})
 		assert.True(t, ok, "FMPS_Rating=%s", tc.fmps)
 		assert.Equal(t, tc.want, stars, "FMPS_Rating=%s", tc.fmps)
 	}
@@ -92,13 +92,13 @@ func TestParseM4ARating_MediaMonkeyCanonicalValues(t *testing.T) {
 
 func TestParseM4ARating_MediaMonkeyZeroIsUnrated(t *testing.T) {
 	data := buildM4A(map[string]string{"FMPS_Rating": "0.0"})
-	_, ok := parseM4ARating(data, []string{"MediaMonkey"})
+	_, ok := parseM4ARating(data, "", []string{"MediaMonkey"})
 	assert.False(t, ok)
 }
 
 func TestParseM4ARating_MediaMonkeyCaseInsensitiveName(t *testing.T) {
 	data := buildM4A(map[string]string{"FMPS_RATING": "0.6"})
-	stars, ok := parseM4ARating(data, []string{"MediaMonkey"})
+	stars, ok := parseM4ARating(data, "", []string{"MediaMonkey"})
 	assert.True(t, ok)
 	assert.Equal(t, 3, stars)
 }
@@ -108,7 +108,7 @@ func TestParseM4ARating_MediaMonkeyCaseInsensitiveName(t *testing.T) {
 func TestParseM4ARating_foobar2000CanonicalValues(t *testing.T) {
 	for n := 1; n <= 5; n++ {
 		data := buildM4A(map[string]string{"RATING": string(rune('0' + n))})
-		stars, ok := parseM4ARating(data, []string{"foobar2000"})
+		stars, ok := parseM4ARating(data, "", []string{"foobar2000"})
 		assert.True(t, ok, "RATING=%d", n)
 		assert.Equal(t, n, stars, "RATING=%d", n)
 	}
@@ -116,7 +116,7 @@ func TestParseM4ARating_foobar2000CanonicalValues(t *testing.T) {
 
 func TestParseM4ARating_foobar2000ZeroIsUnrated(t *testing.T) {
 	data := buildM4A(map[string]string{"RATING": "0"})
-	_, ok := parseM4ARating(data, []string{"foobar2000"})
+	_, ok := parseM4ARating(data, "", []string{"foobar2000"})
 	assert.False(t, ok)
 }
 
@@ -131,7 +131,7 @@ func TestParseM4ARating_iTunesCanonicalValues(t *testing.T) {
 	}
 	for _, tc := range cases {
 		data := buildM4A(map[string]string{"rating": tc.val}) // lowercase = iTunes
-		stars, ok := parseM4ARating(data, []string{"iTunes"})
+		stars, ok := parseM4ARating(data, "", []string{"iTunes"})
 		assert.True(t, ok, "rating=%s", tc.val)
 		assert.Equal(t, tc.want, stars, "rating=%s", tc.val)
 	}
@@ -139,7 +139,7 @@ func TestParseM4ARating_iTunesCanonicalValues(t *testing.T) {
 
 func TestParseM4ARating_iTunesZeroIsUnrated(t *testing.T) {
 	data := buildM4A(map[string]string{"rating": "0"})
-	_, ok := parseM4ARating(data, []string{"iTunes"})
+	_, ok := parseM4ARating(data, "", []string{"iTunes"})
 	assert.False(t, ok)
 }
 
@@ -152,7 +152,7 @@ func TestParseM4ARating_MusicBeeCanonicalValues(t *testing.T) {
 	}
 	for _, tc := range cases {
 		data := buildM4A(map[string]string{"RATING": tc.value})
-		stars, ok := parseM4ARating(data, []string{"MusicBee"})
+		stars, ok := parseM4ARating(data, "", []string{"MusicBee"})
 		assert.True(t, ok, "RATING=%s", tc.value)
 		assert.Equal(t, tc.want, stars, "RATING=%s", tc.value)
 	}
@@ -165,18 +165,18 @@ func TestParseM4ARating_TagOrderFMPSBeatsRATING(t *testing.T) {
 	// buildM4A uses a map so iteration order is irrelevant — both end up in ilst.
 	data := buildM4A(map[string]string{"FMPS_Rating": "0.4", "RATING": "5"})
 
-	stars, ok := parseM4ARating(data, []string{"MediaMonkey", "foobar2000"})
+	stars, ok := parseM4ARating(data, "", []string{"MediaMonkey", "foobar2000"})
 	assert.True(t, ok)
 	assert.Equal(t, 2, stars)
 
-	stars, ok = parseM4ARating(data, []string{"foobar2000", "MediaMonkey"})
+	stars, ok = parseM4ARating(data, "", []string{"foobar2000", "MediaMonkey"})
 	assert.True(t, ok)
 	assert.Equal(t, 5, stars)
 }
 
 func TestParseM4ARating_EmptyTagOrderNeverMatches(t *testing.T) {
 	data := buildM4A(map[string]string{"FMPS_Rating": "0.6"})
-	_, ok := parseM4ARating(data, []string{})
+	_, ok := parseM4ARating(data, "", []string{})
 	assert.False(t, ok)
 }
 

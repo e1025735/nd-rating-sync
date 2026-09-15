@@ -107,19 +107,22 @@ func parseVorbisCommentBlock(body []byte) (vorbisComments, error) {
 //
 // "WMP" and "iTunes" have no canonical Vorbis representation and are silently
 // skipped — listing them in tagOrder is harmless, they just never match.
-func ratingFromVorbisComments(cmts vorbisComments, tagOrder []string) (int, bool) {
+func ratingFromVorbisComments(cmts vorbisComments, path string, tagOrder []string) (int, bool) {
 	found := map[string]int{}
 	if vs := cmts["FMPS_RATING"]; len(vs) > 0 {
 		if stars, ok := fmpsToStars(vs[0]); ok {
 			found["MediaMonkey"] = stars
+			logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MediaMonkey for path %s", stars, path))
 		}
 	}
 	if vs := cmts["RATING"]; len(vs) > 0 {
 		if stars, ok := ratingIntToStars(vs[0]); ok {
 			found["foobar2000"] = stars
+			logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for foobar2000 for path %s", stars, path))
 		}
 		if stars, ok := ratingMusicBeeToStars(vs[0]); ok {
 			found["MusicBee"] = stars
+			logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MusicBee for path %s", stars, path))
 		}
 	}
 	for _, format := range tagOrder {
@@ -131,12 +134,12 @@ func ratingFromVorbisComments(cmts vorbisComments, tagOrder []string) (int, bool
 }
 
 // parseFLACRating parses a FLAC stream for a recognised star rating.
-func parseFLACRating(data []byte, tagOrder []string) (int, bool) {
+func parseFLACRating(data []byte, path string, tagOrder []string) (int, bool) {
 	cmts, err := parseFLACVorbisComments(data)
 	if err != nil {
 		return 0, false
 	}
-	return ratingFromVorbisComments(cmts, tagOrder)
+	return ratingFromVorbisComments(cmts, path, tagOrder)
 }
 
 // flacMetadataBlockHeaderSize is the fixed FLAC metadata block header length

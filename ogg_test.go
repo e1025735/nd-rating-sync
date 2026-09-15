@@ -193,7 +193,7 @@ func TestParseOggVorbisRating_VorbisFMPS(t *testing.T) {
 	commentPkt := makeVorbisCommentPacket(t, "FMPS_RATING=0.6")
 	data := makeOggSinglePage(t, idHeaderPlaceholder, commentPkt)
 
-	stars, ok := parseOggVorbisRating(data, []string{"MediaMonkey"})
+	stars, ok := parseOggVorbisRating(data, "", []string{"MediaMonkey"})
 	assert.True(t, ok)
 	assert.Equal(t, 3, stars)
 }
@@ -202,7 +202,7 @@ func TestParseOggVorbisRating_OpusFMPS(t *testing.T) {
 	commentPkt := makeOpusCommentPacket(t, "FMPS_RATING=0.8")
 	data := makeOggSinglePage(t, idHeaderPlaceholder, commentPkt)
 
-	stars, ok := parseOggVorbisRating(data, []string{"MediaMonkey"})
+	stars, ok := parseOggVorbisRating(data, "", []string{"MediaMonkey"})
 	assert.True(t, ok)
 	assert.Equal(t, 4, stars)
 }
@@ -211,7 +211,7 @@ func TestParseOggVorbisRating_OpusFoobar2000(t *testing.T) {
 	for n := 1; n <= 5; n++ {
 		commentPkt := makeOpusCommentPacket(t, "RATING="+strconv.Itoa(n))
 		data := makeOggSinglePage(t, idHeaderPlaceholder, commentPkt)
-		stars, ok := parseOggVorbisRating(data, []string{"foobar2000"})
+		stars, ok := parseOggVorbisRating(data, "", []string{"foobar2000"})
 		assert.True(t, ok, "RATING=%d", n)
 		assert.Equal(t, n, stars, "RATING=%d", n)
 	}
@@ -221,7 +221,7 @@ func TestParseOggVorbisRating_VorbisFoobar2000(t *testing.T) {
 	commentPkt := makeVorbisCommentPacket(t, "RATING=4")
 	data := makeOggSinglePage(t, idHeaderPlaceholder, commentPkt)
 
-	stars, ok := parseOggVorbisRating(data, []string{"foobar2000"})
+	stars, ok := parseOggVorbisRating(data, "", []string{"foobar2000"})
 	assert.True(t, ok)
 	assert.Equal(t, 4, stars)
 }
@@ -232,7 +232,7 @@ func TestParseOggVorbisRating_LargeCommentPacketSpansPages(t *testing.T) {
 	commentPkt := makeVorbisCommentPacket(t, "FMPS_RATING=0.4", "PADDING="+string(long))
 	data := makeOggMultiPage(t, 1, idHeaderPlaceholder, commentPkt)
 
-	stars, ok := parseOggVorbisRating(data, []string{"MediaMonkey"})
+	stars, ok := parseOggVorbisRating(data, "", []string{"MediaMonkey"})
 	assert.True(t, ok)
 	assert.Equal(t, 2, stars)
 }
@@ -242,12 +242,12 @@ func TestParseOggVorbisRating_NoMagic(t *testing.T) {
 	commentPkt := []byte("garbage payload not a real comment header at all")
 	data := makeOggSinglePage(t, idHeaderPlaceholder, commentPkt)
 
-	_, ok := parseOggVorbisRating(data, []string{"MediaMonkey"})
+	_, ok := parseOggVorbisRating(data, "", []string{"MediaMonkey"})
 	assert.False(t, ok)
 }
 
 func TestParseOggVorbisRating_BadFile(t *testing.T) {
-	_, ok := parseOggVorbisRating([]byte("not ogg at all"), []string{"MediaMonkey"})
+	_, ok := parseOggVorbisRating([]byte("not ogg at all"), "", []string{"MediaMonkey"})
 	assert.False(t, ok)
 }
 
@@ -255,7 +255,7 @@ func TestParseOggVorbisRating_NoCommentPacket(t *testing.T) {
 	// Only one packet present.
 	data := makeOggSinglePage(t, idHeaderPlaceholder)
 
-	_, ok := parseOggVorbisRating(data, []string{"MediaMonkey"})
+	_, ok := parseOggVorbisRating(data, "", []string{"MediaMonkey"})
 	assert.False(t, ok)
 }
 
@@ -265,7 +265,7 @@ func TestParseOggVorbisRating_TagOrderFiltersWMPiTunes(t *testing.T) {
 	commentPkt := makeOpusCommentPacket(t, "FMPS_RATING=1.0")
 	data := makeOggSinglePage(t, idHeaderPlaceholder, commentPkt)
 
-	_, ok := parseOggVorbisRating(data, []string{"WMP", "iTunes"})
+	_, ok := parseOggVorbisRating(data, "", []string{"WMP", "iTunes"})
 	assert.False(t, ok)
 }
 

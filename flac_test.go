@@ -127,7 +127,7 @@ func TestParseFLACRating_MediaMonkeyCanonicalValues(t *testing.T) {
 	}
 	for _, tc := range cases {
 		data := makeFLAC(t, "FMPS_RATING="+tc.fmps)
-		stars, ok := parseFLACRating(data, []string{"MediaMonkey"})
+		stars, ok := parseFLACRating(data, "", []string{"MediaMonkey"})
 		assert.True(t, ok, "FMPS_RATING=%s", tc.fmps)
 		assert.Equal(t, tc.want, stars, "FMPS_RATING=%s", tc.fmps)
 	}
@@ -135,13 +135,13 @@ func TestParseFLACRating_MediaMonkeyCanonicalValues(t *testing.T) {
 
 func TestParseFLACRating_ZeroIsUnrated(t *testing.T) {
 	data := makeFLAC(t, "FMPS_RATING=0.0")
-	_, ok := parseFLACRating(data, []string{"MediaMonkey"})
+	_, ok := parseFLACRating(data, "", []string{"MediaMonkey"})
 	assert.False(t, ok)
 }
 
 func TestParseFLACRating_NoRecognisedTag(t *testing.T) {
 	data := makeFLAC(t, "ARTIST=Foo", "TITLE=Bar")
-	_, ok := parseFLACRating(data, []string{"MediaMonkey", "WMP", "iTunes"})
+	_, ok := parseFLACRating(data, "", []string{"MediaMonkey", "WMP", "iTunes"})
 	assert.False(t, ok)
 }
 
@@ -151,25 +151,25 @@ func TestParseFLACRating_WMPAndITunesNeverMatchForFLAC(t *testing.T) {
 	// FMPS_RATING is present, but tagOrder excludes MediaMonkey.
 	// Since WMP/iTunes have no Vorbis representation, no rating wins.
 	data := makeFLAC(t, "FMPS_RATING=0.8")
-	_, ok := parseFLACRating(data, []string{"WMP", "iTunes"})
+	_, ok := parseFLACRating(data, "", []string{"WMP", "iTunes"})
 	assert.False(t, ok)
 }
 
 func TestParseFLACRating_TagOrderFallsThroughToMediaMonkey(t *testing.T) {
 	data := makeFLAC(t, "FMPS_RATING=0.4")
-	stars, ok := parseFLACRating(data, []string{"WMP", "iTunes", "MediaMonkey"})
+	stars, ok := parseFLACRating(data, "", []string{"WMP", "iTunes", "MediaMonkey"})
 	assert.True(t, ok)
 	assert.Equal(t, 2, stars)
 }
 
 func TestParseFLACRating_EmptyTagOrderNeverMatches(t *testing.T) {
 	data := makeFLAC(t, "FMPS_RATING=0.6")
-	_, ok := parseFLACRating(data, []string{})
+	_, ok := parseFLACRating(data, "", []string{})
 	assert.False(t, ok)
 }
 
 func TestParseFLACRating_BadFile(t *testing.T) {
-	_, ok := parseFLACRating([]byte("definitely not flac"), []string{"MediaMonkey"})
+	_, ok := parseFLACRating([]byte("definitely not flac"), "", []string{"MediaMonkey"})
 	assert.False(t, ok)
 }
 
@@ -178,7 +178,7 @@ func TestParseFLACRating_BadFile(t *testing.T) {
 func TestParseFLACRating_foobar2000CanonicalValues(t *testing.T) {
 	for n := 1; n <= 5; n++ {
 		data := makeFLAC(t, "RATING="+strconv.Itoa(n))
-		stars, ok := parseFLACRating(data, []string{"foobar2000"})
+		stars, ok := parseFLACRating(data, "", []string{"foobar2000"})
 		assert.True(t, ok, "RATING=%d", n)
 		assert.Equal(t, n, stars, "RATING=%d", n)
 	}
@@ -187,7 +187,7 @@ func TestParseFLACRating_foobar2000CanonicalValues(t *testing.T) {
 func TestParseFLACRating_foobar2000UnratedValues(t *testing.T) {
 	for _, v := range []string{"0", "", "6", "-1", "abc"} {
 		data := makeFLAC(t, "RATING="+v)
-		_, ok := parseFLACRating(data, []string{"foobar2000"})
+		_, ok := parseFLACRating(data, "", []string{"foobar2000"})
 		assert.False(t, ok, "RATING=%q should not produce a rating", v)
 	}
 }
@@ -196,12 +196,12 @@ func TestParseFLACRating_foobar2000VsMediaMonkeyOrder(t *testing.T) {
 	// Both tags present: FMPS_RATING=0.4 (MM=2 stars), RATING=5 (foobar=5 stars).
 	// tagOrder picks foobar2000 first.
 	data := makeFLAC(t, "FMPS_RATING=0.4", "RATING=5")
-	stars, ok := parseFLACRating(data, []string{"foobar2000", "MediaMonkey"})
+	stars, ok := parseFLACRating(data, "", []string{"foobar2000", "MediaMonkey"})
 	assert.True(t, ok)
 	assert.Equal(t, 5, stars)
 
 	// Reverse the order — MediaMonkey wins.
-	stars, ok = parseFLACRating(data, []string{"MediaMonkey", "foobar2000"})
+	stars, ok = parseFLACRating(data, "", []string{"MediaMonkey", "foobar2000"})
 	assert.True(t, ok)
 	assert.Equal(t, 2, stars)
 }
@@ -215,7 +215,7 @@ func TestParseFLACRating_MusicBeeCanonicalValues(t *testing.T) {
 	}
 	for _, tc := range cases {
 		data := makeFLAC(t, "RATING="+tc.value)
-		stars, ok := parseFLACRating(data, []string{"MusicBee"})
+		stars, ok := parseFLACRating(data, "", []string{"MusicBee"})
 		assert.True(t, ok, "RATING=%s", tc.value)
 		assert.Equal(t, tc.want, stars, "RATING=%s", tc.value)
 	}

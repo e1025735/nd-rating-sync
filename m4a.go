@@ -66,7 +66,7 @@ func findAtom(data []byte, typ string) []byte {
 //   - "FMPS_Rating" (any case) → MediaMonkey, float 0.0–1.0
 //   - "rating" (lowercase)     → iTunes, integer 0/20/40/60/80/100
 //   - "RATING" (uppercase)     → foobar2000, integer 1–5
-func parseM4ARating(data []byte, tagOrder []string) (int, bool) {
+func parseM4ARating(data []byte, path string, tagOrder []string) (int, bool) {
 	moov := findAtom(data, "moov")
 	if moov == nil {
 		return 0, false
@@ -115,6 +115,7 @@ func parseM4ARating(data []byte, tagOrder []string) (int, bool) {
 		case nameUpper == "FMPS_RATING":
 			if stars, ok := fmpsToStars(value); ok {
 				found["MediaMonkey"] = stars
+				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MediaMonkey for path %s", stars, path))
 			}
 		case name == "rating":
 			// iTunes writes lowercase "rating" with 0/20/40/60/80/100 integer scale.
@@ -122,15 +123,18 @@ func parseM4ARating(data []byte, tagOrder []string) (int, bool) {
 			if _, err := fmt.Sscanf(value, "%d", &n); err == nil && n > 0 {
 				if stars := popmITunesToStars(byte(n)); stars > 0 {
 					found["iTunes"] = stars
+					logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for iTunes for path %s", stars, path))
 				}
 			}
 		case nameUpper == "RATING":
 			// foobar2000 writes uppercase "RATING" with 1–5 integer scale.
 			if stars, ok := ratingIntToStars(value); ok {
 				found["foobar2000"] = stars
+				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for foobar2000 for path %s", stars, path))
 			}
 			if stars, ok := ratingMusicBeeToStars(value); ok {
 				found["MusicBee"] = stars
+				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MusicBee for path %s", stars, path))
 			}
 		}
 		return true

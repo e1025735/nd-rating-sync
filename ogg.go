@@ -68,7 +68,7 @@ func extractOggPackets(data []byte, maxPackets int) ([][]byte, error) {
 // Opus it starts with "OpusTags". A trailing Vorbis "framing bit" (Vorbis
 // only) is ignored — parseVorbisCommentBlock stops once it has read the
 // declared comment count.
-func parseOggVorbisRating(data []byte, tagOrder []string) (int, bool) {
+func parseOggVorbisRating(data []byte, path string, tagOrder []string) (int, bool) {
 	packets, err := extractOggPackets(data, 2)
 	if err != nil || len(packets) < 2 {
 		return 0, false
@@ -89,7 +89,7 @@ func parseOggVorbisRating(data []byte, tagOrder []string) (int, bool) {
 	if err != nil {
 		return 0, false
 	}
-	return ratingFromVorbisComments(cmts, tagOrder)
+	return ratingFromVorbisComments(cmts, path, tagOrder)
 }
 
 // extractOggMetadata reads just enough of the Ogg bitstream from the start

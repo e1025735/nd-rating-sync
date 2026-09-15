@@ -64,19 +64,19 @@ func wmaWordValue(v uint16) []byte {
 // ─── invalid / edge cases ─────────────────────────────────────────────────────
 
 func TestParseWMARating_EmptySlice(t *testing.T) {
-	_, ok := parseWMARating([]byte{}, []string{"WMP"})
+	_, ok := parseWMARating([]byte{}, "", []string{"WMP"})
 	assert.False(t, ok)
 }
 
 func TestParseWMARating_TooShort(t *testing.T) {
-	_, ok := parseWMARating(asfHeaderObjectGUID[:10], []string{"WMP"})
+	_, ok := parseWMARating(asfHeaderObjectGUID[:10], "", []string{"WMP"})
 	assert.False(t, ok)
 }
 
 func TestParseWMARating_InvalidMagic(t *testing.T) {
 	data := make([]byte, 30)
 	copy(data, "JUNK")
-	_, ok := parseWMARating(data, []string{"WMP"})
+	_, ok := parseWMARating(data, "", []string{"WMP"})
 	assert.False(t, ok)
 }
 
@@ -87,7 +87,7 @@ func TestParseWMARating_NoExtContentDescObject(t *testing.T) {
 	require.NoError(t, binary.Write(&out, binary.LittleEndian, uint64(30)))
 	require.NoError(t, binary.Write(&out, binary.LittleEndian, uint32(0)))
 	out.Write([]byte{0x01, 0x02})
-	_, ok := parseWMARating(out.Bytes(), []string{"WMP"})
+	_, ok := parseWMARating(out.Bytes(), "", []string{"WMP"})
 	assert.False(t, ok)
 }
 
@@ -104,7 +104,7 @@ func TestParseWMARating_WMPCanonicalValues(t *testing.T) {
 		data := buildWMA(t, []wmaDescriptor{
 			{name: "WM/SharedUserRating", valueType: 5, value: wmaWordValue(tc.rating)},
 		})
-		stars, ok := parseWMARating(data, []string{"WMP"})
+		stars, ok := parseWMARating(data, "", []string{"WMP"})
 		assert.True(t, ok, "WM/SharedUserRating=%d", tc.rating)
 		assert.Equal(t, tc.want, stars, "WM/SharedUserRating=%d", tc.rating)
 	}
@@ -114,7 +114,7 @@ func TestParseWMARating_WMPZeroIsUnrated(t *testing.T) {
 	data := buildWMA(t, []wmaDescriptor{
 		{name: "WM/SharedUserRating", valueType: 5, value: wmaWordValue(0)},
 	})
-	_, ok := parseWMARating(data, []string{"WMP"})
+	_, ok := parseWMARating(data, "", []string{"WMP"})
 	assert.False(t, ok)
 }
 
@@ -123,7 +123,7 @@ func TestParseWMARating_WMPWrongValueTypeIgnored(t *testing.T) {
 	data := buildWMA(t, []wmaDescriptor{
 		{name: "WM/SharedUserRating", valueType: 0, value: encodeUTF16LE("99")},
 	})
-	_, ok := parseWMARating(data, []string{"WMP"})
+	_, ok := parseWMARating(data, "", []string{"WMP"})
 	assert.False(t, ok)
 }
 
@@ -140,7 +140,7 @@ func TestParseWMARating_MediaMonkeyCanonicalValues(t *testing.T) {
 		data := buildWMA(t, []wmaDescriptor{
 			{name: "FMPS_Rating", valueType: 0, value: encodeUTF16LE(tc.fmps)},
 		})
-		stars, ok := parseWMARating(data, []string{"MediaMonkey"})
+		stars, ok := parseWMARating(data, "", []string{"MediaMonkey"})
 		assert.True(t, ok, "FMPS_Rating=%s", tc.fmps)
 		assert.Equal(t, tc.want, stars, "FMPS_Rating=%s", tc.fmps)
 	}
@@ -150,7 +150,7 @@ func TestParseWMARating_MediaMonkeyZeroIsUnrated(t *testing.T) {
 	data := buildWMA(t, []wmaDescriptor{
 		{name: "FMPS_Rating", valueType: 0, value: encodeUTF16LE("0.0")},
 	})
-	_, ok := parseWMARating(data, []string{"MediaMonkey"})
+	_, ok := parseWMARating(data, "", []string{"MediaMonkey"})
 	assert.False(t, ok)
 }
 
@@ -167,7 +167,7 @@ func TestParseWMARating_MusicBeeCanonicalValues(t *testing.T) {
 			valueType: 5,
 			value:     wmaWordValue(tc.rating),
 		}})
-		stars, ok := parseWMARating(data, []string{"MusicBee"})
+		stars, ok := parseWMARating(data, "", []string{"MusicBee"})
 		assert.True(t, ok, "WM/SharedUserRating=%d", tc.rating)
 		assert.Equal(t, tc.want, stars, "WM/SharedUserRating=%d", tc.rating)
 	}
@@ -181,11 +181,11 @@ func TestParseWMARating_TagOrderWMPBeatsMediaMonkey(t *testing.T) {
 		{name: "FMPS_Rating", valueType: 0, value: encodeUTF16LE("0.2")},
 	})
 
-	stars, ok := parseWMARating(data, []string{"WMP", "MediaMonkey"})
+	stars, ok := parseWMARating(data, "", []string{"WMP", "MediaMonkey"})
 	assert.True(t, ok)
 	assert.Equal(t, 5, stars)
 
-	stars, ok = parseWMARating(data, []string{"MediaMonkey", "WMP"})
+	stars, ok = parseWMARating(data, "", []string{"MediaMonkey", "WMP"})
 	assert.True(t, ok)
 	assert.Equal(t, 1, stars)
 }
@@ -194,7 +194,7 @@ func TestParseWMARating_EmptyTagOrderNeverMatches(t *testing.T) {
 	data := buildWMA(t, []wmaDescriptor{
 		{name: "WM/SharedUserRating", valueType: 5, value: wmaWordValue(75)},
 	})
-	_, ok := parseWMARating(data, []string{})
+	_, ok := parseWMARating(data, "", []string{})
 	assert.False(t, ok)
 }
 

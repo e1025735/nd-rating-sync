@@ -40,7 +40,7 @@ func decodeUTF16LE(b []byte) string {
 
 // parseWMARating walks the ASF Header Object looking for an Extended Content
 // Description Object and extracts a star rating from it.
-func parseWMARating(data []byte, tagOrder []string) (int, bool) {
+func parseWMARating(data []byte, path string, tagOrder []string) (int, bool) {
 	// ASF Header Object layout: 16-byte GUID + 8-byte size + 4-byte num child
 	// objects + 2 reserved bytes = 30 bytes fixed.
 	if len(data) < 30 || !bytes.Equal(data[:16], asfHeaderObjectGUID) {
@@ -56,7 +56,7 @@ func parseWMARating(data []byte, tagOrder []string) (int, bool) {
 			break
 		}
 		if bytes.Equal(guid, asfExtContentDescObjectGUID) {
-			return parseASFExtContentDesc(data[pos+24:pos+objSize], tagOrder)
+			return parseASFExtContentDesc(data[pos+24:pos+objSize], path, tagOrder)
 		}
 		pos += objSize
 	}
@@ -69,7 +69,7 @@ func parseWMARating(data []byte, tagOrder []string) (int, bool) {
 //
 //   - "WM/SharedUserRating" (WORD/type 5): WMP 0/64/128/196/255 byte scale
 //   - "FMPS_Rating"         (Unicode/type 0): MediaMonkey float 0.0–1.0
-func parseASFExtContentDesc(body []byte, tagOrder []string) (int, bool) {
+func parseASFExtContentDesc(body []byte, path string, tagOrder []string) (int, bool) {
 	if len(body) < 2 {
 		return 0, false
 	}
@@ -108,7 +108,9 @@ func parseASFExtContentDesc(body []byte, tagOrder []string) (int, bool) {
 				v := binary.LittleEndian.Uint16(valueBytes[:2])
 				if stars := popmWMPToStars(byte(v)); stars > 0 {
 					found["WMP"] = stars
+					logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for WMP for path %s", stars, path))
 					found["MusicBee"] = stars
+					logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MusicBee for path %s", stars, path))
 				}
 			}
 		case "FMPS_RATING":
@@ -116,6 +118,7 @@ func parseASFExtContentDesc(body []byte, tagOrder []string) (int, bool) {
 				s := strings.TrimSpace(decodeUTF16LE(valueBytes))
 				if stars, ok := fmpsToStars(s); ok {
 					found["MediaMonkey"] = stars
+					logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MediaMonkey for path %s", stars, path))
 				}
 			}
 		}

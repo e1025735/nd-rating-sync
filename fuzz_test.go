@@ -89,7 +89,7 @@ func FuzzParseID3v2Rating(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, data []byte, orderIdx byte) {
 		tagOrder := orders[int(orderIdx)%len(orders)]
-		stars, ok := parseID3v2Rating(data, tagOrder)
+		stars, ok := parseID3v2Rating(data, "", tagOrder)
 		if stars < 0 || stars > 5 {
 			t.Errorf("parseID3v2Rating: stars=%d out of [0,5]", stars)
 		}
@@ -110,7 +110,7 @@ func FuzzParseWAVRating(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, data []byte, orderIdx byte) {
 		tagOrder := orders[int(orderIdx)%len(orders)]
-		stars, ok := parseWAVRating(data, tagOrder)
+		stars, ok := parseWAVRating(data, "", tagOrder)
 		if stars < 0 || stars > 5 {
 			t.Errorf("parseWAVRating: stars=%d out of [0,5]", stars)
 		}
@@ -131,7 +131,7 @@ func FuzzParseDSFRating(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, data []byte, orderIdx byte) {
 		tagOrder := orders[int(orderIdx)%len(orders)]
-		stars, ok := parseDSFRating(data, tagOrder)
+		stars, ok := parseDSFRating(data, "", tagOrder)
 		if stars < 0 || stars > 5 {
 			t.Errorf("parseDSFRating: stars=%d out of [0,5]", stars)
 		}
@@ -153,7 +153,7 @@ func FuzzParseM4ARating(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, data []byte, orderIdx byte) {
 		tagOrder := orders[int(orderIdx)%len(orders)]
-		stars, ok := parseM4ARating(data, tagOrder)
+		stars, ok := parseM4ARating(data, "", tagOrder)
 		if stars < 0 || stars > 5 {
 			t.Errorf("parseM4ARating: stars=%d out of [0,5]", stars)
 		}
@@ -174,7 +174,7 @@ func FuzzParseWMARating(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, data []byte, orderIdx byte) {
 		tagOrder := orders[int(orderIdx)%len(orders)]
-		stars, ok := parseWMARating(data, tagOrder)
+		stars, ok := parseWMARating(data, "", tagOrder)
 		if stars < 0 || stars > 5 {
 			t.Errorf("parseWMARating: stars=%d out of [0,5]", stars)
 		}

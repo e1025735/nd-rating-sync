@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -84,7 +85,7 @@ func readID3v2TagAt(f *os.File, off int64) ([]byte, error) {
 //   - "foobar2000"  – TXXX frame with description "RATING" (integer 1–5)
 //   - "WMP"         – POPM frame written by Windows Media Player
 //   - "iTunes"      – POPM frame written by iTunes / Apple Music
-func parseID3v2Rating(data []byte, tagOrder []string) (int, bool) {
+func parseID3v2Rating(data []byte, path string, tagOrder []string) (int, bool) {
 	tag, err := id3v2.ParseReader(bytes.NewReader(data), id3v2.Options{Parse: true})
 	if err != nil {
 		return 0, false
@@ -103,10 +104,12 @@ func parseID3v2Rating(data []byte, tagOrder []string) (int, bool) {
 		case "FMPS_RATING":
 			if stars, ok := fmpsToStars(txxx.Value); ok {
 				found["MediaMonkey"] = stars
+				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MediaMonkey for path %s", stars, path))
 			}
 		case "RATING":
 			if stars, ok := ratingIntToStars(txxx.Value); ok {
 				found["foobar2000"] = stars
+				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for foobar2000 for path %s", stars, path))
 			}
 		}
 	}
@@ -121,14 +124,17 @@ func parseID3v2Rating(data []byte, tagOrder []string) (int, bool) {
 		case strings.Contains(e, "windows media player"):
 			if stars := popmWMPToStars(popm.Rating); stars > 0 {
 				found["WMP"] = stars
+				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for WMP for path %s", stars, path))
 			}
 		case strings.Contains(e, "itunes") || "com.apple.itunes" == e:
 			if stars := popmITunesToStars(popm.Rating); stars > 0 {
 				found["iTunes"] = stars
+				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for iTunes for path %s", stars, path))
 			}
 		case "musicbee" == e:
 			if stars := popmWMPToStars(popm.Rating); stars > 0 {
 				found["MusicBee"] = stars
+				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MusicBee for path %s", stars, path))
 			}
 		}
 	}
