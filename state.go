@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -14,6 +16,59 @@ import (
 // State is persisted in Navidrome's KVStore, which survives plugin reloads.
 // Keys are plugin-scoped by the host so collisions with other plugins are
 // impossible — we only need uniqueness within nd-rating-sync.
+
+const kvKeyConfigHash = "config-hash"
+const configPrefix = "cfg:"
+
+// configHashFor turns the effective plugin config into an fingerprint.
+// A different fingerprint means the plugin cache is stale and must be invalidated
+// before the next run builds fresh state. Since the plugin owns all of its KV entries,
+// a config change is treated as a full cache reset for the plugin KV cache.
+func configHashFor(cfg pluginConfig) string {
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func configStatePrefix() string {
+	if hash := configHashFor(loadConfig()); hash != "" {
+		return configPrefix + hash
+	}
+	return configPrefix + "default"
+}
+
+func refreshConfigHash() {
+	current := configHashFor(loadConfig())
+	if current == "" {
+		return
+	}
+	raw, found, err := host.KVStoreGet(kvKeyConfigHash)
+	if err != nil {
+		logWarn(fmt.Sprintf(
+			"nd-rating-sync: KVStoreGet(%q) failed: %q – config hash will not be refreshed",
+			kvKeyConfigHash, err.Error()))
+		return
+	}
+	if found && len(raw) > 0 && string(raw) == current {
+		return
+	}
+	deleted, err := host.KVStoreDeleteByPrefix(configPrefix)
+	if err != nil {
+		logWarn(fmt.Sprintf(
+			"nd-rating-sync: KVStoreDeleteByPrefix(%q) failed: %q – stale plugin cache may remain",
+			configPrefix, err.Error()))
+	} else if deleted > 0 {
+		logInfo(fmt.Sprintf(
+			"nd-rating-sync: purged %d stale KV entries from plugin cache after config change",
+			deleted))
+	}
+	if err := host.KVStoreSet(kvKeyConfigHash, []byte(current)); err != nil {
+		logWarn(fmt.Sprintf("nd-rating-sync: KVStoreSet(%q) failed: %q", kvKeyConfigHash, err.Error()))
+	}
+}
 
 // kvKeyLastSynced is the storage key for the most recent successful scan
 // timestamp of a single (library, user) tuple. Encoded as RFC3339Nano.
@@ -29,7 +84,6 @@ func kvKeyLastSynced(libraryID, username string) string {
 
 // loadLastSynced returns the timestamp of the previous successful scan for
 // the given (library, user) tuple, or the zero time if none is recorded.
-//
 // KV failures are not fatal: the function logs and returns zero time, which
 // causes the caller to treat the upcoming scan as a full one. This keeps
 // rating ingestion working even if the KV store is temporarily unavailable.
@@ -80,7 +134,9 @@ func saveLastSynced(libraryID, username string, t time.Time) {
 // refreshed on every continuation; a sweep counts as active only while that
 // heartbeat is younger than sweepStaleAfter, so a crashed chain self-heals on
 // the next run instead of blocking sweeps forever.
-const kvKeySweepActive = "sweep-active"
+func kvKeySweepActive() string {
+	return "sweep-active"
+}
 
 // sweepStaleAfter is how long after the last heartbeat a sweep is still
 // considered in progress. It must comfortably exceed one chunk cycle (callBudget
@@ -95,11 +151,11 @@ const sweepStaleAfter = 2 * time.Minute
 // idempotency tolerates.
 func sweepInProgress() bool {
 	logTrace("nd-rating-sync: sweepInProgress start")
-	raw, found, err := host.KVStoreGet(kvKeySweepActive)
+	raw, found, err := host.KVStoreGet(kvKeySweepActive())
 	if err != nil {
 		logTrace("nd-rating-sync: sweepInProgress stop, assume no sweep active")
 		logWarn(fmt.Sprintf(
-			"nd-rating-sync: KVStoreGet(%q) failed: %q – assuming no sweep active", kvKeySweepActive, err.Error()))
+			"nd-rating-sync: KVStoreGet(%q) failed: %q – assuming no sweep active", kvKeySweepActive(), err.Error()))
 		return false
 	}
 	if !found || len(raw) == 0 {
@@ -125,8 +181,8 @@ func sweepInProgress() bool {
 // but not propagated — a failed write only weakens overlap protection.
 func markSweepActive() {
 	value := []byte(time.Now().UTC().Format(time.RFC3339Nano))
-	if err := host.KVStoreSet(kvKeySweepActive, value); err != nil {
-		logWarn(fmt.Sprintf("nd-rating-sync: KVStoreSet(%q) failed: %q", kvKeySweepActive, err.Error()))
+	if err := host.KVStoreSet(kvKeySweepActive(), value); err != nil {
+		logWarn(fmt.Sprintf("nd-rating-sync: KVStoreSet(%q) failed: %q", kvKeySweepActive(), err.Error()))
 	}
 }
 
@@ -134,8 +190,8 @@ func markSweepActive() {
 // on plugin init, since a reload kills any running chain). A failed delete only
 // means the next fresh sweep waits out sweepStaleAfter before proceeding.
 func clearSweepActive() {
-	if err := host.KVStoreDelete(kvKeySweepActive); err != nil {
-		logDebug(fmt.Sprintf("nd-rating-sync: KVStoreDelete(%q) failed: %q", kvKeySweepActive, err.Error()))
+	if err := host.KVStoreDelete(kvKeySweepActive()); err != nil {
+		logDebug(fmt.Sprintf("nd-rating-sync: KVStoreDelete(%q) failed: %q", kvKeySweepActive(), err.Error()))
 	}
 }
 

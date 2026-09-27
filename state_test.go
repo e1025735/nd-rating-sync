@@ -11,12 +11,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func init() {
+	host.KVStoreMock.On("Get", kvKeyConfigHash).
+		Return([]byte(configHashFor(loadConfig())), true, nil).Maybe()
+	host.KVStoreMock.On("Set", kvKeyConfigHash, mock.Anything).Return(nil).Maybe()
+}
+
 func resetKVStoreMock(t *testing.T) {
 	t.Helper()
+	host.KVStoreMock.ExpectedCalls = nil
+	host.KVStoreMock.Calls = nil
 	t.Cleanup(func() {
 		host.KVStoreMock.ExpectedCalls = nil
 		host.KVStoreMock.Calls = nil
 	})
+	host.KVStoreMock.On("Get", kvKeyConfigHash).
+		Return([]byte(configHashFor(loadConfig())), true, nil).Maybe()
 }
 
 // ─── kvKeyLastSynced ──────────────────────────────────────────────────────────
@@ -32,11 +42,34 @@ func TestKVKeyLastSynced_IncludesLibraryAndUser(t *testing.T) {
 		kvKeyLastSynced("lib2", "alice"))
 }
 
+func TestRefreshConfigHash_PurgesPluginCacheOnMismatch(t *testing.T) {
+	host.KVStoreMock.ExpectedCalls = nil
+	host.KVStoreMock.Calls = nil
+	t.Cleanup(func() {
+		host.KVStoreMock.ExpectedCalls = nil
+		host.KVStoreMock.Calls = nil
+	})
+
+	staleHash := "stalehash"
+	currentHash := configHashFor(loadConfig())
+	require.NotEqual(t, staleHash, currentHash)
+
+	host.KVStoreMock.On("Get", kvKeyConfigHash).Return([]byte(staleHash), true, nil).Once()
+	host.KVStoreMock.On("DeleteByPrefix", "cfg:").Return(int64(3), nil).Once()
+	host.KVStoreMock.On("Set", kvKeyConfigHash, []byte(currentHash)).Return(nil).Once()
+
+	refreshConfigHash()
+
+	host.KVStoreMock.AssertExpectations(t)
+}
+
+// ─── config hash invalidation ───────────────────────────────────────────────
+
 // ─── loadLastSynced ───────────────────────────────────────────────────────────
 
 func TestLoadLastSynced_KeyMissing(t *testing.T) {
 	resetKVStoreMock(t)
-	host.KVStoreMock.On("Get", "last-synced:lib1:alice").
+	host.KVStoreMock.On("Get", kvKeyLastSynced("lib1", "alice")).
 		Return([]byte(nil), false, nil)
 
 	got := loadLastSynced("lib1", "alice")
@@ -47,7 +80,7 @@ func TestLoadLastSynced_KeyMissing(t *testing.T) {
 func TestLoadLastSynced_RoundTrip(t *testing.T) {
 	resetKVStoreMock(t)
 	want := time.Date(2026, 5, 7, 12, 30, 45, 123456000, time.UTC)
-	host.KVStoreMock.On("Get", "last-synced:lib1:alice").
+	host.KVStoreMock.On("Get", kvKeyLastSynced("lib1", "alice")).
 		Return([]byte(want.Format(time.RFC3339Nano)), true, nil)
 
 	got := loadLastSynced("lib1", "alice")
@@ -56,7 +89,7 @@ func TestLoadLastSynced_RoundTrip(t *testing.T) {
 
 func TestLoadLastSynced_MalformedFallsBackToZero(t *testing.T) {
 	resetKVStoreMock(t)
-	host.KVStoreMock.On("Get", "last-synced:lib1:alice").
+	host.KVStoreMock.On("Get", kvKeyLastSynced("lib1", "alice")).
 		Return([]byte("not a real timestamp"), true, nil)
 
 	got := loadLastSynced("lib1", "alice")
@@ -65,7 +98,7 @@ func TestLoadLastSynced_MalformedFallsBackToZero(t *testing.T) {
 
 func TestLoadLastSynced_KVErrorFallsBackToZero(t *testing.T) {
 	resetKVStoreMock(t)
-	host.KVStoreMock.On("Get", "last-synced:lib1:alice").
+	host.KVStoreMock.On("Get", kvKeyLastSynced("lib1", "alice")).
 		Return([]byte(nil), false, errors.New("kvstore unavailable"))
 
 	got := loadLastSynced("lib1", "alice")
@@ -74,7 +107,7 @@ func TestLoadLastSynced_KVErrorFallsBackToZero(t *testing.T) {
 
 func TestLoadLastSynced_EmptyValueFallsBackToZero(t *testing.T) {
 	resetKVStoreMock(t)
-	host.KVStoreMock.On("Get", "last-synced:lib1:alice").
+	host.KVStoreMock.On("Get", kvKeyLastSynced("lib1", "alice")).
 		Return([]byte{}, true, nil)
 
 	got := loadLastSynced("lib1", "alice")
@@ -88,7 +121,7 @@ func TestSaveLastSynced_WritesUTCFormatted(t *testing.T) {
 	// Local-zone timestamp; saveLastSynced must normalise to UTC RFC3339Nano.
 	when := time.Date(2026, 5, 7, 12, 0, 0, 0, time.FixedZone("X", 7200))
 	host.KVStoreMock.On("Set",
-		"last-synced:lib1:alice",
+		kvKeyLastSynced("lib1", "alice"),
 		[]byte(when.UTC().Format(time.RFC3339Nano)),
 	).Return(nil)
 
@@ -98,7 +131,7 @@ func TestSaveLastSynced_WritesUTCFormatted(t *testing.T) {
 
 func TestSaveLastSynced_KVErrorIsSwallowed(t *testing.T) {
 	resetKVStoreMock(t)
-	host.KVStoreMock.On("Set", "last-synced:lib1:alice", mock.Anything).
+	host.KVStoreMock.On("Set", kvKeyLastSynced("lib1", "alice"), mock.Anything).
 		Return(errors.New("disk full"))
 
 	// Must not panic / propagate; failure is logged only.
@@ -113,8 +146,8 @@ func TestStateRoundTrip(t *testing.T) {
 	when := time.Now().UTC().Truncate(time.Nanosecond)
 	encoded := []byte(when.Format(time.RFC3339Nano))
 
-	host.KVStoreMock.On("Set", "last-synced:lib1:alice", encoded).Return(nil).Once()
-	host.KVStoreMock.On("Get", "last-synced:lib1:alice").Return(encoded, true, nil).Once()
+	host.KVStoreMock.On("Set", kvKeyLastSynced("lib1", "alice"), encoded).Return(nil).Once()
+	host.KVStoreMock.On("Get", kvKeyLastSynced("lib1", "alice")).Return(encoded, true, nil).Once()
 
 	saveLastSynced("lib1", "alice", when)
 	got := loadLastSynced("lib1", "alice")
@@ -126,7 +159,7 @@ func TestStateRoundTrip(t *testing.T) {
 
 func TestSweepInProgress_FreshHeartbeatIsActive(t *testing.T) {
 	resetKVStoreMock(t)
-	host.KVStoreMock.On("Get", "sweep-active").
+	host.KVStoreMock.On("Get", kvKeySweepActive()).
 		Return([]byte(time.Now().UTC().Format(time.RFC3339Nano)), true, nil)
 	assert.True(t, sweepInProgress(), "a recent heartbeat means a sweep is in progress")
 }
@@ -134,7 +167,7 @@ func TestSweepInProgress_FreshHeartbeatIsActive(t *testing.T) {
 func TestSweepInProgress_StaleHeartbeatFailsOpen(t *testing.T) {
 	resetKVStoreMock(t)
 	stale := time.Now().Add(-2 * sweepStaleAfter).UTC().Format(time.RFC3339Nano)
-	host.KVStoreMock.On("Get", "sweep-active").Return([]byte(stale), true, nil)
+	host.KVStoreMock.On("Get", kvKeySweepActive()).Return([]byte(stale), true, nil)
 	assert.False(t, sweepInProgress(), "a heartbeat older than sweepStaleAfter is not active")
 }
 
@@ -145,25 +178,25 @@ func TestSweepInProgress_StaleHeartbeatFailsOpen(t *testing.T) {
 func TestSweepInProgress_FutureHeartbeatFailsOpen(t *testing.T) {
 	resetKVStoreMock(t)
 	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
-	host.KVStoreMock.On("Get", "sweep-active").Return([]byte(future), true, nil)
+	host.KVStoreMock.On("Get", kvKeySweepActive()).Return([]byte(future), true, nil)
 	assert.False(t, sweepInProgress(), "future-dated heartbeat must fail open")
 }
 
 func TestSweepInProgress_MalformedFailsOpen(t *testing.T) {
 	resetKVStoreMock(t)
-	host.KVStoreMock.On("Get", "sweep-active").Return([]byte("not a timestamp"), true, nil)
+	host.KVStoreMock.On("Get", kvKeySweepActive()).Return([]byte("not a timestamp"), true, nil)
 	assert.False(t, sweepInProgress(), "a malformed heartbeat is treated as not active")
 }
 
 func TestSweepInProgress_MissingFailsOpen(t *testing.T) {
 	resetKVStoreMock(t)
-	host.KVStoreMock.On("Get", "sweep-active").Return([]byte(nil), false, nil)
+	host.KVStoreMock.On("Get", kvKeySweepActive()).Return([]byte(nil), false, nil)
 	assert.False(t, sweepInProgress(), "no heartbeat → no sweep in progress")
 }
 
 func TestSweepInProgress_KVErrorFailsOpen(t *testing.T) {
 	resetKVStoreMock(t)
-	host.KVStoreMock.On("Get", "sweep-active").
+	host.KVStoreMock.On("Get", kvKeySweepActive()).
 		Return([]byte(nil), false, errors.New("kvstore unavailable"))
 	assert.False(t, sweepInProgress(), "KV error must not block a sync")
 }

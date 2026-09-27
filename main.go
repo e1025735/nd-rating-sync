@@ -46,6 +46,7 @@ func (ratingPlugin) OnInit() error {
 	// in-progress guard up front — a heartbeat left over from just before the
 	// restart must not suppress the immediate-on-load sweep until it goes stale.
 	clearSweepActive()
+	refreshConfigHash()
 	return registerSchedules(loadConfig())
 }
 
@@ -110,6 +111,7 @@ func runSyncStepUntil(cfg pluginConfig, payload string, deadline time.Time) erro
 	if len(cfg.Libraries) == 0 {
 		return errors.New("no libraries configured – add at least one library with users in the plugin settings")
 	}
+	refreshConfigHash()
 
 	cur, resumed := parseCursor(payload)
 

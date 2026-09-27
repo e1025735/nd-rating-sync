@@ -60,7 +60,7 @@ func TestOnInit_ClearsSweepGuard(t *testing.T) {
 	resetSchedulerMock(t)
 	resetKVStoreMock(t)
 
-	host.KVStoreMock.On("Delete", "sweep-active").Return(nil)
+	host.KVStoreMock.On("Delete", kvKeySweepActive()).Return(nil)
 	// loadConfig() returns the hourly default and no libraries in non-WASM builds.
 	host.SchedulerMock.On("ScheduleRecurring", "0 * * * *", "", scheduleID).Return("id-1", nil)
 	host.SchedulerMock.On("ScheduleOneTime", int32(0), "", scheduleIDImmediate).Return("id-2", nil)
