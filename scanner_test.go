@@ -201,10 +201,10 @@ func TestSyncPair_IncrementalFirstRun_ProcessesAllAndSavesThreshold(t *testing.T
 		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
 
 	// First run: KV miss → full scan.
-	host.KVStoreMock.On("Get", "last-synced:1:alice").
+	host.KVStoreMock.On("Get", kvKeyLastSynced("1", "alice")).
 		Return([]byte(nil), false, nil).Once()
 	// At end of run, scan-start timestamp is written back.
-	host.KVStoreMock.On("Set", "last-synced:1:alice", mock.Anything).
+	host.KVStoreMock.On("Set", kvKeyLastSynced("1", "alice"), mock.Anything).
 		Return(nil).Once()
 
 	cfg := pluginConfig{IncrementalSync: true, Libraries: []libraryConfig{{
@@ -237,9 +237,9 @@ func TestSyncPair_IncrementalSkipsUnchangedFile(t *testing.T) {
 	// setRating should NOT be called — the file is unchanged.
 
 	threshold := fileTime.Add(time.Hour) // strictly after the file's mtime
-	host.KVStoreMock.On("Get", "last-synced:1:alice").
+	host.KVStoreMock.On("Get", kvKeyLastSynced("1", "alice")).
 		Return([]byte(threshold.Format(time.RFC3339Nano)), true, nil).Once()
-	host.KVStoreMock.On("Set", "last-synced:1:alice", mock.Anything).
+	host.KVStoreMock.On("Set", kvKeyLastSynced("1", "alice"), mock.Anything).
 		Return(nil).Once()
 
 	cfg := pluginConfig{IncrementalSync: true, Libraries: []libraryConfig{{
@@ -273,9 +273,9 @@ func TestSyncPair_IncrementalProcessesNewerFile(t *testing.T) {
 		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
 
 	threshold := fileTime.Add(-time.Hour) // before file mtime
-	host.KVStoreMock.On("Get", "last-synced:1:alice").
+	host.KVStoreMock.On("Get", kvKeyLastSynced("1", "alice")).
 		Return([]byte(threshold.Format(time.RFC3339Nano)), true, nil).Once()
-	host.KVStoreMock.On("Set", "last-synced:1:alice", mock.Anything).
+	host.KVStoreMock.On("Set", kvKeyLastSynced("1", "alice"), mock.Anything).
 		Return(nil).Once()
 
 	cfg := pluginConfig{IncrementalSync: true, Libraries: []libraryConfig{{
@@ -438,8 +438,8 @@ func TestRunSyncStepUntil_ReschedulesWhenBudgetExceeded(t *testing.T) {
 	}}}
 
 	// Fresh full sweep: no heartbeat present → proceeds and records one.
-	host.KVStoreMock.On("Get", "sweep-active").Return([]byte(nil), false, nil)
-	host.KVStoreMock.On("Set", "sweep-active", mock.Anything).Return(nil)
+	host.KVStoreMock.On("Get", kvKeySweepActive()).Return([]byte(nil), false, nil)
+	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.Anything).Return(nil)
 
 	host.SchedulerMock.On("ScheduleOneTime", int32(0), `{"lib":0,"user":0,"off":0,"start":""}`, "").
 		Return("cont-id", nil)
@@ -465,9 +465,9 @@ func TestRunSyncStepUntil_NoRescheduleWhenComplete(t *testing.T) {
 
 	// Fresh full sweep that finishes inside the budget: records, then clears, the
 	// in-progress heartbeat.
-	host.KVStoreMock.On("Get", "sweep-active").Return([]byte(nil), false, nil)
-	host.KVStoreMock.On("Set", "sweep-active", mock.Anything).Return(nil)
-	host.KVStoreMock.On("Delete", "sweep-active").Return(nil)
+	host.KVStoreMock.On("Get", kvKeySweepActive()).Return([]byte(nil), false, nil)
+	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.Anything).Return(nil)
+	host.KVStoreMock.On("Delete", kvKeySweepActive()).Return(nil)
 
 	cfg := pluginConfig{Libraries: []libraryConfig{{
 		LibraryID: "1",
@@ -493,7 +493,7 @@ func TestRunSyncChunk_GateSkipsUnchangedLibrary(t *testing.T) {
 	threshold := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	lastScan := threshold.Add(-time.Hour) // Navidrome scanned BEFORE our last sweep
 
-	host.KVStoreMock.On("Get", "last-synced:1:alice").
+	host.KVStoreMock.On("Get", kvKeyLastSynced("1", "alice")).
 		Return([]byte(threshold.Format(time.RFC3339Nano)), true, nil)
 	host.LibraryMock.On("GetLibrary", int32(1)).
 		Return(&host.Library{ID: 1, LastScanAt: lastScan.Unix()}, nil)
@@ -525,14 +525,14 @@ func TestRunSyncChunk_GateProcessesRescannedLibrary(t *testing.T) {
 	threshold := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	lastScan := threshold.Add(time.Hour) // Navidrome rescanned AFTER our last sweep
 
-	host.KVStoreMock.On("Get", "last-synced:1:alice").
+	host.KVStoreMock.On("Get", kvKeyLastSynced("1", "alice")).
 		Return([]byte(threshold.Format(time.RFC3339Nano)), true, nil)
 	host.LibraryMock.On("GetLibrary", int32(1)).
 		Return(&host.Library{ID: 1, LastScanAt: lastScan.Unix(), MountPoint: t.TempDir()}, nil)
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK([]subsonicSong{{ID: "a1", UserRating: 5}}), nil)
-	host.KVStoreMock.On("Set", "last-synced:1:alice", mock.Anything).Return(nil)
+	host.KVStoreMock.On("Set", kvKeyLastSynced("1", "alice"), mock.Anything).Return(nil)
 
 	cfg := pluginConfig{IncrementalSync: true, Libraries: []libraryConfig{{
 		LibraryID: "1",
@@ -555,7 +555,7 @@ func TestRunSyncStepUntil_SkipsWhenSweepInProgress(t *testing.T) {
 	resetSchedulerMock(t)
 	resetKVStoreMock(t)
 
-	host.KVStoreMock.On("Get", "sweep-active").
+	host.KVStoreMock.On("Get", kvKeySweepActive()).
 		Return([]byte(time.Now().UTC().Format(time.RFC3339Nano)), true, nil)
 
 	cfg := pluginConfig{Libraries: []libraryConfig{{
@@ -578,8 +578,8 @@ func TestRunSyncStepUntil_ProceedsWhenSweepStale(t *testing.T) {
 	resetKVStoreMock(t)
 
 	stale := time.Now().Add(-2 * sweepStaleAfter).UTC().Format(time.RFC3339Nano)
-	host.KVStoreMock.On("Get", "sweep-active").Return([]byte(stale), true, nil)
-	host.KVStoreMock.On("Set", "sweep-active", mock.Anything).Return(nil)
+	host.KVStoreMock.On("Get", kvKeySweepActive()).Return([]byte(stale), true, nil)
+	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.Anything).Return(nil)
 	host.SchedulerMock.On("ScheduleOneTime", int32(0), `{"lib":0,"user":0,"off":0,"start":""}`, "").
 		Return("cont-id", nil)
 
@@ -602,7 +602,7 @@ func TestRunSyncStepUntil_ContinuationRefreshesGuardNotChecks(t *testing.T) {
 	resetSchedulerMock(t)
 	resetKVStoreMock(t)
 
-	host.KVStoreMock.On("Set", "sweep-active", mock.Anything).Return(nil)
+	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.Anything).Return(nil)
 	host.SchedulerMock.On("ScheduleOneTime", int32(0), mock.Anything, "").Return("cont-id", nil)
 
 	cfg := pluginConfig{Libraries: []libraryConfig{{
@@ -612,7 +612,7 @@ func TestRunSyncStepUntil_ContinuationRefreshesGuardNotChecks(t *testing.T) {
 
 	err := runSyncStepUntil(cfg, `{"lib":0,"user":0,"off":3,"start":"2026-06-01T00:00:00Z"}`, time.Now().Add(-time.Second))
 	require.NoError(t, err)
-	host.KVStoreMock.AssertNotCalled(t, "Get", "sweep-active")
+	host.KVStoreMock.AssertNotCalled(t, "Get", kvKeySweepActive())
 	host.KVStoreMock.AssertExpectations(t)
 	host.SchedulerMock.AssertExpectations(t)
 }
