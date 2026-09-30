@@ -1,4 +1,4 @@
-module github.com/yourusername/nd-rating-sync
+module github.com/e1025735/nd-rating-sync
 
 // TinyGo targets a specific Go version; check your TinyGo release notes
 // and align this with the supported version (typically 1.22+).
