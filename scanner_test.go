@@ -436,6 +436,7 @@ func TestRunSyncStepUntil_ReschedulesWhenBudgetExceeded(t *testing.T) {
 		LibraryID: "lib1",
 		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
 	}}}
+	host.KVStoreMock.On("Get", kvKeyConfigHash).Return([]byte(configHashFor(cfg)), true, nil)
 
 	// Fresh full sweep: no heartbeat present → proceeds and records one.
 	host.KVStoreMock.On("Get", kvKeySweepActive()).Return([]byte(nil), false, nil)
@@ -450,14 +451,18 @@ func TestRunSyncStepUntil_ReschedulesWhenBudgetExceeded(t *testing.T) {
 	assert.Empty(t, host.SubsonicAPIMock.Calls, "no song work happens once the budget is already gone")
 }
 
-// TestRunSyncStepUntil_NoRescheduleWhenComplete proves a sweep that finishes
-// inside the budget does not schedule a continuation.
 func TestRunSyncStepUntil_NoRescheduleWhenComplete(t *testing.T) {
 	resetSubsonicMock(t)
 	resetSchedulerMock(t)
 	resetKVStoreMock(t)
 	resetLibraryMock(t)
 	mockGetLibrary(1, t.TempDir())
+
+	cfg := pluginConfig{Libraries: []libraryConfig{{
+		LibraryID: "1",
+		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
+	}}}
+	host.KVStoreMock.On("Get", kvKeyConfigHash).Return([]byte(configHashFor(cfg)), true, nil)
 
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
@@ -469,15 +474,73 @@ func TestRunSyncStepUntil_NoRescheduleWhenComplete(t *testing.T) {
 	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.Anything).Return(nil)
 	host.KVStoreMock.On("Delete", kvKeySweepActive()).Return(nil)
 
-	cfg := pluginConfig{Libraries: []libraryConfig{{
-		LibraryID: "1",
-		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
-	}}}
-
 	err := runSyncStepUntil(cfg, "", time.Now().Add(time.Hour))
 	require.NoError(t, err)
 	assert.Empty(t, host.SchedulerMock.Calls, "a completed sweep schedules no continuation")
 	host.KVStoreMock.AssertExpectations(t)
+}
+
+func TestRunSyncStepUntil_SkipsWhenSweepInProgress(t *testing.T) {
+	resetSubsonicMock(t)
+	resetSchedulerMock(t)
+	resetKVStoreMock(t)
+
+	cfg := pluginConfig{Libraries: []libraryConfig{{
+		LibraryID: "1",
+		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
+	}}}
+	host.KVStoreMock.On("Get", kvKeyConfigHash).Return([]byte(configHashFor(cfg)), true, nil)
+	host.KVStoreMock.On("Get", kvKeySweepActive()).
+		Return([]byte(time.Now().UTC().Format(time.RFC3339Nano)), true, nil)
+
+	err := runSyncStepUntil(cfg, "", time.Now().Add(time.Hour))
+	require.NoError(t, err)
+	host.KVStoreMock.AssertNotCalled(t, "Set", mock.Anything, mock.Anything)
+	host.SubsonicAPIMock.AssertNotCalled(t, "Call")
+	assert.Empty(t, host.SchedulerMock.Calls, "an in-progress sweep blocks a second one")
+}
+
+func TestRunSyncStepUntil_ProceedsWhenSweepStale(t *testing.T) {
+	resetSubsonicMock(t)
+	resetSchedulerMock(t)
+	resetKVStoreMock(t)
+
+	cfg := pluginConfig{Libraries: []libraryConfig{{
+		LibraryID: "1",
+		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
+	}}}
+	host.KVStoreMock.On("Get", kvKeyConfigHash).Return([]byte(configHashFor(cfg)), true, nil)
+
+	stale := time.Now().Add(-2 * sweepStaleAfter).UTC().Format(time.RFC3339Nano)
+	host.KVStoreMock.On("Get", kvKeySweepActive()).Return([]byte(stale), true, nil)
+	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.Anything).Return(nil)
+	host.SchedulerMock.On("ScheduleOneTime", int32(0), `{"lib":0,"user":0,"off":0,"start":""}`, "").
+		Return("cont-id", nil)
+
+	err := runSyncStepUntil(cfg, "", time.Now().Add(-time.Second))
+	require.NoError(t, err)
+	host.KVStoreMock.AssertExpectations(t)
+	host.SchedulerMock.AssertExpectations(t)
+}
+
+func TestRunSyncStepUntil_ContinuationRefreshesGuardNotChecks(t *testing.T) {
+	resetSubsonicMock(t)
+	resetSchedulerMock(t)
+	resetKVStoreMock(t)
+
+	cfg := pluginConfig{Libraries: []libraryConfig{{
+		LibraryID: "1",
+		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
+	}}}
+	host.KVStoreMock.On("Get", kvKeyConfigHash).Return([]byte(configHashFor(cfg)), true, nil)
+	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.Anything).Return(nil)
+	host.SchedulerMock.On("ScheduleOneTime", int32(0), mock.Anything, "").Return("cont-id", nil)
+
+	err := runSyncStepUntil(cfg, `{"lib":0,"user":0,"off":3,"start":"2026-06-01T00:00:00Z"}`, time.Now().Add(-time.Second))
+	require.NoError(t, err)
+	host.KVStoreMock.AssertNotCalled(t, "Get", kvKeySweepActive())
+	host.KVStoreMock.AssertExpectations(t)
+	host.SchedulerMock.AssertExpectations(t)
 }
 
 // ─── LastScanAt gate ──────────────────────────────────────────────────────────
@@ -547,75 +610,6 @@ func TestRunSyncChunk_GateProcessesRescannedLibrary(t *testing.T) {
 }
 
 // ─── In-progress guard ────────────────────────────────────────────────────────
-
-// TestRunSyncStepUntil_SkipsWhenSweepInProgress proves a fresh full sweep bows
-// out when another sweep's heartbeat is fresh.
-func TestRunSyncStepUntil_SkipsWhenSweepInProgress(t *testing.T) {
-	resetSubsonicMock(t)
-	resetSchedulerMock(t)
-	resetKVStoreMock(t)
-
-	host.KVStoreMock.On("Get", kvKeySweepActive()).
-		Return([]byte(time.Now().UTC().Format(time.RFC3339Nano)), true, nil)
-
-	cfg := pluginConfig{Libraries: []libraryConfig{{
-		LibraryID: "1",
-		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
-	}}}
-
-	err := runSyncStepUntil(cfg, "", time.Now().Add(time.Hour))
-	require.NoError(t, err)
-	host.KVStoreMock.AssertNotCalled(t, "Set", mock.Anything, mock.Anything)
-	host.SubsonicAPIMock.AssertNotCalled(t, "Call")
-	assert.Empty(t, host.SchedulerMock.Calls, "an in-progress sweep blocks a second one")
-}
-
-// TestRunSyncStepUntil_ProceedsWhenSweepStale proves a stale heartbeat (older
-// than sweepStaleAfter) does not block a fresh sweep.
-func TestRunSyncStepUntil_ProceedsWhenSweepStale(t *testing.T) {
-	resetSubsonicMock(t)
-	resetSchedulerMock(t)
-	resetKVStoreMock(t)
-
-	stale := time.Now().Add(-2 * sweepStaleAfter).UTC().Format(time.RFC3339Nano)
-	host.KVStoreMock.On("Get", kvKeySweepActive()).Return([]byte(stale), true, nil)
-	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.Anything).Return(nil)
-	host.SchedulerMock.On("ScheduleOneTime", int32(0), `{"lib":0,"user":0,"off":0,"start":""}`, "").
-		Return("cont-id", nil)
-
-	cfg := pluginConfig{Libraries: []libraryConfig{{
-		LibraryID: "1",
-		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
-	}}}
-
-	err := runSyncStepUntil(cfg, "", time.Now().Add(-time.Second))
-	require.NoError(t, err)
-	host.KVStoreMock.AssertExpectations(t)
-	host.SchedulerMock.AssertExpectations(t)
-}
-
-// TestRunSyncStepUntil_ContinuationRefreshesGuardNotChecks proves a continuation
-// (non-empty cursor) refreshes the heartbeat but never runs the in-progress
-// check, so a long import's own continuations can never block themselves.
-func TestRunSyncStepUntil_ContinuationRefreshesGuardNotChecks(t *testing.T) {
-	resetSubsonicMock(t)
-	resetSchedulerMock(t)
-	resetKVStoreMock(t)
-
-	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.Anything).Return(nil)
-	host.SchedulerMock.On("ScheduleOneTime", int32(0), mock.Anything, "").Return("cont-id", nil)
-
-	cfg := pluginConfig{Libraries: []libraryConfig{{
-		LibraryID: "1",
-		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
-	}}}
-
-	err := runSyncStepUntil(cfg, `{"lib":0,"user":0,"off":3,"start":"2026-06-01T00:00:00Z"}`, time.Now().Add(-time.Second))
-	require.NoError(t, err)
-	host.KVStoreMock.AssertNotCalled(t, "Get", kvKeySweepActive())
-	host.KVStoreMock.AssertExpectations(t)
-	host.SchedulerMock.AssertExpectations(t)
-}
 
 // writeFMPSFile creates a temp .mp3 with an FMPS_Rating TXXX frame.
 func writeFMPSFileAt(t *testing.T, dir, name, value string) string {

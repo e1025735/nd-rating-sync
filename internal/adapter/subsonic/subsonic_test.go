@@ -1,4 +1,4 @@
-package main
+package adapter
 
 import (
 	"encoding/json"
@@ -19,16 +19,16 @@ func resetSubsonicMock(t *testing.T) {
 }
 
 // subsonicOK builds a valid search3 JSON response body.
-func subsonicOK(songs []subsonicSong) string {
+func subsonicOK(songs []SubsonicSong) string {
 	type inner struct {
 		Status        string         `json:"status"`
-		SearchResult3 *searchResult3 `json:"searchResult3,omitempty"`
+		SearchResult3 *SearchResult3 `json:"searchResult3,omitempty"`
 	}
 	type outer struct {
 		Response inner `json:"subsonic-response"`
 	}
 	body, _ := json.Marshal(outer{
-		Response: inner{Status: "ok", SearchResult3: &searchResult3{Song: songs}},
+		Response: inner{Status: "ok", SearchResult3: &SearchResult3{Song: songs}},
 	})
 	return string(body)
 }
@@ -52,14 +52,14 @@ func subsonicErr(code int, message string) string {
 	return string(body)
 }
 
-// ─── setRating ────────────────────────────────────────────────────────────────
+// ─── SetRating ────────────────────────────────────────────────────────────────
 
 func TestSetRating_Success(t *testing.T) {
 	resetSubsonicMock(t)
 	host.SubsonicAPIMock.On("Call", "setRating?id=song-1&rating=4&u=alice").
 		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
 
-	err := setRating("alice", "song-1", 4)
+	err := SetRating("alice", "song-1", 4)
 	assert.NoError(t, err)
 	host.SubsonicAPIMock.AssertExpectations(t)
 }
@@ -69,7 +69,7 @@ func TestSetRating_NetworkError(t *testing.T) {
 	host.SubsonicAPIMock.On("Call", "setRating?id=song-1&rating=3&u=alice").
 		Return("", fmt.Errorf("timeout"))
 
-	err := setRating("alice", "song-1", 3)
+	err := SetRating("alice", "song-1", 3)
 	require.Error(t, err)
 }
 
@@ -78,7 +78,7 @@ func TestSetRating_SubsonicReturnsError(t *testing.T) {
 	host.SubsonicAPIMock.On("Call", "setRating?id=song-1&rating=5&u=alice").
 		Return(subsonicErr(50, "user not authorised"), nil)
 
-	err := setRating("alice", "song-1", 5)
+	err := SetRating("alice", "song-1", 5)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "50")
 }

@@ -6,7 +6,16 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	kvadapter "github.com/e1025735/nd-rating-sync/internal/adapter/kv_store"
+	subsonicadapter "github.com/e1025735/nd-rating-sync/internal/adapter/subsonic"
+	"github.com/e1025735/nd-rating-sync/internal/media"
 )
+
+const songPageSize = subsonicadapter.SongPageSize
+
+type subsonicSong = subsonicadapter.SubsonicSong
+type searchResult3 = subsonicadapter.SearchResult3
 
 // ─── Sync ─────────────────────────────────────────────────────────────────────
 
@@ -42,7 +51,7 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 			cur.PairStart = ""
 		}
 		if cur.Lib >= len(cfg.Libraries) {
-			kvStorageUsage, err := getPercentageKVStorageUsage(cfg.KVStorageMaxSize)
+			kvStorageUsage, err := kvadapter.GetPercentageKVStorageUsage(cfg.KVStorageMaxSize)
 			if err != nil {
 				logWarn("nd-rating-sync: kv storage usage could not be fetched")
 				logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, sweep complete lib=%q user=%q, offset=%q, deadline=%q",
@@ -76,7 +85,7 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 		// per-file mtime skip.
 		var threshold time.Time
 		if cfg.IncrementalSync {
-			threshold = loadLastSynced(lib.LibraryID, u.Username)
+			threshold = kvadapter.LoadLastSynced(lib.LibraryID, u.Username)
 		}
 
 		// LastScanAt gate: when starting a fresh pair, skip the whole pair if
@@ -119,7 +128,7 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 			}
 
 			if !ready {
-				kvStorageUsage, err := getPercentageKVStorageUsage(cfg.KVStorageMaxSize)
+				kvStorageUsage, err := kvadapter.GetPercentageKVStorageUsage(cfg.KVStorageMaxSize)
 				if err != nil {
 					logDebug("nd-rating-sync: kv storage usage could not be fetched")
 					logTrace(fmt.Sprintf(
@@ -161,7 +170,7 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 		// Pair finished: persist the threshold captured when the pair started.
 		if cfg.IncrementalSync && !cfg.DryRun {
 			if ps, err := time.Parse(time.RFC3339Nano, cur.PairStart); err == nil {
-				saveLastSynced(lib.LibraryID, u.Username, ps)
+				kvadapter.SaveLastSynced(lib.LibraryID, u.Username, ps)
 			}
 		}
 
@@ -173,7 +182,7 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 
 func ensureLibraryIndexed(libraryID string, deadline time.Time) (bool, error) {
 	logTrace(fmt.Sprintf("nd-rating-sync: ensureLibraryIndexed start libraryID=%q", libraryID))
-	state, err := loadLibraryScanState(libraryID)
+	state, err := kvadapter.LoadLibraryScanState(libraryID)
 	if err != nil {
 		return false, err
 	}
@@ -265,7 +274,7 @@ func processPairChunk(lib libraryConfig, u userConfig, cfg pluginConfig, cur syn
 		pageOffset := (cur.Offset / songPageSize) * songPageSize
 		skip := cur.Offset - pageOffset
 
-		page, more, err := fetchSongPage(u.Username, lib.LibraryID, pageOffset, songPageSize)
+		page, more, err := subsonicadapter.FetchSongPage(u.Username, lib.LibraryID, pageOffset, songPageSize)
 		if err != nil {
 			logWarn(fmt.Sprintf(
 				"nd-rating-sync: fetching songs for user=%q library=%q at offset=%d failed: %q – will retry next run",
@@ -398,7 +407,7 @@ func processSong(u userConfig, cfg pluginConfig, s subsonicSong, threshold time.
 			tally.wouldClear++
 			return
 		}
-		if err := setRating(u.Username, s.ID, 0); err != nil {
+		if err := subsonicadapter.SetRating(u.Username, s.ID, 0); err != nil {
 			logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, rating failed song=%q, threshold=%q", s.ID, threshold))
 			logWarn(fmt.Sprintf(
 				"nd-rating-sync: setRating(0) failed for %q (id=%q): %v", s.Title, s.ID, err))
@@ -418,7 +427,7 @@ func processSong(u userConfig, cfg pluginConfig, s subsonicSong, threshold time.
 		tally.wouldRate++
 		return
 	}
-	if err := setRating(u.Username, s.ID, stars); err != nil {
+	if err := subsonicadapter.SetRating(u.Username, s.ID, stars); err != nil {
 		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, rating failed song=%q, threshold=%q", s.ID, threshold))
 		logWarn(fmt.Sprintf(
 			"nd-rating-sync: setRating failed for %q (id=%q): %v", s.Title, s.ID, err))
@@ -533,19 +542,19 @@ func readAudioMetadata(path, ext string) ([]byte, bool) {
 	)
 	switch ext {
 	case "mp3":
-		data, eerr = extractID3v2Metadata(f)
+		data, eerr = media.ExtractID3v2Metadata(f)
 	case "flac":
-		data, eerr = extractFLACMetadata(f)
+		data, eerr = media.ExtractFLACMetadata(f)
 	case "ogg", "oga", "opus":
-		data, eerr = extractOggMetadata(f)
+		data, eerr = media.ExtractOggMetadata(f)
 	case "wav":
-		data, eerr = extractWAVMetadata(f)
+		data, eerr = media.ExtractWAVMetadata(f)
 	case "dsf":
-		data, eerr = extractDSFMetadata(f)
+		data, eerr = media.ExtractDSFMetadata(f)
 	case "m4a", "aac", "mp4":
-		data, eerr = extractM4AMetadata(f)
+		data, eerr = media.ExtractM4AMetadata(f)
 	case "wma":
-		data, eerr = extractWMAMetadata(f)
+		data, eerr = media.ExtractWMAMetadata(f)
 	default:
 		// extractStarsFromFile pre-filters via isSupportedExt, so this is
 		// only reached if a new extension was added there but not here.
@@ -578,19 +587,19 @@ func dispatchParser(path string, ext string, data []byte, tagOrder []string) (st
 
 	switch ext {
 	case "mp3":
-		stars, ok = parseID3v2Rating(data, path, tagOrder)
+		stars, ok = media.ParseID3v2Rating(data, path, tagOrder)
 	case "flac":
-		stars, ok = parseFLACRating(data, path, tagOrder)
+		stars, ok = media.ParseFLACRating(data, path, tagOrder)
 	case "ogg", "oga", "opus":
-		stars, ok = parseOggVorbisRating(data, path, tagOrder)
+		stars, ok = media.ParseOggVorbisRating(data, path, tagOrder)
 	case "wav":
-		stars, ok = parseWAVRating(data, path, tagOrder)
+		stars, ok = media.ParseWAVRating(data, path, tagOrder)
 	case "dsf":
-		stars, ok = parseDSFRating(data, path, tagOrder)
+		stars, ok = media.ParseDSFRating(data, path, tagOrder)
 	case "m4a", "aac", "mp4":
-		stars, ok = parseM4ARating(data, path, tagOrder)
+		stars, ok = media.ParseM4ARating(data, path, tagOrder)
 	case "wma":
-		stars, ok = parseWMARating(data, path, tagOrder)
+		stars, ok = media.ParseWMARating(data, path, tagOrder)
 	default:
 		logTrace(fmt.Sprintf("nd-rating-sync: dispatchParser stop, unsupported extension path=%q, etx=%q", path, ext))
 		logWarn(fmt.Sprintf(

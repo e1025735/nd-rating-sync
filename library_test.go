@@ -11,14 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func resetLibraryMock(t *testing.T) {
-	t.Helper()
-	t.Cleanup(func() {
-		host.LibraryMock.ExpectedCalls = nil
-		host.LibraryMock.Calls = nil
-	})
-}
-
 func TestLibraryLastScan_NumericID(t *testing.T) {
 	resetLibraryMock(t)
 	when := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"time"
 
+	kvadapter "github.com/e1025735/nd-rating-sync/internal/adapter/kv_store"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 	"github.com/navidrome/navidrome/plugins/pdk/go/lifecycle"
 	"github.com/navidrome/navidrome/plugins/pdk/go/scheduler"
@@ -45,8 +46,8 @@ func (ratingPlugin) OnInit() error {
 	// A reload/restart kills any in-flight continuation chain, so clear the
 	// in-progress guard up front — a heartbeat left over from just before the
 	// restart must not suppress the immediate-on-load sweep until it goes stale.
-	clearSweepActive()
-	ensureConfigCacheIsCurrent()
+	kvadapter.ClearSweepActive()
+	kvadapter.EnsureConfigCacheIsCurrent(loadConfig())
 	return registerSchedules(loadConfig())
 }
 
@@ -111,15 +112,15 @@ func runSyncStepUntil(cfg pluginConfig, payload string, deadline time.Time) erro
 	if len(cfg.Libraries) == 0 {
 		return errors.New("no libraries configured – add at least one library with users in the plugin settings")
 	}
-	ensureConfigCacheIsCurrent()
+	kvadapter.EnsureConfigCacheIsCurrent(cfg)
 
 	cur, resumed := parseCursor(payload)
 
-	if !resumed && sweepInProgress() {
+	if !resumed && kvadapter.SweepInProgress() {
 		logInfo("nd-rating-sync: a sweep is already in progress – skipping this trigger")
 		return nil
 	}
-	markSweepActive() // set on a fresh start; refresh on every continuation
+	kvadapter.MarkSweepActive() // set on a fresh start; refresh on every continuation
 
 	if resumed {
 		logInfo(fmt.Sprintf(
@@ -133,7 +134,7 @@ func runSyncStepUntil(cfg pluginConfig, payload string, deadline time.Time) erro
 
 	next, done := runSyncChunk(cfg, cur, deadline)
 	if done {
-		clearSweepActive()
+		kvadapter.ClearSweepActive()
 		logInfo("nd-rating-sync: sync complete")
 		return nil
 	}

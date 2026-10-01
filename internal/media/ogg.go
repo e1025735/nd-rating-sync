@@ -1,4 +1,4 @@
-package main
+package media
 
 import (
 	"errors"

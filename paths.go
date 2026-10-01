@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	kvadapter "github.com/e1025735/nd-rating-sync/internal/adapter/kv_store"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 )
 
@@ -34,16 +35,32 @@ type fileEntry struct {
 	mtime time.Time
 }
 
-type ScanState struct {
-	Complete    bool
-	PendingDirs []string
-	VisitedDirs map[string]struct{}
-	LastScanAt  int64
+type ScanState = kvadapter.ScanState
+
+type FileRecord = kvadapter.FileRecord
+
+func popDir(state *ScanState) (string, bool) {
+	if len(state.PendingDirs) == 0 {
+		return "", false
+	}
+	dir := state.PendingDirs[0]
+	state.PendingDirs = state.PendingDirs[1:]
+	return dir, true
 }
 
-type FileRecord struct {
-	Path  string
-	Mtime int64
+func requeueDir(state *ScanState, dir string) {
+	state.PendingDirs = append(state.PendingDirs, dir)
+}
+
+func markVisited(state *ScanState, dir string) bool {
+	if state.VisitedDirs == nil {
+		state.VisitedDirs = make(map[string]struct{})
+	}
+	if _, seen := state.VisitedDirs[dir]; seen {
+		return false
+	}
+	state.VisitedDirs[dir] = struct{}{}
+	return true
 }
 
 // resolveMountPoint maps a configured library ID to its in-sandbox mount point.
@@ -164,7 +181,7 @@ func matchFileFromBucketCache(libraryID string, song subsonicSong, cache map[str
 	key := sizeKey(song.Size, ext)
 	logTrace(fmt.Sprintf("nd-rating-sync: matchFileFromBucketCache start libraryID=%q song=%q size=%d ext=%q", libraryID, song.ID, song.Size, ext))
 	if cache == nil {
-		records, err := loadBucket(libraryID, song.Size, ext)
+		records, err := kvadapter.LoadBucket(libraryID, song.Size, ext)
 		if err != nil {
 			logWarn(fmt.Sprintf("nd-rating-sync: KV store lookup failed for library=%q size=%d ext=%q: %v", libraryID, song.Size, ext, err))
 			return fileEntry{}, false
@@ -182,7 +199,7 @@ func matchFileFromBucketCache(libraryID string, song subsonicSong, cache map[str
 		logDebug(fmt.Sprintf("nd-rating-sync: matchFileFromBucketCache cache hit libraryID=%q key=%q records=%d", libraryID, key, len(records)))
 	} else {
 		var err error
-		records, err = loadBucket(libraryID, song.Size, ext)
+		records, err = kvadapter.LoadBucket(libraryID, song.Size, ext)
 		if err != nil {
 			logWarn(fmt.Sprintf("nd-rating-sync: KV store lookup failed for library=%q size=%d ext=%q: %v", libraryID, song.Size, ext, err))
 			cache[key] = nil
@@ -270,7 +287,7 @@ func scanChunk(libraryID string, state *ScanState, deadline time.Time) error {
 			break
 		}
 
-		dir, ok := state.PopDir()
+		dir, ok := popDir(state)
 		if !ok {
 			break
 		}
@@ -279,14 +296,12 @@ func scanChunk(libraryID string, state *ScanState, deadline time.Time) error {
 		if _, seen := state.VisitedDirs[dir]; seen {
 			continue
 		}
-		state.MarkVisited(dir)
+		markVisited(state, dir)
 
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			logWarn(fmt.Sprintf("nd-rating-sync: cannot read directory %q for library=%q: %v", dir, libraryID, err))
-			state.RequeueDir(dir)
-			mark()
-
+			requeueDir(state, dir)
 			continue
 		}
 
@@ -294,7 +309,7 @@ func scanChunk(libraryID string, state *ScanState, deadline time.Time) error {
 
 		for _, e := range entries {
 			if time.Now().After(deadline) {
-				state.RequeueDir(dir)
+				requeueDir(state, dir)
 				mark()
 				continue
 			}
@@ -302,7 +317,7 @@ func scanChunk(libraryID string, state *ScanState, deadline time.Time) error {
 
 			if e.IsDir() {
 				if _, seen := state.VisitedDirs[full]; !seen {
-					state.RequeueDir(full)
+					requeueDir(state, full)
 				}
 				continue
 			}
@@ -342,7 +357,7 @@ func scanChunk(libraryID string, state *ScanState, deadline time.Time) error {
 				return fmt.Errorf("invalid size in bucket key %q: %w", key, err)
 			}
 			ext := parts[1]
-			existing, err := loadBucket(libraryID, size, ext)
+			existing, err := kvadapter.LoadBucket(libraryID, size, ext)
 			if err != nil {
 				return err
 			}
@@ -350,7 +365,7 @@ func scanChunk(libraryID string, state *ScanState, deadline time.Time) error {
 			merged := mergeBucketRecords(existing, current, dir)
 
 			if !bucketRecordsEqual(existing, merged) {
-				if err := saveBucket(libraryID, size, ext, merged); err != nil {
+				if err := kvadapter.SaveBucket(libraryID, size, ext, merged); err != nil {
 					return err
 				}
 				mark()
@@ -367,34 +382,7 @@ func scanChunk(libraryID string, state *ScanState, deadline time.Time) error {
 		return nil
 	}
 
-	return saveLibraryScanState(libraryID, state)
-}
-
-func (s *ScanState) PopDir() (string, bool) {
-	if len(s.PendingDirs) == 0 {
-		return "", false
-	}
-
-	dir := s.PendingDirs[0]
-	s.PendingDirs = s.PendingDirs[1:]
-	return dir, true
-}
-
-func (s *ScanState) RequeueDir(dir string) {
-	s.PendingDirs = append(s.PendingDirs, dir)
-}
-
-func (s *ScanState) MarkVisited(dir string) bool {
-	if s.VisitedDirs == nil {
-		s.VisitedDirs = make(map[string]struct{})
-	}
-
-	if _, ok := s.VisitedDirs[dir]; ok {
-		return false
-	}
-
-	s.VisitedDirs[dir] = struct{}{}
-	return true
+	return kvadapter.SaveLibraryScanState(libraryID, state)
 }
 
 func mergeBucketRecords(existing []FileRecord, currentRecords map[string]FileRecord, dir string) []FileRecord {

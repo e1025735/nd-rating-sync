@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	kvadapter "github.com/e1025735/nd-rating-sync/internal/adapter/kv_store"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -178,7 +179,7 @@ func TestEnsureLibraryIndexed_ScansMountAndStoresState(t *testing.T) {
 	require.NoError(t, err)
 
 	host.LibraryMock.On("GetLibrary", int32(1)).Return(&host.Library{ID: 1, MountPoint: root}, nil)
-	host.KVStoreMock.On("Get", libraryScanStateKey("1")).Return([]byte(nil), false, nil)
+	host.KVStoreMock.On("Get", kvadapter.LibraryScanStateKey("1")).Return([]byte(nil), false, nil)
 	bucketKeyName := bucketKey("1", info.Size(), "mp3")
 	bucketValue, err := json.Marshal([]FileRecord{{Path: path, Mtime: info.ModTime().Unix()}})
 	require.NoError(t, err)
@@ -317,7 +318,7 @@ func TestPersistentCache_FullIntegration(t *testing.T) {
 		Return(&host.Library{ID: 1, MountPoint: root, LastScanAt: currentLastScan.Unix()}, nil)
 
 	// First call: empty cache, should scan directory and save buckets
-	stateKey := libraryScanStateKey("1")
+	stateKey := kvadapter.LibraryScanStateKey("1")
 	bucketKey5 := bucketKey("1", 5, "mp3")
 	bucketKey7 := bucketKey("1", 7, "mp3")
 

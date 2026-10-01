@@ -1,4 +1,4 @@
-package main
+package adapter
 
 import (
 	"encoding/json"
@@ -9,26 +9,31 @@ import (
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 )
 
-type subsonicWrapper struct {
-	Response subsonicResponse `json:"subsonic-response"`
+// SongPageSize is the number of songs requested per search3 call. It also
+// defines the granularity at which a chunked sync re-fetches when resuming
+// from a cursor.
+const SongPageSize = 500
+
+type SubsonicWrapper struct {
+	Response SubsonicResponse `json:"subsonic-response"`
 }
 
-type subsonicResponse struct {
+type SubsonicResponse struct {
 	Status        string         `json:"status"`
-	Error         *subsonicError `json:"error,omitempty"`
-	SearchResult3 *searchResult3 `json:"searchResult3,omitempty"`
+	Error         *SubsonicError `json:"error,omitempty"`
+	SearchResult3 *SearchResult3 `json:"searchResult3,omitempty"`
 }
 
-type subsonicError struct {
+type SubsonicError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 }
 
-type searchResult3 struct {
-	Song []subsonicSong `json:"song"`
+type SearchResult3 struct {
+	Song []SubsonicSong `json:"song"`
 }
 
-type subsonicSong struct {
+type SubsonicSong struct {
 	ID         string `json:"id"`
 	Title      string `json:"title"`
 	Artist     string `json:"artist"`
@@ -38,19 +43,14 @@ type subsonicSong struct {
 	UserRating int    `json:"userRating"` // 0 = unrated, 1–5 = stars
 }
 
-// songPageSize is the number of songs requested per search3 call. It also
-// defines the granularity at which a chunked sync re-fetches when resuming
-// from a cursor.
-const songPageSize = 500
-
-// fetchSongPage retrieves a single page of songs accessible by username in the
+// FetchSongPage retrieves a single page of songs accessible by username in the
 // given library (empty libraryID = all libraries). It returns the page plus a
 // "more" flag that is true when the page came back full, i.e. another page may
 // follow. A short or empty page reports more=false, which gives the caller a
 // well-defined stopping condition even if the server mishandles songOffset
 // (preventing an unbounded paging loop).
-func fetchSongPage(username, libraryID string, offset, pageSize int) (songs []subsonicSong, more bool, err error) {
-	logTrace(fmt.Sprintf("nd-rating-sync: fetchSongPage start username=%q, lib=%q, offset=%q, pageSize=%q", username, libraryID, offset, pageSize))
+func FetchSongPage(username, libraryID string, offset, pageSize int) (songs []SubsonicSong, more bool, err error) {
+	subsonicLogTrace(fmt.Sprintf("nd-rating-sync: fetchSongPage start username=%q, lib=%q, offset=%q, pageSize=%q", username, libraryID, offset, pageSize))
 	uri := fmt.Sprintf(
 		"search3?query=%%22%%22&songCount=%d&songOffset=%d&albumCount=0&artistCount=0&u=%s",
 		pageSize, offset, url.QueryEscape(username))
@@ -58,7 +58,7 @@ func fetchSongPage(username, libraryID string, offset, pageSize int) (songs []su
 		uri += "&musicFolderId=" + url.QueryEscape(libraryID)
 	}
 
-	logDebug(fmt.Sprintf(
+	subsonicLogDebug(fmt.Sprintf(
 		"nd-rating-sync: fetching songs – user=%q library=%q offset=%d page_size=%d",
 		username, libraryID, offset, pageSize))
 
@@ -67,7 +67,7 @@ func fetchSongPage(username, libraryID string, offset, pageSize int) (songs []su
 		return nil, false, fmt.Errorf("SubsonicAPICall (offset=%d): %w", offset, err)
 	}
 
-	var wrapper subsonicWrapper
+	var wrapper SubsonicWrapper
 	if err := json.Unmarshal([]byte(raw), &wrapper); err != nil {
 		return nil, false, fmt.Errorf("unmarshal search3 response: %w", err)
 	}
@@ -82,36 +82,41 @@ func fetchSongPage(username, libraryID string, offset, pageSize int) (songs []su
 		return nil, false, nil
 	}
 	page := wrapper.Response.SearchResult3.Song
-	logTrace(fmt.Sprintf("nd-rating-sync: fetchSongPage done username=%q, lib=%q, offset=%q, pageSize=%q", username, libraryID, offset, pageSize))
-	logDebug(fmt.Sprintf(
+	subsonicLogTrace(fmt.Sprintf("nd-rating-sync: fetchSongPage done username=%q, lib=%q, offset=%q, pageSize=%q", username, libraryID, offset, pageSize))
+	subsonicLogDebug(fmt.Sprintf(
 		"nd-rating-sync: page offset=%d returned %d songs", offset, len(page)))
 	return page, len(page) == pageSize, nil
 }
 
-// setRating calls the Subsonic setRating endpoint.
-func setRating(username, songID string, stars int) error {
-	logTrace(fmt.Sprintf("nd-rating-sync: setRating start song=%q, username=%q", songID, username))
+// SetRating calls the Subsonic setRating endpoint.
+func SetRating(username, songID string, stars int) error {
+	subsonicLogTrace(fmt.Sprintf("nd-rating-sync: setRating start song=%q, username=%q", songID, username))
 	uri := fmt.Sprintf("setRating?id=%s&rating=%d&u=%s", songID, stars, username)
 	raw, err := host.SubsonicAPICall(uri)
 	if err != nil {
-		logTrace(fmt.Sprintf("nd-rating-sync: setRating stop, subsonic call error song=%q, username=%q", songID, username))
+		subsonicLogTrace(fmt.Sprintf("nd-rating-sync: setRating stop, subsonic call error song=%q, username=%q", songID, username))
 		return err
 	}
 
-	var wrapper subsonicWrapper
+	var wrapper SubsonicWrapper
 	if err := json.Unmarshal([]byte(raw), &wrapper); err != nil {
-		logTrace(fmt.Sprintf("nd-rating-sync: setRating stop, unmarshal error song=%q, username=%q", songID, username))
+		subsonicLogTrace(fmt.Sprintf("nd-rating-sync: setRating stop, unmarshal error song=%q, username=%q", songID, username))
 		return fmt.Errorf("unmarshal setRating response: %w", err)
 	}
 	if wrapper.Response.Status != "ok" {
 		if wrapper.Response.Error != nil {
-			logTrace(fmt.Sprintf("nd-rating-sync: setRating sop, API error song=%q, username=%q", songID, username))
+			subsonicLogTrace(fmt.Sprintf("nd-rating-sync: setRating sop, API error song=%q, username=%q", songID, username))
 			return fmt.Errorf("API error %d: %s",
 				wrapper.Response.Error.Code, wrapper.Response.Error.Message)
 		}
-		logTrace(fmt.Sprintf("nd-rating-sync: setRating stop non ok status song=%q, username=%q", songID, username))
+		subsonicLogTrace(fmt.Sprintf("nd-rating-sync: setRating stop non ok status song=%q, username=%q", songID, username))
 		return errors.New("setRating returned non-ok status")
 	}
-	logTrace(fmt.Sprintf("nd-rating-sync: setRating done song=%q, username=%q", songID, username))
+	subsonicLogTrace(fmt.Sprintf("nd-rating-sync: setRating done song=%q, username=%q", songID, username))
 	return nil
 }
+
+func subsonicLogInfo(string)  {}
+func subsonicLogWarn(string)  {}
+func subsonicLogDebug(string) {}
+func subsonicLogTrace(string) {}
