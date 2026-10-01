@@ -3,31 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"time"
 )
-
-// callBudget is how long a single scheduler callback is allowed to spend
-// processing songs before it persists its progress and reschedules a
-// continuation. Navidrome force-closes any plugin call that runs longer than
-// 30s (extism manifest Timeout, hardcoded in the host – see
-// plugins/manager.go defaultTimeout). We stop well short of that so the page
-// fetch, one final (possibly 64 MiB) file read, and the reschedule call all
-// have room to complete inside the host's hard limit.
-//
-// A 15s budget keeps us comfortably under any plausible host timeout (30s) and gives
-// generous slack for the trailing host calls.
-const callBudget = 15 * time.Second
-
-// deadlineCheckEvery is the number of songs processed between time.Now()
-// deadline checks inside processPairChunk's hot loop. Per-song cost varies
-// wildly in production (observed range: 0.6 s to 2.4 s per song depending on
-// file size, embedded artwork, filesystem latency). Anything > 1 means a
-// stretch of slow songs can blow past the 15 s budget AND the host's 30 s
-// hard timeout (`module closed with context deadline exceeded`). 1 keeps
-// the enforcement tight; the original concern about clock_time_get host
-// frequency did not reproduce, and the 15 s callBudget bounds total
-// time.Now() calls per call anyway.
-const deadlineCheckEvery = 1
 
 // syncCursor is the resumable position of a sync. It is serialised into the
 // scheduler callback payload so a long sync can be spread across many short
