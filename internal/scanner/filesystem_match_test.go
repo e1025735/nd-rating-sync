@@ -45,7 +45,7 @@ func TestMatchFile_AmbiguousSizeReturnsNotFound(t *testing.T) {
 	assert.False(t, ok, "a size+suffix collision must be reported as not-found, never guessed")
 }
 
-func TestMatchFileFromBucketCache_CachesBucketRecords(t *testing.T) {
+func TestMatchFileInBucketCache_CachesBucketRecords(t *testing.T) {
 	resetKVStoreMock(t)
 	cache := map[string][]FileRecord{}
 	path := "/libraries/1/song.mp3"
@@ -54,18 +54,18 @@ func TestMatchFileFromBucketCache_CachesBucketRecords(t *testing.T) {
 	bucketKeyName := bucketKey("1", 5, "mp3")
 	host.KVStoreMock.On("Get", bucketKeyName).Return(data, true, nil).Once()
 
-	entry, ok := matchFileFromBucketCache("1", subsonicSong{ID: "s1", Size: 5, Suffix: "mp3"}, cache)
+	entry, ok := matchFileInBucketCache("1", subsonicSong{ID: "s1", Size: 5, Suffix: "mp3"}, cache)
 	require.True(t, ok)
 	assert.Equal(t, path, entry.Path)
 
 	// Second lookup should reuse the cached bucket and not call KV again.
-	entry2, ok2 := matchFileFromBucketCache("1", subsonicSong{ID: "s1", Size: 5, Suffix: "mp3"}, cache)
+	entry2, ok2 := matchFileInBucketCache("1", subsonicSong{ID: "s1", Size: 5, Suffix: "mp3"}, cache)
 	require.True(t, ok2)
 	assert.Equal(t, path, entry2.Path)
 	host.KVStoreMock.AssertExpectations(t)
 }
 
-func TestMatchFileFromBucketCache_AmbiguousBucketReturnsNotFound(t *testing.T) {
+func TestMatchFileInBucketCache_AmbiguousBucketReturnsNotFound(t *testing.T) {
 	resetKVStoreMock(t)
 	cache := map[string][]FileRecord{}
 	data, err := json.Marshal([]FileRecord{{Path: "/libraries/1/a.mp3", Mtime: 1}, {Path: "/libraries/1/b.mp3", Mtime: 2}})
@@ -73,21 +73,21 @@ func TestMatchFileFromBucketCache_AmbiguousBucketReturnsNotFound(t *testing.T) {
 	bucketKeyName := bucketKey("1", 5, "mp3")
 	host.KVStoreMock.On("Get", bucketKeyName).Return(data, true, nil)
 
-	_, ok := matchFileFromBucketCache("1", subsonicSong{ID: "s1", Size: 5, Suffix: "mp3"}, cache)
+	_, ok := matchFileInBucketCache("1", subsonicSong{ID: "s1", Size: 5, Suffix: "mp3"}, cache)
 	assert.False(t, ok)
 	host.KVStoreMock.AssertExpectations(t)
 }
 
-func TestMatchFileFromBucketCache_CachesMissingBuckets(t *testing.T) {
+func TestMatchFileInBucketCache_CachesMissingBuckets(t *testing.T) {
 	resetKVStoreMock(t)
 	cache := map[string][]FileRecord{}
 	bucketKeyName := bucketKey("1", 5, "mp3")
 	host.KVStoreMock.On("Get", bucketKeyName).Return([]byte(nil), false, nil).Once()
 
-	_, ok := matchFileFromBucketCache("1", subsonicSong{ID: "s1", Size: 5, Suffix: "mp3"}, cache)
+	_, ok := matchFileInBucketCache("1", subsonicSong{ID: "s1", Size: 5, Suffix: "mp3"}, cache)
 	require.False(t, ok)
 
-	_, ok2 := matchFileFromBucketCache("1", subsonicSong{ID: "s1", Size: 5, Suffix: "mp3"}, cache)
+	_, ok2 := matchFileInBucketCache("1", subsonicSong{ID: "s1", Size: 5, Suffix: "mp3"}, cache)
 	require.False(t, ok2)
 	host.KVStoreMock.AssertExpectations(t)
 }

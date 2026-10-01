@@ -56,36 +56,13 @@ func TestBuildFileIndex_MissingRootIsError(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestScanChunk_SavesNewBucketAndMarksComplete(t *testing.T) {
-	resetKVStoreMock(t)
+func TestBuildFileIndex_StopsImmediatelyWhenDeadlineHasPassed(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "song.mp3")
-	require.NoError(t, os.WriteFile(path, []byte("12345"), 0o644))
-	info, err := os.Stat(path)
-	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "song.mp3"), []byte("12345"), 0o644))
 
-	state := &ScanState{PendingDirs: []string{root}}
-	bucketKeyName := bucketKey("1", info.Size(), "mp3")
-	bucketValue, err := json.Marshal([]FileRecord{{Path: path, Mtime: info.ModTime().Unix()}})
+	index, err := buildFileIndexWithoutCache(root, time.Now().Add(-time.Second))
 	require.NoError(t, err)
-
-	host.KVStoreMock.On("Get", bucketKeyName).Return([]byte(nil), false, nil)
-	host.KVStoreMock.On("Set", bucketKeyName, bucketValue).Return(nil)
-	host.KVStoreMock.On("Set", libraryScanStateKey("1"), mock.Anything).Return(nil)
-
-	err = scanChunk("1", state, time.Now().Add(time.Minute))
-	require.NoError(t, err)
-	assert.True(t, state.Complete)
-	host.KVStoreMock.AssertExpectations(t)
-}
-
-func TestScanChunk_DoesNotSaveStateWhenDeadlineImmediatelyReached(t *testing.T) {
-	resetKVStoreMock(t)
-	state := &ScanState{PendingDirs: []string{"/does/not/matter"}}
-	err := scanChunk("1", state, time.Now().Add(-time.Second))
-	require.NoError(t, err)
-	assert.False(t, state.Complete)
-	host.KVStoreMock.AssertNotCalled(t, "Set", libraryScanStateKey("1"), mock.Anything)
+	assert.Empty(t, index)
 }
 
 func TestEnsureLibraryIndexed_ScansMountAndStoresState(t *testing.T) {
@@ -168,7 +145,7 @@ func TestEnsureLibraryIndexed_ReusesCompletedUnchangedIndex(t *testing.T) {
 	host.LibraryMock.AssertExpectations(t)
 }
 
-func TestScanChunk_DoesNotMarkCompleteWhenRootUnreadable(t *testing.T) {
+func TestScanLibraryChunk_DoesNotMarkCompleteWhenRootUnreadable(t *testing.T) {
 	resetKVStoreMock(t)
 
 	missing := filepath.Join(t.TempDir(), "missing")
@@ -181,7 +158,7 @@ func TestScanChunk_DoesNotMarkCompleteWhenRootUnreadable(t *testing.T) {
 		Once()
 
 	// run
-	err := scanChunk("1", state, time.Now().Add(time.Minute))
+	err := scanLibraryChunk("1", state, time.Now().Add(time.Minute))
 	require.NoError(t, err)
 
 	// assertions

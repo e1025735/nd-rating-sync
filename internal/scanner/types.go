@@ -109,11 +109,6 @@ func runSyncStepUntil(cfg PluginConfig, payload string, deadline time.Time) erro
 		return nil
 	}
 	kvadapter.MarkSweepActive()
-	if resumed {
-		// no-op, just resume
-	} else {
-		// no-op, just start
-	}
 
 	next, done := runSyncChunk(cfg, cur, deadline)
 	if done {

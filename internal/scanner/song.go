@@ -22,7 +22,7 @@ func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.
 	var entry FileEntry
 	var found bool
 	if usePersistentIndex {
-		entry, found = matchFileFromBucketCache(libraryID, s, bucketCache)
+		entry, found = matchFileInBucketCache(libraryID, s, bucketCache)
 	} else {
 		entry, found = matchFile(index, s)
 	}

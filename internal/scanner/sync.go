@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	songPageSize     = subsonicadapter.SongPageSize
+	songPageSize       = subsonicadapter.SongPageSize
 	deadlineCheckEvery = 1
 )
 
@@ -31,7 +31,7 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 	// bucket lookups. Globals do not persist across callbacks, so all are
 	// intentionally scoped to one invocation.
 	libCache := map[string]libScanResult{}
-	indexCache := map[string]fileIndexResult{}
+	indexCache := map[string]fileIndexCacheEntry{}
 	bucketCache := map[string][]FileRecord{}
 
 	logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk start lib=%q user=%q, offset=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
@@ -219,7 +219,7 @@ func ensureLibraryIndexed(libraryID string, deadline time.Time) (bool, error) {
 	}
 
 	for !time.Now().After(deadline) {
-		if err := scanChunk(libraryID, &state, deadline); err != nil {
+		if err := scanLibraryChunk(libraryID, &state, deadline); err != nil {
 			return false, err
 		}
 
