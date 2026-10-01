@@ -1,4 +1,4 @@
-package main
+package scanner
 
 import (
 	"fmt"
@@ -9,13 +9,7 @@ import (
 
 type subsonicSong = subsonicadapter.SubsonicSong
 
-// processSong applies the rating pipeline to one song: skip-if-already-rated,
-// locate the real file under the library mount, skip-if-unchanged (incremental),
-// read+parse the file, then write or clear the rating. Outcomes are accumulated
-// into tally. A file that cannot be located, read, or parsed is treated as
-// fileUnreadable – never as "untagged" – so clear_rating_if_untagged can never
-// wipe a rating on a transient I/O error or an unmatched file.
-func processSong(u userConfig, cfg pluginConfig, s subsonicSong, threshold time.Time, index map[string][]fileEntry, usePersistentIndex bool, libraryID string, bucketCache map[string][]FileRecord, tally *syncTally) {
+func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.Time, index map[string][]FileEntry, usePersistentIndex bool, libraryID string, bucketCache map[string][]FileRecord, tally *syncTally) {
 	logTrace(fmt.Sprintf("nd-rating-sync: processSong start song=%q, threshold=%q", s.ID, threshold))
 	if u.SkipAlreadyRated && s.UserRating > 0 {
 		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, already rated song=%q, threshold=%q", s.ID, threshold))
@@ -25,14 +19,7 @@ func processSong(u userConfig, cfg pluginConfig, s subsonicSong, threshold time.
 		return
 	}
 
-	// Locate the file under the library mount. Navidrome's Subsonic `path`
-	// field is a synthesized fake by default (see helpers.fakePath in the
-	// server), so we cannot open it directly; instead we match on the
-	// reported byte size + suffix that the host's scanner stored. A missing or
-	// ambiguous match is treated as unreadable – never as "no tag found" – so
-	// clear_rating_if_untagged can never wipe a rating for a file we could not
-	// positively identify on disk.
-	var entry fileEntry
+	var entry FileEntry
 	var found bool
 	if usePersistentIndex {
 		entry, found = matchFileFromBucketCache(libraryID, s, bucketCache)
@@ -48,26 +35,22 @@ func processSong(u userConfig, cfg pluginConfig, s subsonicSong, threshold time.
 		return
 	}
 
-	if !threshold.IsZero() && entry.mtime.Before(threshold) {
+	if !threshold.IsZero() && entry.MTime.Before(threshold) {
 		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, no change song=%q, threshold=%q", s.ID, threshold))
 		logDebug(fmt.Sprintf(
 			"nd-rating-sync: skipping %q – unchanged since last scan (mtime=%s)",
-			s.Title, entry.mtime.Format(time.RFC3339)))
+			s.Title, entry.MTime.Format(time.RFC3339)))
 		tally.skippedUnchanged++
 		return
 	}
 
-	stars, result := extractStarsFromFile(entry.path, s.Suffix, u.RatingTagOrder)
+	stars, result := ExtractStarsFromFile(entry.Path, s.Suffix, u.RatingTagOrder)
 	switch result {
-	case fileUnreadable:
-		// I/O error, unsupported extension, or parse panic. Never clear here —
-		// clearing on a transient read failure would corrupt the user's
-		// existing Navidrome rating. The warning was already logged inside
-		// extractStarsFromFile; just count and move on.
+	case FileUnreadable:
 		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, file unreadable song=%q, threshold=%q", s.ID, threshold))
 		tally.skippedUnreadable++
 		return
-	case tagAbsent:
+	case TagAbsent:
 		if !u.ClearRatingIfUntagged {
 			logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, no tag song=%q, threshold=%q", s.ID, threshold))
 			tally.skippedNoTag++
@@ -92,7 +75,6 @@ func processSong(u userConfig, cfg pluginConfig, s subsonicSong, threshold time.
 		return
 	}
 
-	// result == tagFound
 	if cfg.DryRun {
 		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, done song=%q, threshold=%q", s.ID, threshold))
 		logInfo(fmt.Sprintf("nd-rating-sync: [DRY RUN] would rate %q → %d stars", s.Title, stars))

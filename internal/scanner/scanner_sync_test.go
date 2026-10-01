@@ -1,4 +1,4 @@
-package main
+package scanner
 
 import (
 	"encoding/json"
@@ -16,7 +16,7 @@ import (
 // ─── runSyncStep ─────────────────────────────────────────────────────────────
 
 func TestRunSyncStep_NoLibraries(t *testing.T) {
-	err := runSyncStep(pluginConfig{}, "")
+	err := runSyncStep(PluginConfig{}, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no libraries configured")
 }
@@ -32,12 +32,12 @@ func TestSyncPair_UnreadableFileWithClear_DoesNotClearRating(t *testing.T) {
 	resetLibraryMock(t)
 
 	// Empty mount: the song's size matches no file, so matchFile reports
-	// not-found and the scanner must surface this as fileUnreadable.
+	// not-found and the scanner must surface this as FileUnreadable.
 	mount := t.TempDir()
 	mockGetLibrary(1, mount)
 
 	// Song points at a path that doesn't exist — extractStarsFromFile must
-	// surface this as fileUnreadable.
+	// surface this as FileUnreadable.
 	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Size: 4242}}
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
@@ -46,16 +46,16 @@ func TestSyncPair_UnreadableFileWithClear_DoesNotClearRating(t *testing.T) {
 	// expectation registered for it, and AssertNotCalled below makes the
 	// invariant explicit.
 
-	cfg := pluginConfig{Libraries: []libraryConfig{{
+	cfg := PluginConfig{Libraries: []LibraryConfig{{
 		LibraryID: "1",
-		Users: []userConfig{{
+		Users: []UserConfig{{
 			Username:              "alice",
 			ClearRatingIfUntagged: true,
 			RatingTagOrder:        []string{"MediaMonkey"},
 		}},
 	}}}
 
-	runSyncChunk(cfg, syncCursor{}, time.Now().Add(time.Hour))
+	runSyncChunk(cfg, SyncCursor{}, time.Now().Add(time.Hour))
 	host.SubsonicAPIMock.AssertNotCalled(t, "Call", "setRating?id=song-1&rating=0&u=alice")
 }
 
@@ -84,12 +84,12 @@ func TestSyncPair_IncrementalFirstRun_ProcessesAllAndSavesThreshold(t *testing.T
 	host.KVStoreMock.On("Set", kvKeyLastSynced("1", "alice"), mock.Anything).
 		Return(nil).Once()
 
-	cfg := pluginConfig{IncrementalSync: true, Libraries: []libraryConfig{{
+	cfg := PluginConfig{IncrementalSync: true, Libraries: []LibraryConfig{{
 		LibraryID: "1",
-		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
 	}}}
 
-	runSyncChunk(cfg, syncCursor{}, time.Now().Add(time.Hour))
+	runSyncChunk(cfg, SyncCursor{}, time.Now().Add(time.Hour))
 	host.SubsonicAPIMock.AssertExpectations(t)
 	host.KVStoreMock.AssertExpectations(t)
 }
@@ -119,12 +119,12 @@ func TestSyncPair_IncrementalSkipsUnchangedFile(t *testing.T) {
 	host.KVStoreMock.On("Set", kvKeyLastSynced("1", "alice"), mock.Anything).
 		Return(nil).Once()
 
-	cfg := pluginConfig{IncrementalSync: true, Libraries: []libraryConfig{{
+	cfg := PluginConfig{IncrementalSync: true, Libraries: []LibraryConfig{{
 		LibraryID: "1",
-		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
 	}}}
 
-	runSyncChunk(cfg, syncCursor{}, time.Now().Add(time.Hour))
+	runSyncChunk(cfg, SyncCursor{}, time.Now().Add(time.Hour))
 	host.SubsonicAPIMock.AssertExpectations(t)
 	host.SubsonicAPIMock.AssertNotCalled(t, "Call", "setRating?id=song-1&rating=3&u=alice")
 	host.KVStoreMock.AssertExpectations(t)
@@ -154,12 +154,12 @@ func TestSyncPair_IncrementalProcessesNewerFile(t *testing.T) {
 	host.KVStoreMock.On("Set", kvKeyLastSynced("1", "alice"), mock.Anything).
 		Return(nil).Once()
 
-	cfg := pluginConfig{IncrementalSync: true, Libraries: []libraryConfig{{
+	cfg := PluginConfig{IncrementalSync: true, Libraries: []LibraryConfig{{
 		LibraryID: "1",
-		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
 	}}}
 
-	runSyncChunk(cfg, syncCursor{}, time.Now().Add(time.Hour))
+	runSyncChunk(cfg, SyncCursor{}, time.Now().Add(time.Hour))
 	host.SubsonicAPIMock.AssertExpectations(t)
 	host.KVStoreMock.AssertExpectations(t)
 }
@@ -182,12 +182,12 @@ func TestSyncPair_IncrementalDisabled_BypassesKV(t *testing.T) {
 	host.SubsonicAPIMock.On("Call", "setRating?id=song-1&rating=3&u=alice").
 		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
 
-	cfg := pluginConfig{IncrementalSync: false, Libraries: []libraryConfig{{
+	cfg := PluginConfig{IncrementalSync: false, Libraries: []LibraryConfig{{
 		LibraryID: "1",
-		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
 	}}}
 
-	runSyncChunk(cfg, syncCursor{}, time.Now().Add(time.Hour))
+	runSyncChunk(cfg, SyncCursor{}, time.Now().Add(time.Hour))
 	host.SubsonicAPIMock.AssertExpectations(t)
 	// Confirm KV is never touched when incremental is off.
 	host.KVStoreMock.AssertNotCalled(t, "Get", mock.Anything)
@@ -217,11 +217,11 @@ func TestProcessPairChunk_StopsAtDeadlineMidPair(t *testing.T) {
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=lib1`,
 	).Return(subsonicOK(songs), nil)
 
-	lib := libraryConfig{LibraryID: "lib1"}
-	user := userConfig{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}
+	lib := LibraryConfig{LibraryID: "lib1"}
+	user := UserConfig{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}
 
 	deadline := time.Now().Add(-time.Second) // already past
-	next, pairDone := processPairChunk(lib, user, pluginConfig{}, syncCursor{}, time.Time{}, deadline, nil, false, nil)
+	next, pairDone := processPairChunk(lib, user, PluginConfig{}, SyncCursor{}, time.Time{}, deadline, nil, false, nil)
 
 	assert.False(t, pairDone, "deadline hit mid-pair → pair not done")
 	assert.Equal(t, deadlineCheckEvery, next.Offset,
@@ -246,15 +246,15 @@ func TestRunSyncChunk_AdvancesAcrossPairsToCompletion(t *testing.T) {
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=bob&musicFolderId=1`,
 	).Return(subsonicOK([]subsonicSong{{ID: "b1", UserRating: 5}}), nil)
 
-	cfg := pluginConfig{Libraries: []libraryConfig{{
+	cfg := PluginConfig{Libraries: []LibraryConfig{{
 		LibraryID: "1",
-		Users: []userConfig{
+		Users: []UserConfig{
 			{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder},
 			{Username: "bob", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder},
 		},
 	}}}
 
-	next, done := runSyncChunk(cfg, syncCursor{}, time.Now().Add(time.Hour))
+	next, done := runSyncChunk(cfg, SyncCursor{}, time.Now().Add(time.Hour))
 	assert.True(t, done, "both pairs processed → sweep complete")
 	assert.Equal(t, 1, next.Lib, "cursor advanced past the only library")
 	host.SubsonicAPIMock.AssertExpectations(t)
@@ -287,12 +287,12 @@ func TestRunSyncChunk_UsesPersistentIndexWhenEnabled(t *testing.T) {
 	host.KVStoreMock.On("Set", bucketKeyName, mock.Anything).Return(nil)
 	host.KVStoreMock.On("Set", libraryScanStateKey("1"), mock.Anything).Return(nil)
 
-	cfg := pluginConfig{CacheLibrariesFilesystemTree: true, Libraries: []libraryConfig{{
+	cfg := PluginConfig{CacheLibrariesFilesystemTree: true, Libraries: []LibraryConfig{{
 		LibraryID: "1",
-		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: []string{"MediaMonkey"}}},
 	}}}
 
-	next, done := runSyncChunk(cfg, syncCursor{}, time.Now().Add(time.Hour))
+	next, done := runSyncChunk(cfg, SyncCursor{}, time.Now().Add(time.Hour))
 	require.True(t, done)
 	assert.Equal(t, 1, next.Lib)
 	host.SubsonicAPIMock.AssertExpectations(t)
@@ -308,9 +308,9 @@ func TestRunSyncStepUntil_ReschedulesWhenBudgetExceeded(t *testing.T) {
 	resetSchedulerMock(t)
 	resetKVStoreMock(t)
 
-	cfg := pluginConfig{Libraries: []libraryConfig{{
+	cfg := PluginConfig{Libraries: []LibraryConfig{{
 		LibraryID: "lib1",
-		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
 	}}}
 	host.KVStoreMock.On("Get", kvKeyConfigHash).Return([]byte(configHashFor(cfg)), true, nil)
 
@@ -334,9 +334,9 @@ func TestRunSyncStepUntil_NoRescheduleWhenComplete(t *testing.T) {
 	resetLibraryMock(t)
 	mockGetLibrary(1, t.TempDir())
 
-	cfg := pluginConfig{Libraries: []libraryConfig{{
+	cfg := PluginConfig{Libraries: []LibraryConfig{{
 		LibraryID: "1",
-		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
 	}}}
 	host.KVStoreMock.On("Get", kvKeyConfigHash).Return([]byte(configHashFor(cfg)), true, nil)
 
@@ -361,9 +361,9 @@ func TestRunSyncStepUntil_SkipsWhenSweepInProgress(t *testing.T) {
 	resetSchedulerMock(t)
 	resetKVStoreMock(t)
 
-	cfg := pluginConfig{Libraries: []libraryConfig{{
+	cfg := PluginConfig{Libraries: []LibraryConfig{{
 		LibraryID: "1",
-		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
 	}}}
 	host.KVStoreMock.On("Get", kvKeyConfigHash).Return([]byte(configHashFor(cfg)), true, nil)
 	host.KVStoreMock.On("Get", kvKeySweepActive()).
@@ -381,9 +381,9 @@ func TestRunSyncStepUntil_ProceedsWhenSweepStale(t *testing.T) {
 	resetSchedulerMock(t)
 	resetKVStoreMock(t)
 
-	cfg := pluginConfig{Libraries: []libraryConfig{{
+	cfg := PluginConfig{Libraries: []LibraryConfig{{
 		LibraryID: "1",
-		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
 	}}}
 	host.KVStoreMock.On("Get", kvKeyConfigHash).Return([]byte(configHashFor(cfg)), true, nil)
 
@@ -404,9 +404,9 @@ func TestRunSyncStepUntil_ContinuationRefreshesGuardNotChecks(t *testing.T) {
 	resetSchedulerMock(t)
 	resetKVStoreMock(t)
 
-	cfg := pluginConfig{Libraries: []libraryConfig{{
+	cfg := PluginConfig{Libraries: []LibraryConfig{{
 		LibraryID: "1",
-		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
 	}}}
 	host.KVStoreMock.On("Get", kvKeyConfigHash).Return([]byte(configHashFor(cfg)), true, nil)
 	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.Anything).Return(nil)
@@ -437,12 +437,12 @@ func TestRunSyncChunk_GateSkipsUnchangedLibrary(t *testing.T) {
 	host.LibraryMock.On("GetLibrary", int32(1)).
 		Return(&host.Library{ID: 1, LastScanAt: lastScan.Unix()}, nil)
 
-	cfg := pluginConfig{IncrementalSync: true, Libraries: []libraryConfig{{
+	cfg := PluginConfig{IncrementalSync: true, Libraries: []LibraryConfig{{
 		LibraryID: "1",
-		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
 	}}}
 
-	next, done := runSyncChunk(cfg, syncCursor{}, time.Now().Add(time.Hour))
+	next, done := runSyncChunk(cfg, SyncCursor{}, time.Now().Add(time.Hour))
 	assert.True(t, done, "single unchanged pair → sweep complete")
 	assert.Equal(t, 1, next.Lib, "cursor advanced past the only library")
 	host.SubsonicAPIMock.AssertNotCalled(t, "Call")
@@ -473,12 +473,12 @@ func TestRunSyncChunk_GateProcessesRescannedLibrary(t *testing.T) {
 	).Return(subsonicOK([]subsonicSong{{ID: "a1", UserRating: 5}}), nil)
 	host.KVStoreMock.On("Set", kvKeyLastSynced("1", "alice"), mock.Anything).Return(nil)
 
-	cfg := pluginConfig{IncrementalSync: true, Libraries: []libraryConfig{{
+	cfg := PluginConfig{IncrementalSync: true, Libraries: []LibraryConfig{{
 		LibraryID: "1",
-		Users:     []userConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
 	}}}
 
-	_, done := runSyncChunk(cfg, syncCursor{}, time.Now().Add(time.Hour))
+	_, done := runSyncChunk(cfg, SyncCursor{}, time.Now().Add(time.Hour))
 	assert.True(t, done)
 	host.SubsonicAPIMock.AssertExpectations(t)
 	host.LibraryMock.AssertExpectations(t)

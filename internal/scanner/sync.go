@@ -1,4 +1,4 @@
-package main
+package scanner
 
 import (
 	"fmt"
@@ -8,7 +8,10 @@ import (
 	subsonicadapter "github.com/e1025735/nd-rating-sync/internal/adapter/subsonic"
 )
 
-const songPageSize = subsonicadapter.SongPageSize
+const (
+	songPageSize     = subsonicadapter.SongPageSize
+	deadlineCheckEvery = 1
+)
 
 // runSyncChunk processes as many songs as fit before deadline, starting from
 // cur, and returns the position to resume at plus whether the whole sweep is
@@ -22,7 +25,7 @@ const songPageSize = subsonicadapter.SongPageSize
 // boundaries here and after each song in processPairChunk, so every invocation
 // either advances the cursor or completes the sweep – a chain of continuations
 // always terminates.
-func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCursor, bool) {
+func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCursor, bool) {
 	// Per-call caches: LibraryGetLibrary results (for the LastScanAt gate),
 	// file-index results (for size-based file matching), and persistent index
 	// bucket lookups. Globals do not persist across callbacks, so all are
@@ -103,7 +106,7 @@ func runSyncChunk(cfg pluginConfig, cur syncCursor, deadline time.Time) (syncCur
 		// failure here is non-fatal and the pair is skipped WITHOUT saving the
 		// threshold – nothing was processed, so the next run retries from the
 		// same baseline.
-		index := map[string][]fileEntry{}
+		index := map[string][]FileEntry{}
 		usePersistentIndex := cfg.CacheLibrariesFilesystemTree
 
 		if usePersistentIndex {
@@ -244,7 +247,7 @@ func ensureLibraryIndexed(libraryID string, deadline time.Time) (bool, error) {
 // A page-fetch failure returns pairDone=false without advancing past the failed
 // page, so the next run retries the same offset; the cursor already points at
 // the first unprocessed song.
-func processPairChunk(lib libraryConfig, u userConfig, cfg pluginConfig, cur syncCursor, threshold time.Time, deadline time.Time, index map[string][]fileEntry, usePersistentIndex bool, bucketCache map[string][]FileRecord) (syncCursor, bool) {
+func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur SyncCursor, threshold time.Time, deadline time.Time, index map[string][]FileEntry, usePersistentIndex bool, bucketCache map[string][]FileRecord) (SyncCursor, bool) {
 	logTrace(fmt.Sprintf("nd-rating-sync: processPairChunk start lib=%q user=%q, offset=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
 	if cfg.DryRun {
 		logInfo(fmt.Sprintf(

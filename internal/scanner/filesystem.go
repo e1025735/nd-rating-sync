@@ -1,4 +1,4 @@
-package main
+package scanner
 
 import (
 	"errors"
@@ -13,61 +13,8 @@ import (
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 )
 
-// File location for plugins
-// ─────────────────────────
-// Navidrome does NOT hand a plugin a usable filesystem path for a song: the
-// Subsonic `search3` response carries either a synthesized "fake" path (built
-// from tags) or, only when the player has Report Real Path enabled, the host's
-// absolute path — neither of which is openable from inside the wasip1 sandbox.
-//
-// What a plugin CAN open is the library's mount point. With the manifest
-// `library` permission and `filesystem: true`, Navidrome read-only mounts each
-// assigned library at `/libraries/{id}` inside the sandbox and exposes that
-// path via host.LibraryGetLibrary(...).MountPoint. We therefore walk the mount,
-// index every audio file by its exact byte size, and match each Subsonic song
-// to its file on size. Size is reliable because Navidrome stores the scanned
-// file size and returns it in the `size` field.
-
-// fileEntry is a real audio file discovered under a library mount point.
-type fileEntry struct {
-	path  string
-	size  int64
-	mtime time.Time
-}
-
-type ScanState = kvadapter.ScanState
-
-type FileRecord = kvadapter.FileRecord
-
-func popDir(state *ScanState) (string, bool) {
-	if len(state.PendingDirs) == 0 {
-		return "", false
-	}
-	dir := state.PendingDirs[0]
-	state.PendingDirs = state.PendingDirs[1:]
-	return dir, true
-}
-
-func requeueDir(state *ScanState, dir string) {
-	state.PendingDirs = append(state.PendingDirs, dir)
-}
-
-func markVisited(state *ScanState, dir string) bool {
-	if state.VisitedDirs == nil {
-		state.VisitedDirs = make(map[string]struct{})
-	}
-	if _, seen := state.VisitedDirs[dir]; seen {
-		return false
-	}
-	state.VisitedDirs[dir] = struct{}{}
-	return true
-}
 
 // resolveMountPoint maps a configured library ID to its in-sandbox mount point.
-// The plugin config stores libraryId as a string, but the Library host service
-// keys on the numeric ID, so we parse it here. An empty MountPoint means the
-// host did not grant filesystem access (missing `library`+`filesystem:true`
-// permission, or the library is not assigned to the plugin).
 func resolveMountPoint(libraryID string) (string, error) {
 	logTrace(fmt.Sprintf("nd-rating-sync: resolveMountPoint start libraryID=%q", libraryID))
 	id, err := strconv.Atoi(strings.TrimSpace(libraryID))
@@ -85,10 +32,6 @@ func resolveMountPoint(libraryID string) (string, error) {
 	return lib.MountPoint, nil
 }
 
-// isSupportedExt reports whether ext (lowercase, no dot) is a container the
-// plugin can parse. Kept in sync with dispatchParser in scanner.go (and the
-// readAudioMetadata switch — the early check in extractStarsFromFile uses
-// this same predicate to short-circuit unsupported extensions).
 func isSupportedExt(ext string) bool {
 	switch ext {
 	case "mp3", "flac", "ogg", "oga", "opus", "wav", "dsf", "m4a", "aac", "mp4", "wma":
@@ -97,23 +40,17 @@ func isSupportedExt(ext string) bool {
 	return false
 }
 
-// sizeKey is the index/lookup key: exact byte size plus lowercase extension.
-// Combining size with the extension keeps unrelated containers of a coincidental
-// equal size in separate buckets.
 func sizeKey(size int64, ext string) string {
 	return strconv.FormatInt(size, 10) + ":" + ext
 }
 
-// buildFileIndex walks mountPoint recursively and indexes supported audio files
-// by sizeKey. A bucket may hold more than one file when two files share an exact
-// size and extension; matchFile treats that as ambiguous rather than guessing.
-func buildFileIndexWithoutCache(mountPoint string, deadline time.Time) (map[string][]fileEntry, error) {
+func buildFileIndexWithoutCache(mountPoint string, deadline time.Time) (map[string][]FileEntry, error) {
 	logTrace(fmt.Sprintf("nd-rating-sync: buildFileIndexWithoutCache start mountPoint=%q", mountPoint))
-	index := map[string][]fileEntry{}
+	index := map[string][]FileEntry{}
 	err := walkAudioFiles(mountPoint, deadline, func(path string, size int64, mtime time.Time) {
 		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
 		k := sizeKey(size, ext)
-		index[k] = append(index[k], fileEntry{path: path, size: size, mtime: mtime})
+		index[k] = append(index[k], FileEntry{Path: path, Size: size, MTime: mtime})
 	})
 	if err != nil {
 		return nil, err
@@ -122,11 +59,6 @@ func buildFileIndexWithoutCache(mountPoint string, deadline time.Time) (map[stri
 	return index, nil
 }
 
-// walkAudioFiles recurses root with os.ReadDir (the pattern proven by the
-// artist-nfo plugin; avoids any TinyGo filepath.WalkDir edge cases) and invokes
-// fn for every regular file with a supported extension. An unreadable
-// sub-directory is logged and skipped so one bad folder cannot abort the scan;
-// only a failure to read the root is returned as an error.
 func walkAudioFiles(root string, deadline time.Time, fn func(path string, size int64, mtime time.Time)) error {
 	logTrace(fmt.Sprintf("nd-rating-sync: walkAudioFiles start root=%q", root))
 	if time.Now().After(deadline) {
@@ -160,23 +92,56 @@ func walkAudioFiles(root string, deadline time.Time, fn func(path string, size i
 	return nil
 }
 
-// matchFile finds the unique file for a song by (size, suffix). It deliberately
-// refuses to guess: a size+suffix collision (more than one candidate) returns
-// not-found, so an ambiguous match can never cause the wrong song to be rated.
-// A missing match is handled by the caller as "unreadable" — never as
-// "untagged" — so a file the plugin cannot locate is never cleared.
-func matchFile(index map[string][]fileEntry, s subsonicSong) (fileEntry, bool) {
+type fileIndexResult struct {
+	index map[string][]FileEntry
+	ok    bool
+}
+
+func cachedFileIndex(cache map[string]fileIndexResult, libraryID string, deadline time.Time) (map[string][]FileEntry, bool) {
+	logTrace(fmt.Sprintf("nd-rating-sync: cachedFileIndex start libraryID=%q", libraryID))
+	if r, found := cache[libraryID]; found {
+		return r.index, r.ok
+	}
+	idx, ok := resolveAndIndex(libraryID, deadline)
+	cache[libraryID] = fileIndexResult{index: idx, ok: ok}
+	logTrace(fmt.Sprintf("nd-rating-sync: cachedFileIndex done libraryID=%q", libraryID))
+	return idx, ok
+}
+
+func resolveAndIndex(libraryID string, deadline time.Time) (map[string][]FileEntry, bool) {
+	logTrace(fmt.Sprintf("nd-rating-sync: resolveAndIndex start libraryID=%q", libraryID))
+	mountPoint, err := resolveMountPoint(libraryID)
+	if err != nil {
+		logWarn(fmt.Sprintf("nd-rating-sync: cannot access filesystem for library=%q: %v – skipping pair", libraryID, err))
+		return nil, false
+	}
+	idx, err := buildFileIndexWithoutCache(mountPoint, deadline)
+	if time.Now().After(deadline) {
+		logTrace(fmt.Sprintf("nd-rating-sync: resolveAndIndex stop, deadline reached libraryID=%q", libraryID))
+		return idx, true
+	}
+	if err != nil {
+		logWarn(fmt.Sprintf("nd-rating-sync: cannot read library mount %q – skipping pair", mountPoint))
+		logDebug(fmt.Sprintf("nd-rating-sync: read mount %q error: %q", mountPoint, err.Error()))
+		return nil, false
+	}
+	logTrace(fmt.Sprintf("nd-rating-sync: resolveAndIndex done libraryID=%q", libraryID))
+	logDebug(fmt.Sprintf("nd-rating-sync: indexed mount %q for library=%q – %d size buckets", mountPoint, libraryID, len(idx)))
+	return idx, true
+}
+
+func matchFile(index map[string][]FileEntry, s subsonicSong) (FileEntry, bool) {
 	logTrace(fmt.Sprintf("nd-rating-sync: matchFile start song=%q", s.ID))
 	cands := index[sizeKey(s.Size, strings.ToLower(s.Suffix))]
 	if len(cands) != 1 {
 		logTrace(fmt.Sprintf("nd-rating-sync: matchFile stop, ambiguous match song=%q", s.ID))
-		return fileEntry{}, false
+		return FileEntry{}, false
 	}
 	logTrace(fmt.Sprintf("nd-rating-sync: matchFile done song=%q", s.ID))
 	return cands[0], true
 }
 
-func matchFileFromBucketCache(libraryID string, song subsonicSong, cache map[string][]FileRecord) (fileEntry, bool) {
+func matchFileFromBucketCache(libraryID string, song subsonicSong, cache map[string][]FileRecord) (FileEntry, bool) {
 	ext := strings.ToLower(song.Suffix)
 	key := sizeKey(song.Size, ext)
 	logTrace(fmt.Sprintf("nd-rating-sync: matchFileFromBucketCache start libraryID=%q song=%q size=%d ext=%q", libraryID, song.ID, song.Size, ext))
@@ -184,14 +149,14 @@ func matchFileFromBucketCache(libraryID string, song subsonicSong, cache map[str
 		records, err := kvadapter.LoadBucket(libraryID, song.Size, ext)
 		if err != nil {
 			logWarn(fmt.Sprintf("nd-rating-sync: KV store lookup failed for library=%q size=%d ext=%q: %v", libraryID, song.Size, ext, err))
-			return fileEntry{}, false
+			return FileEntry{}, false
 		}
 		if len(records) != 1 {
 			logTrace(fmt.Sprintf("nd-rating-sync: matchFileFromBucketCache stop, ambiguous bucket libraryID=%q song=%q size=%d ext=%q records=%d", libraryID, song.ID, song.Size, ext, len(records)))
-			return fileEntry{}, false
+			return FileEntry{}, false
 		}
 		logTrace(fmt.Sprintf("nd-rating-sync: matchFileFromBucketCache done libraryID=%q song=%q path=%q", libraryID, song.ID, records[0].Path))
-		return fileEntry{path: records[0].Path, size: song.Size, mtime: time.Unix(records[0].Mtime, 0)}, true
+		return FileEntry{Path: records[0].Path, Size: song.Size, MTime: time.Unix(records[0].Mtime, 0)}, true
 	}
 
 	records, found := cache[key]
@@ -203,110 +168,46 @@ func matchFileFromBucketCache(libraryID string, song subsonicSong, cache map[str
 		if err != nil {
 			logWarn(fmt.Sprintf("nd-rating-sync: KV store lookup failed for library=%q size=%d ext=%q: %v", libraryID, song.Size, ext, err))
 			cache[key] = nil
-			return fileEntry{}, false
+			return FileEntry{}, false
 		}
 		logDebug(fmt.Sprintf("nd-rating-sync: matchFileFromBucketCache loaded bucket libraryID=%q key=%q records=%d", libraryID, key, len(records)))
 		cache[key] = records
 	}
 	if len(records) != 1 {
 		logTrace(fmt.Sprintf("nd-rating-sync: matchFileFromBucketCache stop, ambiguous bucket libraryID=%q key=%q records=%d", libraryID, key, len(records)))
-		return fileEntry{}, false
+		return FileEntry{}, false
 	}
 	logTrace(fmt.Sprintf("nd-rating-sync: matchFileFromBucketCache done libraryID=%q key=%q path=%q", libraryID, key, records[0].Path))
-	return fileEntry{path: records[0].Path, size: song.Size, mtime: time.Unix(records[0].Mtime, 0)}, true
-}
-
-// fileIndexResult is a memoised resolve+walk outcome: the file index for a
-// library plus whether the mount could be resolved and read. A "false" entry
-// means we already logged the failure and the caller should skip the pair
-// without saving the threshold.
-type fileIndexResult struct {
-	index map[string][]fileEntry
-	ok    bool
-}
-
-// cachedFileIndex returns the file index for libraryID, building it on first
-// access and memoising the result for the lifetime of a single runSyncChunk
-// call. State does not survive across callbacks, so the cache is created fresh
-// per call. N users of one library therefore share one walk; an unchanged
-// library that the LastScanAt gate skips never reaches this cache at all.
-func cachedFileIndex(cache map[string]fileIndexResult, libraryID string, deadline time.Time) (map[string][]fileEntry, bool) {
-	logTrace(fmt.Sprintf("nd-rating-sync: cachedFileIndex start libraryID=%q", libraryID))
-	if r, found := cache[libraryID]; found {
-		return r.index, r.ok
-	}
-	idx, ok := resolveAndIndex(libraryID, deadline)
-	cache[libraryID] = fileIndexResult{index: idx, ok: ok}
-	logTrace(fmt.Sprintf("nd-rating-sync: cachedFileIndex done libraryID=%q", libraryID))
-	return idx, ok
-}
-
-// resolveAndIndex is the uncached variant: resolve the library's mount and
-// walk it. Both stages fail-closed by skipping the pair (caller responsibility):
-// without a real file index we cannot match songs to files and any read
-// attempt would just regress to the s.Path bug.
-func resolveAndIndex(libraryID string, deadline time.Time) (map[string][]fileEntry, bool) {
-	logTrace(fmt.Sprintf("nd-rating-sync: resolveAndIndex start libraryID=%q", libraryID))
-	mountPoint, err := resolveMountPoint(libraryID)
-	if err != nil {
-		logWarn(fmt.Sprintf(
-			"nd-rating-sync: cannot access filesystem for library=%q: %v – skipping pair", libraryID, err))
-		return nil, false
-	}
-	idx, err := buildFileIndexWithoutCache(mountPoint, deadline)
-	if time.Now().After(deadline) {
-		logTrace(fmt.Sprintf("nd-rating-sync: resolveAndIndex stop, deadline reached libraryID=%q", libraryID))
-		return idx, true
-	}
-	if err != nil {
-		logWarn(fmt.Sprintf(
-			"nd-rating-sync: cannot read library mount %q – skipping pair", mountPoint))
-		logDebug(fmt.Sprintf(
-			"nd-rating-sync: read mount %q error: %q", mountPoint, err.Error()))
-		return nil, false
-	}
-	logTrace(fmt.Sprintf("nd-rating-sync: resolveAndIndex done libraryID=%q", libraryID))
-	logDebug(fmt.Sprintf(
-		"nd-rating-sync: indexed mount %q for library=%q – %d size buckets",
-		mountPoint, libraryID, len(idx)))
-	return idx, true
+	return FileEntry{Path: records[0].Path, Size: song.Size, MTime: time.Unix(records[0].Mtime, 0)}, true
 }
 
 func scanChunk(libraryID string, state *ScanState, deadline time.Time) error {
 	logTrace(fmt.Sprintf("scanChunk start lib=%q pending=%d", libraryID, len(state.PendingDirs)))
-
 	if state.VisitedDirs == nil {
 		state.VisitedDirs = make(map[string]struct{})
 	}
-
 	changed := false
 	mark := func() { changed = true }
-
 	for len(state.PendingDirs) > 0 {
 		if time.Now().After(deadline) {
 			break
 		}
-
 		dir, ok := popDir(state)
 		if !ok {
 			break
 		}
 		mark()
-
 		if _, seen := state.VisitedDirs[dir]; seen {
 			continue
 		}
 		markVisited(state, dir)
-
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			logWarn(fmt.Sprintf("nd-rating-sync: cannot read directory %q for library=%q: %v", dir, libraryID, err))
 			requeueDir(state, dir)
 			continue
 		}
-
 		updates := map[string]map[string]FileRecord{}
-
 		for _, e := range entries {
 			if time.Now().After(deadline) {
 				requeueDir(state, dir)
@@ -314,39 +215,29 @@ func scanChunk(libraryID string, state *ScanState, deadline time.Time) error {
 				continue
 			}
 			full := filepath.Join(dir, e.Name())
-
 			if e.IsDir() {
 				if _, seen := state.VisitedDirs[full]; !seen {
 					requeueDir(state, full)
 				}
 				continue
 			}
-
 			ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(e.Name()), "."))
 			if !isSupportedExt(ext) {
 				continue
 			}
-
 			info, err := e.Info()
 			if err != nil {
 				logWarn(fmt.Sprintf("failed to stat file %q: %v", full, err))
 				continue
 			}
-
 			key := sizeKey(info.Size(), ext)
-
 			bucket := updates[key]
 			if bucket == nil {
 				bucket = map[string]FileRecord{}
 				updates[key] = bucket
 			}
-
-			bucket[full] = FileRecord{
-				Path:  full,
-				Mtime: info.ModTime().Unix(),
-			}
+			bucket[full] = FileRecord{Path: full, Mtime: info.ModTime().Unix()}
 		}
-
 		for key, current := range updates {
 			parts := strings.SplitN(key, ":", 2)
 			if len(parts) != 2 {
@@ -361,9 +252,7 @@ func scanChunk(libraryID string, state *ScanState, deadline time.Time) error {
 			if err != nil {
 				return err
 			}
-
 			merged := mergeBucketRecords(existing, current, dir)
-
 			if !bucketRecordsEqual(existing, merged) {
 				if err := kvadapter.SaveBucket(libraryID, size, ext, merged); err != nil {
 					return err
@@ -372,21 +261,41 @@ func scanChunk(libraryID string, state *ScanState, deadline time.Time) error {
 			}
 		}
 	}
-
 	if len(state.PendingDirs) == 0 {
 		state.Complete = true
 		mark()
 	}
-
 	if !changed {
 		return nil
 	}
-
 	return kvadapter.SaveLibraryScanState(libraryID, state)
 }
 
+func popDir(state *ScanState) (string, bool) {
+	if len(state.PendingDirs) == 0 {
+		return "", false
+	}
+	dir := state.PendingDirs[0]
+	state.PendingDirs = state.PendingDirs[1:]
+	return dir, true
+}
+
+func requeueDir(state *ScanState, dir string) {
+	state.PendingDirs = append(state.PendingDirs, dir)
+}
+
+func markVisited(state *ScanState, dir string) bool {
+	if state.VisitedDirs == nil {
+		state.VisitedDirs = make(map[string]struct{})
+	}
+	if _, seen := state.VisitedDirs[dir]; seen {
+		return false
+	}
+	state.VisitedDirs[dir] = struct{}{}
+	return true
+}
+
 func mergeBucketRecords(existing []FileRecord, currentRecords map[string]FileRecord, dir string) []FileRecord {
-	// Normalize the directory path for consistent prefix matching
 	prefix := filepath.Clean(dir) + string(os.PathSeparator)
 	seen := make(map[string]FileRecord, len(existing)+len(currentRecords))
 	for _, r := range existing {

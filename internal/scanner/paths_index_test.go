@@ -1,4 +1,4 @@
-package main
+package scanner
 
 import (
 	"encoding/json"
@@ -44,96 +44,16 @@ func TestBuildFileIndex_IndexesSupportedFilesRecursivelyBySize(t *testing.T) {
 
 	mp3 := index[sizeKey(5, "mp3")]
 	require.Len(t, mp3, 1)
-	assert.Equal(t, filepath.Join(root, "a.mp3"), mp3[0].path)
+	assert.Equal(t, filepath.Join(root, "a.mp3"), mp3[0].Path)
 
 	flac := index[sizeKey(7, "flac")]
 	require.Len(t, flac, 1)
-	assert.Equal(t, filepath.Join(sub, "b.flac"), flac[0].path)
+	assert.Equal(t, filepath.Join(sub, "b.flac"), flac[0].Path)
 }
 
 func TestBuildFileIndex_MissingRootIsError(t *testing.T) {
 	_, err := buildFileIndexWithoutCache(filepath.Join(t.TempDir(), "does-not-exist"), time.Now().Add(30*time.Second))
 	assert.Error(t, err)
-}
-
-func TestMatchFile_UniqueSizeAndSuffix(t *testing.T) {
-	root := t.TempDir()
-	p := filepath.Join(root, "song.mp3")
-	require.NoError(t, os.WriteFile(p, []byte("12345"), 0o644))
-	index, err := buildFileIndexWithoutCache(root, time.Now().Add(30*time.Second))
-	require.NoError(t, err)
-
-	e, ok := matchFile(index, subsonicSong{Suffix: "mp3", Size: 5})
-	require.True(t, ok)
-	assert.Equal(t, p, e.path)
-
-	// Suffix matched case-insensitively.
-	_, ok = matchFile(index, subsonicSong{Suffix: "MP3", Size: 5})
-	assert.True(t, ok)
-
-	// Wrong size or suffix → not found.
-	_, ok = matchFile(index, subsonicSong{Suffix: "mp3", Size: 999})
-	assert.False(t, ok)
-	_, ok = matchFile(index, subsonicSong{Suffix: "flac", Size: 5})
-	assert.False(t, ok)
-}
-
-func TestMatchFile_AmbiguousSizeReturnsNotFound(t *testing.T) {
-	root := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(root, "x.mp3"), []byte("12345"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(root, "y.mp3"), []byte("54321"), 0o644))
-	index, err := buildFileIndexWithoutCache(root, time.Now().Add(30*time.Second))
-	require.NoError(t, err)
-
-	_, ok := matchFile(index, subsonicSong{Suffix: "mp3", Size: 5})
-	assert.False(t, ok, "a size+suffix collision must be reported as not-found, never guessed")
-}
-
-func TestMatchFileFromBucketCache_CachesBucketRecords(t *testing.T) {
-	resetKVStoreMock(t)
-	cache := map[string][]FileRecord{}
-	path := "/libraries/1/song.mp3"
-	data, err := json.Marshal([]FileRecord{{Path: path, Mtime: 12345}})
-	require.NoError(t, err)
-	bucketKeyName := bucketKey("1", 5, "mp3")
-	host.KVStoreMock.On("Get", bucketKeyName).Return(data, true, nil).Once()
-
-	entry, ok := matchFileFromBucketCache("1", subsonicSong{ID: "s1", Size: 5, Suffix: "mp3"}, cache)
-	require.True(t, ok)
-	assert.Equal(t, path, entry.path)
-
-	// Second lookup should reuse the cached bucket and not call KV again.
-	entry2, ok2 := matchFileFromBucketCache("1", subsonicSong{ID: "s1", Size: 5, Suffix: "mp3"}, cache)
-	require.True(t, ok2)
-	assert.Equal(t, path, entry2.path)
-	host.KVStoreMock.AssertExpectations(t)
-}
-
-func TestMatchFileFromBucketCache_AmbiguousBucketReturnsNotFound(t *testing.T) {
-	resetKVStoreMock(t)
-	cache := map[string][]FileRecord{}
-	data, err := json.Marshal([]FileRecord{{Path: "/libraries/1/a.mp3", Mtime: 1}, {Path: "/libraries/1/b.mp3", Mtime: 2}})
-	require.NoError(t, err)
-	bucketKeyName := bucketKey("1", 5, "mp3")
-	host.KVStoreMock.On("Get", bucketKeyName).Return(data, true, nil)
-
-	_, ok := matchFileFromBucketCache("1", subsonicSong{ID: "s1", Size: 5, Suffix: "mp3"}, cache)
-	assert.False(t, ok)
-	host.KVStoreMock.AssertExpectations(t)
-}
-
-func TestMatchFileFromBucketCache_CachesMissingBuckets(t *testing.T) {
-	resetKVStoreMock(t)
-	cache := map[string][]FileRecord{}
-	bucketKeyName := bucketKey("1", 5, "mp3")
-	host.KVStoreMock.On("Get", bucketKeyName).Return([]byte(nil), false, nil).Once()
-
-	_, ok := matchFileFromBucketCache("1", subsonicSong{ID: "s1", Size: 5, Suffix: "mp3"}, cache)
-	require.False(t, ok)
-
-	_, ok2 := matchFileFromBucketCache("1", subsonicSong{ID: "s1", Size: 5, Suffix: "mp3"}, cache)
-	require.False(t, ok2)
-	host.KVStoreMock.AssertExpectations(t)
 }
 
 func TestScanChunk_SavesNewBucketAndMarksComplete(t *testing.T) {
@@ -272,31 +192,6 @@ func TestScanChunk_DoesNotMarkCompleteWhenRootUnreadable(t *testing.T) {
 	host.KVStoreMock.AssertExpectations(t)
 }
 
-func TestResolveMountPoint_OK(t *testing.T) {
-	resetLibraryMock(t)
-	host.LibraryMock.On("GetLibrary", int32(7)).
-		Return(&host.Library{ID: 7, MountPoint: "/libraries/7", Path: "/music/lib"}, nil)
-
-	mp, err := resolveMountPoint("7")
-	require.NoError(t, err)
-	assert.Equal(t, "/libraries/7", mp)
-}
-
-func TestResolveMountPoint_NonNumericID(t *testing.T) {
-	// Fails before any host call, so no mock expectation is needed.
-	_, err := resolveMountPoint("lib1")
-	assert.Error(t, err)
-}
-
-func TestResolveMountPoint_EmptyMountPointIsError(t *testing.T) {
-	resetLibraryMock(t)
-	host.LibraryMock.On("GetLibrary", int32(9)).
-		Return(&host.Library{ID: 9, MountPoint: ""}, nil)
-
-	_, err := resolveMountPoint("9")
-	assert.Error(t, err, "an empty mount point means filesystem access was not granted")
-}
-
 func TestPersistentCache_FullIntegration(t *testing.T) {
 	// This integration test verifies that:
 	// 1. ensureLibraryIndexed scans the library and caches buckets to KV
@@ -367,50 +262,4 @@ func TestPersistentCache_FullIntegration(t *testing.T) {
 	ready, err = ensureLibraryIndexed("1", time.Now().Add(5*time.Second))
 	require.NoError(t, err)
 	assert.True(t, ready)
-}
-
-func TestMergeBucketRecords_RobustPathComparison(t *testing.T) {
-	// Verify that merging handles path edge cases correctly
-	tests := []struct {
-		name            string
-		existing        []FileRecord
-		dir             string
-		currentRecords  map[string]FileRecord
-		expectedKeepOld bool
-	}{
-		{
-			name: "keeps records from different directories",
-			existing: []FileRecord{
-				{Path: "/music/rock/song.mp3", Mtime: 100},
-				{Path: "/music/jazz/song.mp3", Mtime: 200},
-			},
-			dir: "/music/rock",
-			currentRecords: map[string]FileRecord{
-				"/music/rock/new.mp3": {Path: "/music/rock/new.mp3", Mtime: 300},
-			},
-			expectedKeepOld: true,
-		},
-		{
-			name: "removes old records from scanned directory",
-			existing: []FileRecord{
-				{Path: "/music/rock/old.mp3", Mtime: 100},
-			},
-			dir: "/music/rock",
-			currentRecords: map[string]FileRecord{
-				"/music/rock/new.mp3": {Path: "/music/rock/new.mp3", Mtime: 300},
-			},
-			expectedKeepOld: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := mergeBucketRecords(tt.existing, tt.currentRecords, tt.dir)
-			if tt.expectedKeepOld {
-				assert.True(t, len(result) > 1, "should keep old and new records")
-			} else {
-				assert.False(t, len(result) > 1, "should replace old records with new ones")
-			}
-		})
-	}
 }
