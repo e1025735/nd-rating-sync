@@ -30,18 +30,6 @@ func resolveMountPoint(libraryID string) (string, error) {
 	return lib.MountPoint, nil
 }
 
-func isSupportedExt(ext string) bool {
-	switch ext {
-	case "mp3", "flac", "ogg", "oga", "opus", "wav", "dsf", "m4a", "aac", "mp4", "wma":
-		return true
-	}
-	return false
-}
-
-func sizeKey(size int64, ext string) string {
-	return strconv.FormatInt(size, 10) + ":" + ext
-}
-
 func buildFileIndexWithoutCache(mountPoint string, deadline time.Time) (map[string][]FileEntry, error) {
 	logTrace(fmt.Sprintf("nd-rating-sync: buildFileIndexWithoutCache start mountPoint=%q", mountPoint))
 	index := map[string][]FileEntry{}
