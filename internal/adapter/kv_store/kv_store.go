@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	KVKeyConfigHash    = "config-hash"
-	ConfigPrefix       = "config"
-	BucketPrefix       = "bucket"
-	LibraryStatePrefix = "libraryState"
+	KVKeyConfigHash           = "config-hash"
+	ConfigPrefix              = "config"
+	BucketPrefix              = "bucket"
+	LibraryStatePrefix        = "libraryState"
+	LibraryUserLastSyncPrefix = "last-synced"
 )
 
 const SweepStaleAfter = 2 * time.Minute
@@ -87,7 +88,7 @@ func mustJSONBytes(cfg any) []byte {
 }
 
 func PurgeStaleKVEntries() (int64, error) {
-	prefixes := []string{BucketPrefix, LibraryStatePrefix, ConfigPrefix}
+	prefixes := []string{BucketPrefix, LibraryStatePrefix, LibraryUserLastSyncPrefix, ConfigPrefix}
 	var deleted int64
 	for _, prefix := range prefixes {
 		count, err := host.KVStoreDeleteByPrefix(prefix)
@@ -100,7 +101,7 @@ func PurgeStaleKVEntries() (int64, error) {
 }
 
 func KVKeyLastSynced(libraryID, username string) string {
-	return "last-synced:" + url.QueryEscape(libraryID) + ":" + url.QueryEscape(username)
+	return LibraryUserLastSyncPrefix + ":" + url.QueryEscape(libraryID) + ":" + url.QueryEscape(username)
 }
 
 func LoadLastSynced(libraryID, username string) time.Time {

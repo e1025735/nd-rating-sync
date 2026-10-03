@@ -49,13 +49,14 @@ func TestKVStore_PurgeStaleKVEntries_DeletesAllRelevantPrefixes(t *testing.T) {
 		host.KVStoreMock.Calls = nil
 	})
 
-	host.KVStoreMock.On("DeleteByPrefix", ConfigPrefix).Return(int64(2), nil).Once()
-	host.KVStoreMock.On("DeleteByPrefix", BucketPrefix).Return(int64(3), nil).Once()
+	host.KVStoreMock.On("DeleteByPrefix", ConfigPrefix).Return(int64(1), nil).Once()
+	host.KVStoreMock.On("DeleteByPrefix", BucketPrefix).Return(int64(2), nil).Once()
 	host.KVStoreMock.On("DeleteByPrefix", LibraryStatePrefix).Return(int64(4), nil).Once()
+	host.KVStoreMock.On("DeleteByPrefix", LibraryUserLastSyncPrefix).Return(int64(8), nil).Once()
 
 	deleted, err := PurgeStaleKVEntries()
 	require.NoError(t, err)
-	assert.Equal(t, int64(9), deleted)
+	assert.Equal(t, int64(15), deleted)
 	host.KVStoreMock.AssertExpectations(t)
 }
 
@@ -75,7 +76,8 @@ func TestRefreshConfigHash_PurgesPluginCacheOnMismatch(t *testing.T) {
 	host.KVStoreMock.On("Get", KVKeyConfigHash).Return([]byte(staleHash), true, nil).Once()
 	host.KVStoreMock.On("DeleteByPrefix", ConfigPrefix).Return(int64(1), nil).Once()
 	host.KVStoreMock.On("DeleteByPrefix", BucketPrefix).Return(int64(2), nil).Once()
-	host.KVStoreMock.On("DeleteByPrefix", LibraryStatePrefix).Return(int64(3), nil).Once()
+	host.KVStoreMock.On("DeleteByPrefix", LibraryStatePrefix).Return(int64(4), nil).Once()
+	host.KVStoreMock.On("DeleteByPrefix", LibraryUserLastSyncPrefix).Return(int64(8), nil).Once()
 	host.KVStoreMock.On("Set", KVKeyConfigHash, []byte(currentHash)).Return(nil).Once()
 
 	EnsureConfigCacheIsCurrent(current)
