@@ -10,8 +10,8 @@ build, test, and extend the plugin.
 ```
 main.go          – lifecycle init and scheduler callback (entry points only)
 config.go        – pluginConfig / libraryConfig / userConfig types + loadConfig()
-scanner.go       – runSyncChunk, processPairChunk, processSong, and extractStarsFromFile (dispatches per file extension)
-subsonic.go      – Subsonic API types and helpers: fetchSongPage, setRating
+internal/scanner/ – scanner implementation package: `sync.go` handles scheduling and chunk processing, `song.go` contains the per-song pipeline (`processSong`), and `metadata.go` contains `extractStarsFromFile` / `readAudioMetadata` / `dispatchParser` (format dispatch and panic recovery). Metadata reads are bounded by the media-layer cap in `internal/media/constants.go`.
+internal/adapter/subsonic/subsonic.go      – Subsonic API adapter: `FetchSongPage`, `SetRating`, and Subsonic response types
 id3.go           – ID3v2 tag parsing: reads frames once, picks winner by tagOrder
 rating.go        – pure star converters: fmpsToStars, popmWMPToStars, popmITunesToStars
 pdk_stub.go      – build-tag stub (!wasip1): no-op log helpers + getConfig, so tests

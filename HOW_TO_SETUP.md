@@ -210,6 +210,8 @@ In that case, enable `Cache Libraries Filesystem Tree` in the plugin settings.
 When enabled, the plugin caches the discovered library file tree in Navidrome's KV store.
 That means the slow filesystem walk is not repeated from scratch on every scan.
 
+If the plugin config changes, it also compares a stored `config-hash` with the current config and, on mismatch, purges the plugin-owned KV prefixes for cached state (`bucket`, `libraryState`, and `config`) before writing the new hash and rebuilding the cache from the new config.
+
 ### Required KV configuration
 
 The plugin setting `kv_storage_max_size` must match the manifest permission `permissions.kvstore.maxSize`.
@@ -241,6 +243,8 @@ If your plugin manifest requests more KV storage than the host allows, you may n
 ### Important note
 
 `Cache Libraries Filesystem Tree` is an optimization for slow filesystem walks. It does not change how the plugin resolves files by size and extension, and it does not alter rating parsing logic.
+
+The cache is intentionally reset when configuration changes, because stale plugin KV state can otherwise reflect the old config. In other words, a config change triggers a plugin-owned purge and rebuild, not an incremental update of the old cache.
 
 ## Important caution for huge scans
 

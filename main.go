@@ -10,10 +10,10 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"time"
 
+	kvadapter "github.com/e1025735/nd-rating-sync/internal/adapter/kv_store"
+	scanner "github.com/e1025735/nd-rating-sync/internal/scanner"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 	"github.com/navidrome/navidrome/plugins/pdk/go/lifecycle"
 	"github.com/navidrome/navidrome/plugins/pdk/go/scheduler"
@@ -45,8 +45,8 @@ func (ratingPlugin) OnInit() error {
 	// A reload/restart kills any in-flight continuation chain, so clear the
 	// in-progress guard up front — a heartbeat left over from just before the
 	// restart must not suppress the immediate-on-load sweep until it goes stale.
-	clearSweepActive()
-	refreshConfigHash()
+	kvadapter.ClearSweepActive()
+	kvadapter.EnsureConfigCacheIsCurrent(loadConfig())
 	return registerSchedules(loadConfig())
 }
 
@@ -71,78 +71,5 @@ func registerSchedules(cfg pluginConfig) error {
 
 func (ratingPlugin) OnCallback(req scheduler.SchedulerCallbackRequest) error {
 	logInfo(fmt.Sprintf("nd-rating-sync: running scheduled rating sync (scheduleId=%q)", req.ScheduleID))
-	return runSyncStep(loadConfig(), req.Payload)
-}
-
-// runSyncStep runs one budgeted slice of a sync. payload is the scheduler
-// callback payload: empty for a fresh full sweep, or a serialised syncCursor
-// for a continuation. When the slice exhausts its time budget before the sweep
-// finishes, it persists the cursor into a fresh one-time callback so the work
-// resumes almost immediately in a new call — keeping every individual call
-// comfortably under the host's hardcoded 30s plugin-call limit.
-//
-// The continuation uses an empty scheduleID so the host mints a unique one:
-// the currently-firing one-time entry is still registered during its own
-// callback, so reusing its ID would be rejected as a duplicate.
-//
-// Any Go-side panic is recovered and returned as an error so a single hostile
-// file or unexpected host response never takes the WASM module down – the
-// next scheduled callback gets a fresh instance and can make progress.
-// (Host-side panics – e.g. a torn-down wazero Context on a clock host call –
-// cannot be recovered from inside the guest; they are mitigated by keeping
-// the call short via callBudget and reducing host call frequency.)
-func runSyncStep(cfg pluginConfig, payload string) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			logWarn(fmt.Sprintf("nd-rating-sync: recovered panic in sync callback: %v", r))
-			err = fmt.Errorf("recovered panic: %v", r)
-		}
-	}()
-	return runSyncStepUntil(cfg, payload, time.Now().Add(callBudget))
-}
-
-// runSyncStepUntil is the deadline-injectable core of runSyncStep, split out so
-// tests can force the budget-reached/continuation path without waiting 20s.
-//
-// Every sweep records an in-progress heartbeat so a freshly-triggered sweep
-// (e.g. the hourly cron firing while a big first import is still chaining) does
-// not start a second concurrent sweep.
-func runSyncStepUntil(cfg pluginConfig, payload string, deadline time.Time) error {
-	if len(cfg.Libraries) == 0 {
-		return errors.New("no libraries configured – add at least one library with users in the plugin settings")
-	}
-	refreshConfigHash()
-
-	cur, resumed := parseCursor(payload)
-
-	if !resumed && sweepInProgress() {
-		logInfo("nd-rating-sync: a sweep is already in progress – skipping this trigger")
-		return nil
-	}
-	markSweepActive() // set on a fresh start; refresh on every continuation
-
-	if resumed {
-		logInfo(fmt.Sprintf(
-			"nd-rating-sync: resuming sync at library#%d user#%d offset=%d",
-			cur.Lib, cur.User, cur.Offset))
-	} else {
-		logInfo(fmt.Sprintf(
-			"nd-rating-sync: starting sync – libraries=%d incremental=%v dry_run=%v budget=%s",
-			len(cfg.Libraries), cfg.IncrementalSync, cfg.DryRun, callBudget))
-	}
-
-	next, done := runSyncChunk(cfg, cur, deadline)
-	if done {
-		clearSweepActive()
-		logInfo("nd-rating-sync: sync complete")
-		return nil
-	}
-
-	if _, err := host.SchedulerScheduleOneTime(0, next.marshal(), ""); err != nil {
-		return fmt.Errorf("failed to reschedule sync continuation: %w", err)
-	}
-	logInfo(fmt.Sprintf(
-		"nd-rating-sync: time budget (%s) reached – rescheduled continuation at library#%d user#%d offset=%d",
-		callBudget, next.Lib, next.User, next.Offset))
-	return nil
+	return scanner.RunSyncStep(toScannerConfig(loadConfig()), req.Payload)
 }
