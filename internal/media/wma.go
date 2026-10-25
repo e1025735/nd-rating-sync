@@ -10,6 +10,12 @@ import (
 	"strings"
 )
 
+// ASF descriptor value types (Extended Content Description Object).
+const (
+	asfTypeDWORD = 3
+	asfTypeWORD  = 5
+)
+
 var (
 	asfHeaderObjectGUID = []byte{
 		0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11,
@@ -67,7 +73,7 @@ func parseWMARating(data []byte, path string, tagOrder []string) (int, bool) {
 // Object (after its 24-byte GUID+size header) and extracts a star rating.
 // Recognised descriptors:
 //
-//   - "WM/SharedUserRating" (WORD/type 5): WMP 0/64/128/196/255 byte scale
+//   - "WM/SharedUserRating" (DWORD/type 3, or WORD/type 5): WMP 0–99 scale
 //   - "FMPS_Rating"         (Unicode/type 0): MediaMonkey float 0.0–1.0
 func parseASFExtContentDesc(body []byte, path string, tagOrder []string) (int, bool) {
 	if len(body) < 2 {
@@ -103,15 +109,21 @@ func parseASFExtContentDesc(body []byte, path string, tagOrder []string) (int, b
 
 		switch strings.ToUpper(name) {
 		case "WM/SHAREDUSERRATING":
-			// WORD (type 5): same 0/64/128/196/255 breakpoints as the WMP POPM byte.
-			if valueType == 5 && valueLen >= 2 {
-				v := binary.LittleEndian.Uint16(valueBytes[:2])
-				if stars := popmWMPToStars(byte(v)); stars > 0 {
-					found["WMP"] = stars
-					logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for WMP for path %s", stars, path))
-					found["MusicBee"] = stars
-					logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MusicBee for path %s", stars, path))
-				}
+			// The Windows Media Format SDK defines this as a DWORD (type 3) on a
+			// 0–99 scale (WMP writes 1/25/50/75/99). WORD (type 5) is accepted
+			// too for taggers that write the narrower type.
+			var v uint32
+			switch {
+			case valueType == asfTypeDWORD && valueLen >= 4:
+				v = binary.LittleEndian.Uint32(valueBytes[:4])
+			case valueType == asfTypeWORD && valueLen >= 2:
+				v = uint32(binary.LittleEndian.Uint16(valueBytes[:2]))
+			}
+			if stars := sharedUserRatingToStars(v); stars > 0 {
+				found["WMP"] = stars
+				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for WMP for path %s", stars, path))
+				found["MusicBee"] = stars
+				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MusicBee for path %s", stars, path))
 			}
 		case "FMPS_RATING":
 			if valueType == 0 { // Unicode string
@@ -178,23 +190,18 @@ func extractWMAMetadata(f *os.File) ([]byte, error) {
 			if bodyLen > maxMetadataReadBytes {
 				return nil, fmt.Errorf("WMA ECDO size %d exceeds cap %d", bodyLen, maxMetadataReadBytes)
 			}
-			body := make([]byte, bodyLen)
-			if _, err := io.ReadFull(f, body); err != nil {
+			// Synth: ASF Header (numHeaders=1, adjusted size) + ECDO only,
+			// with the ECDO body read straight into it (one allocation).
+			totalSize := int64(asfHeaderObjectFixedSize) + objSize
+			out := make([]byte, totalSize)
+			copy(out[:16], asfHeaderObjectGUID)
+			binary.LittleEndian.PutUint64(out[16:24], uint64(totalSize))
+			binary.LittleEndian.PutUint32(out[24:28], 1) // exactly one child
+			out[28], out[29] = hdr[28], hdr[29]          // preserve the two reserved bytes
+			copy(out[30:54], objHdr[:])                  // ECDO header
+			if _, err := io.ReadFull(f, out[54:]); err != nil {
 				return nil, err
 			}
-			// Synth: ASF Header (numHeaders=1, adjusted size) + ECDO only.
-			totalSize := int64(asfHeaderObjectFixedSize) + objSize
-			out := make([]byte, 0, totalSize)
-			out = append(out, asfHeaderObjectGUID...)
-			var sizeBuf [8]byte
-			binary.LittleEndian.PutUint64(sizeBuf[:], uint64(totalSize))
-			out = append(out, sizeBuf[:]...)
-			var numBuf [4]byte
-			binary.LittleEndian.PutUint32(numBuf[:], 1) // exactly one child
-			out = append(out, numBuf[:]...)
-			out = append(out, hdr[28], hdr[29]) // preserve the two reserved bytes
-			out = append(out, objHdr[:]...)     // ECDO header
-			out = append(out, body...)
 			return out, nil
 		}
 

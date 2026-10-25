@@ -25,24 +25,23 @@ func parseFLACVorbisComments(data []byte) (vorbisComments, error) {
 	if len(data) < 4 || string(data[:4]) != "fLaC" {
 		return nil, errors.New("not a FLAC file (missing fLaC magic)")
 	}
-	r := bytes.NewReader(data[4:])
-
-	var hdr [4]byte
+	pos := 4
 	for {
-		if _, err := io.ReadFull(r, hdr[:]); err != nil {
-			return nil, fmt.Errorf("metadata block header: %w", err)
+		if len(data)-pos < flacMetadataBlockHeaderSize {
+			return nil, fmt.Errorf("metadata block header: %w", io.ErrUnexpectedEOF)
 		}
+		hdr := data[pos : pos+flacMetadataBlockHeaderSize]
+		pos += flacMetadataBlockHeaderSize
 		isLast := hdr[0]&0x80 != 0
 		blockType := hdr[0] & 0x7F
 		blockLen := int(hdr[1])<<16 | int(hdr[2])<<8 | int(hdr[3])
 
-		if blockLen > r.Len() {
+		if blockLen > len(data)-pos {
 			return nil, errors.New("metadata block extends past end of file")
 		}
-		body := make([]byte, blockLen)
-		if _, err := io.ReadFull(r, body); err != nil {
-			return nil, fmt.Errorf("metadata block body: %w", err)
-		}
+		// Sub-slice rather than copy: the block body is only read from.
+		body := data[pos : pos+blockLen]
+		pos += blockLen
 
 		if blockType == flacBlockVorbisComment {
 			return parseVorbisCommentBlock(body)
@@ -53,24 +52,40 @@ func parseFLACVorbisComments(data []byte) (vorbisComments, error) {
 	}
 }
 
+// vorbisPictureKey is the Vorbis comment holding base64-encoded cover art
+// (common in Ogg/Opus, often hundreds of KiB). It can never carry a rating, so
+// parseVorbisCommentBlock does not copy it into the result.
+const vorbisPictureKey = "METADATA_BLOCK_PICTURE"
+
 // parseVorbisCommentBlock decodes the body of a VORBIS_COMMENT metadata block.
 // Layout: vendor_length (u32 LE) + vendor + count (u32 LE) + count×(len + "KEY=value").
+//
+// Lengths are compared as uint64: on 32-bit wasip1 a length >= 2^31 would
+// wrap negative as an int, pass the bounds check and trigger a multi-GiB
+// allocation that kills the whole plugin. Entries are sub-slices of body, so
+// only the stored key/value strings are copied.
 func parseVorbisCommentBlock(body []byte) (vorbisComments, error) {
 	out := vorbisComments{}
-	r := bytes.NewReader(body)
+	pos := 0
 
+	readUint32 := func() (uint32, error) {
+		if len(body)-pos < 4 {
+			return 0, io.ErrUnexpectedEOF
+		}
+		n := binary.LittleEndian.Uint32(body[pos : pos+4])
+		pos += 4
+		return n, nil
+	}
 	readString := func() ([]byte, error) {
-		var n uint32
-		if err := binary.Read(r, binary.LittleEndian, &n); err != nil {
+		n, err := readUint32()
+		if err != nil {
 			return nil, err
 		}
-		if int(n) > r.Len() {
-			return nil, fmt.Errorf("string length %d exceeds remaining %d", n, r.Len())
+		if uint64(n) > uint64(len(body)-pos) {
+			return nil, fmt.Errorf("string length %d exceeds remaining %d", n, len(body)-pos)
 		}
-		buf := make([]byte, n)
-		if _, err := io.ReadFull(r, buf); err != nil {
-			return nil, err
-		}
+		buf := body[pos : pos+int(n)]
+		pos += int(n)
 		return buf, nil
 	}
 
@@ -78,10 +93,12 @@ func parseVorbisCommentBlock(body []byte) (vorbisComments, error) {
 		return nil, fmt.Errorf("vendor string: %w", err)
 	}
 
-	var count uint32
-	if err := binary.Read(r, binary.LittleEndian, &count); err != nil {
+	count, err := readUint32()
+	if err != nil {
 		return nil, fmt.Errorf("comment count: %w", err)
 	}
+	// Each entry needs at least its 4-byte length, so a corrupt count fails
+	// on the bounds check long before it could loop for long.
 	for i := uint32(0); i < count; i++ {
 		buf, err := readString()
 		if err != nil {
@@ -92,6 +109,9 @@ func parseVorbisCommentBlock(body []byte) (vorbisComments, error) {
 			continue // malformed entry, ignore
 		}
 		key := strings.ToUpper(string(buf[:eq]))
+		if key == vorbisPictureKey {
+			continue
+		}
 		out[key] = append(out[key], string(buf[eq+1:]))
 	}
 	return out, nil
@@ -101,9 +121,12 @@ func parseVorbisCommentBlock(body []byte) (vorbisComments, error) {
 // using tagOrder priority. Shared by the FLAC and Ogg/Opus paths. Recognised
 // source applications:
 //
-//   - "MediaMonkey" – FMPS_RATING (float 0.0–1.0)
+//   - "MediaMonkey" – RATING (0–100, MediaMonkey's own field), else FMPS_RATING (float 0.0–1.0)
 //   - "foobar2000"  – RATING (integer 1–5)
-//   - "MusicBee" - RATING (0 - 100)
+//   - "MusicBee"    – RATING (0–100)
+//
+// The 1–5 and 0–100 scales never overlap (0–100 values are multiples of 20),
+// so one RATING value matches either foobar2000 or MusicBee/MediaMonkey.
 //
 // "WMP" and "iTunes" have no canonical Vorbis representation and are silently
 // skipped — listing them in tagOrder is harmless, they just never match.
@@ -123,6 +146,9 @@ func ratingFromVorbisComments(cmts vorbisComments, path string, tagOrder []strin
 		if stars, ok := ratingMusicBeeToStars(vs[0]); ok {
 			found["MusicBee"] = stars
 			logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MusicBee for path %s", stars, path))
+			// Overrides FMPS_RATING above: RATING is what MediaMonkey writes.
+			found["MediaMonkey"] = stars
+			logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MediaMonkey for path %s", stars, path))
 		}
 	}
 	for _, format := range tagOrder {
@@ -181,15 +207,14 @@ func extractFLACMetadata(f *os.File) ([]byte, error) {
 			if blockLen > maxMetadataReadBytes {
 				return nil, fmt.Errorf("FLAC VORBIS_COMMENT block size %d exceeds cap %d", blockLen, maxMetadataReadBytes)
 			}
-			body := make([]byte, blockLen)
-			if _, err := io.ReadFull(f, body); err != nil {
+			// Synthesise: fLaC + VORBIS_COMMENT marked as last block, with the
+			// body read straight into the synth (one allocation).
+			out := make([]byte, 4+flacMetadataBlockHeaderSize+blockLen)
+			copy(out, "fLaC")
+			out[4], out[5], out[6], out[7] = 0x80|byte(flacBlockVorbisComment), hdr[1], hdr[2], hdr[3]
+			if _, err := io.ReadFull(f, out[8:]); err != nil {
 				return nil, err
 			}
-			// Synthesise: fLaC + VORBIS_COMMENT marked as last block.
-			out := make([]byte, 0, 4+flacMetadataBlockHeaderSize+blockLen)
-			out = append(out, "fLaC"...)
-			out = append(out, 0x80|byte(flacBlockVorbisComment), hdr[1], hdr[2], hdr[3])
-			out = append(out, body...)
 			return out, nil
 		}
 

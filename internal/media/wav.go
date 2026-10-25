@@ -82,18 +82,16 @@ func extractWAVMetadata(f *os.File) ([]byte, error) {
 			if chunkSize > maxMetadataReadBytes {
 				return nil, fmt.Errorf("WAV id3 chunk size %d exceeds cap %d", chunkSize, maxMetadataReadBytes)
 			}
-			body := make([]byte, chunkSize)
-			if _, err := io.ReadFull(f, body); err != nil {
+			// Synthesise: RIFF + (size) + WAVE + id3 chunk header + body,
+			// reading the body straight into the synth (one allocation).
+			out := make([]byte, 12+8+int(chunkSize))
+			copy(out[0:4], hdr[:4])    // "RIFF"
+			copy(out[8:12], hdr[8:12]) // "WAVE"
+			copy(out[12:20], chHdr[:]) // id3 chunk header (fourCC + size)
+			binary.LittleEndian.PutUint32(out[4:8], uint32(len(out)-8))
+			if _, err := io.ReadFull(f, out[20:]); err != nil {
 				return nil, err
 			}
-			// Synthesise: RIFF + (size) + WAVE + id3 chunk header + body.
-			out := make([]byte, 0, 12+8+int(chunkSize))
-			out = append(out, hdr[:4]...)   // "RIFF"
-			out = append(out, 0, 0, 0, 0)   // RIFF size (filled below)
-			out = append(out, hdr[8:12]...) // "WAVE"
-			out = append(out, chHdr[:]...)  // id3 chunk header (fourCC + size)
-			out = append(out, body...)
-			binary.LittleEndian.PutUint32(out[4:8], uint32(len(out)-8))
 			return out, nil
 		}
 

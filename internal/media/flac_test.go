@@ -262,3 +262,37 @@ func TestExtractFLACMetadata_SkipsPictureAndAudio(t *testing.T) {
 	assert.Equal(t, tagFound, result)
 	assert.Equal(t, 3, stars)
 }
+
+// A length field >= 2^31 wraps negative as an int on 32-bit wasip1; it must be
+// rejected by the bounds check instead of reaching a multi-GiB allocation.
+func TestParseVorbisCommentBlock_HugeLengthRejected(t *testing.T) {
+	for _, n := range []uint32{0x80000000, 0xFFFFFFFF} {
+		// Vendor string length is the huge value.
+		vendor := make([]byte, 8)
+		binary.LittleEndian.PutUint32(vendor, n)
+		_, err := parseVorbisCommentBlock(vendor)
+		assert.Error(t, err, "vendor length %#x", n)
+
+		// Valid empty vendor, one comment whose length is the huge value.
+		comment := make([]byte, 16)
+		binary.LittleEndian.PutUint32(comment[4:8], 1)
+		binary.LittleEndian.PutUint32(comment[8:12], n)
+		_, err = parseVorbisCommentBlock(comment)
+		assert.Error(t, err, "comment length %#x", n)
+	}
+}
+
+func TestParseVorbisCommentBlock_HugeCountFailsFast(t *testing.T) {
+	body := make([]byte, 8)
+	binary.LittleEndian.PutUint32(body[4:8], 0xFFFFFFFF)
+	_, err := parseVorbisCommentBlock(body)
+	assert.Error(t, err)
+}
+
+func TestParseFLACVorbisComments_PictureCommentNotKept(t *testing.T) {
+	data := makeFLAC(t, "METADATA_BLOCK_PICTURE=AAAA", "RATING=4")
+	cmts, err := parseFLACVorbisComments(data)
+	require.NoError(t, err)
+	assert.NotContains(t, cmts, "METADATA_BLOCK_PICTURE")
+	assert.Equal(t, []string{"4"}, cmts["RATING"])
+}

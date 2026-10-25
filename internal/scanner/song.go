@@ -35,7 +35,10 @@ func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.
 		return
 	}
 
-	if !threshold.IsZero() && entry.MTime.Before(threshold) {
+	// A renamed/moved file keeps its old mtime but is imported by Navidrome as
+	// a new, unrated song – so a song added since the last sweep is processed
+	// even when the file itself looks unchanged.
+	if !threshold.IsZero() && entry.MTime.Before(threshold) && !songAddedSince(s, threshold) {
 		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, no change song=%q, threshold=%q", s.ID, threshold))
 		logDebug(fmt.Sprintf(
 			"nd-rating-sync: skipping %q – unchanged since last scan (mtime=%s)",
@@ -91,4 +94,18 @@ func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.
 	logTrace(fmt.Sprintf("nd-rating-sync: setRating done song=%q, threshold=%q", s.ID, threshold))
 	logDebug(fmt.Sprintf("nd-rating-sync: rated %q → %d stars", s.Title, stars))
 	tally.rated++
+}
+
+// songAddedSince reports whether Navidrome added s at or after threshold. A
+// missing or unparseable `created` value reports false, which falls back to
+// the plain mtime check.
+func songAddedSince(s subsonicSong, threshold time.Time) bool {
+	if s.Created == "" {
+		return false
+	}
+	created, err := time.Parse(time.RFC3339Nano, s.Created)
+	if err != nil {
+		return false
+	}
+	return !created.Before(threshold)
 }

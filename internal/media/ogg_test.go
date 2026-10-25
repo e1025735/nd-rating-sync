@@ -273,27 +273,106 @@ func TestParseOggVorbisRating_TagOrderFiltersWMPiTunes(t *testing.T) {
 
 // ─── extractor (Phase 1 partial reads) ────────────────────────────────────────
 
-// TestExtractOggMetadata_CapsReadAtHint proves the Ogg extractor never reads
-// more than oggMetadataReadHint bytes from the file regardless of how big
-// the file is on disk. The Vorbis/Opus spec guarantees the comment packet
-// finishes within the first few pages, well inside that hint — so the cap
-// is what makes Ogg/Opus reads bounded for multi-GB audio files.
-func TestExtractOggMetadata_CapsReadAtHint(t *testing.T) {
+// TestExtractOggMetadata_IgnoresTrailingAudio proves the extractor stops after
+// the two header packets: a file padded with far more audio than metadata
+// still yields a synth no bigger than the headers themselves.
+func TestExtractOggMetadata_IgnoresTrailingAudio(t *testing.T) {
 	dir := t.TempDir()
 
-	// Build a real Ogg-Vorbis file the parser can rate, then pad it with
-	// way more bytes than the hint. The extractor should still return at
-	// most oggMetadataReadHint bytes.
 	commentPkt := makeVorbisCommentPacket(t, "FMPS_RATING=0.6") // 3 stars
 	good := makeOggSinglePage(t, idHeaderPlaceholder, commentPkt)
-	huge := append(good, make([]byte, oggMetadataReadHint*4)...) // 4× the hint past the metadata
+	huge := append(good, junkAudio()...)
 	path := writeBinFile(t, dir, "song.ogg", huge)
 
 	data := extractedBytes(t, path, "ogg")
-	assert.LessOrEqual(t, len(data), oggMetadataReadHint,
-		"Ogg extractor must cap its read at oggMetadataReadHint")
+	assert.LessOrEqual(t, len(data), len(good), "Ogg extractor must not read past the header packets")
+	assert.False(t, bytesContains(data, sentinel))
 
 	stars, result := extractStarsFromFile(path, "ogg", []string{"MediaMonkey"})
 	assert.Equal(t, tagFound, result)
 	assert.Equal(t, 3, stars)
+}
+
+// opusWithCoverArt builds an Opus file whose comment packet carries a 4 MiB
+// METADATA_BLOCK_PICTURE (spanning dozens of pages) before the rating.
+func opusWithCoverArt(t *testing.T) []byte {
+	t.Helper()
+	art := "METADATA_BLOCK_PICTURE=" + string(junkAudio())
+	commentPkt := makeOpusCommentPacket(t, "TITLE=Song", art, "RATING=4")
+	return makeOggMultiPage(t, 255, idHeaderPlaceholder, commentPkt)
+}
+
+// Cover art used to push the comment packet past the old fixed 512 KiB read,
+// which made the rating look absent. The streaming extractor Seeks past the
+// art without reading it and still finds the rating behind it.
+func TestExtractOggMetadata_SkipsLargeCoverArt(t *testing.T) {
+	dir := t.TempDir()
+	path := writeBinFile(t, dir, "song.opus", opusWithCoverArt(t))
+
+	data := extractedBytes(t, path, "opus")
+	if bytesContains(data, sentinel) {
+		t.Fatalf("Ogg extractor must Seek past cover art (sentinel found in %d-byte output)", len(data))
+	}
+	assert.Less(t, len(data), 4096, "synth must hold only the small header entries")
+
+	stars, result := extractStarsFromFile(path, "opus", []string{"foobar2000"})
+	assert.Equal(t, tagFound, result)
+	assert.Equal(t, 4, stars)
+}
+
+// A file cut off inside the comment packet must be unreadable, never
+// tagAbsent, so clear_rating_if_untagged cannot wipe its rating.
+func TestExtractOggMetadata_TruncatedCommentIsUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	full := opusWithCoverArt(t)
+	path := writeBinFile(t, dir, "song.opus", full[:len(full)/2])
+
+	_, result := extractStarsFromFile(path, "opus", []string{"foobar2000"})
+	assert.Equal(t, fileUnreadable, result)
+}
+
+func TestExtractOggMetadata_HugeCommentLengthIsUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	var pkt bytes.Buffer
+	pkt.WriteString("OpusTags")
+	require.NoError(t, binary.Write(&pkt, binary.LittleEndian, uint32(0)))          // vendor
+	require.NoError(t, binary.Write(&pkt, binary.LittleEndian, uint32(1)))          // count
+	require.NoError(t, binary.Write(&pkt, binary.LittleEndian, uint32(0xFFFFFFFF))) // entry length
+	pkt.WriteString("RATING=4")
+	path := writeBinFile(t, dir, "song.opus", makeOggSinglePage(t, idHeaderPlaceholder, pkt.Bytes()))
+
+	_, result := extractStarsFromFile(path, "opus", []string{"foobar2000"})
+	assert.Equal(t, fileUnreadable, result)
+}
+
+func TestExtractOggMetadata_SmallPictureCommentDropped(t *testing.T) {
+	dir := t.TempDir()
+	commentPkt := makeVorbisCommentPacket(t, "METADATA_BLOCK_PICTURE=QUJD", "RATING=60")
+	path := writeBinFile(t, dir, "song.ogg", makeOggSinglePage(t, idHeaderPlaceholder, commentPkt))
+
+	data := extractedBytes(t, path, "ogg")
+	assert.False(t, bytesContains(data, []byte("METADATA_BLOCK_PICTURE")))
+
+	stars, result := extractStarsFromFile(path, "ogg", []string{"MusicBee"})
+	assert.Equal(t, tagFound, result)
+	assert.Equal(t, 3, stars)
+}
+
+func TestExtractOggMetadata_NotOggIsTagAbsent(t *testing.T) {
+	dir := t.TempDir()
+	path := writeBinFile(t, dir, "song.ogg", []byte("definitely not an ogg file"))
+
+	_, result := extractStarsFromFile(path, "ogg", []string{"foobar2000"})
+	assert.Equal(t, tagAbsent, result)
+}
+
+// oggSynth must split packets with more than 255 lacing values over several
+// pages so extractOggPackets reassembles them.
+func TestOggSynth_RoundTripsLargePacket(t *testing.T) {
+	big := bytes.Repeat([]byte{'x'}, 255*300+7)
+	packets, err := extractOggPackets(oggSynth(idHeaderPlaceholder, big), 2)
+	require.NoError(t, err)
+	require.Len(t, packets, 2)
+	assert.Equal(t, idHeaderPlaceholder, packets[0])
+	assert.Equal(t, big, packets[1])
 }

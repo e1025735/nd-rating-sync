@@ -136,7 +136,7 @@ Additional options:
 - `ratingTagOrder`
   - Ordered list of tag sources to try.
   - First match wins.
-  - Supported values: `WMP`, `iTunes`, `MediaMonkey`, `foobar2000`.
+  - Supported values: `WMP`, `iTunes`, `MediaMonkey`, `foobar2000`, `MusicBee`.
 
 Example:
 
@@ -156,9 +156,9 @@ Sources that do not exist in a container are simply skipped.
 
 For example:
 
-- `MediaMonkey` covers FMPS_Rating tags in MP3/WAV/DSF and Vorbis comments in FLAC/Ogg/Opus.
+- `MediaMonkey` covers MediaMonkey's own fields (POPM `no@email` in MP3/WAV/DSF, `RATING` in FLAC/Ogg/Opus, `rate` in M4A) and, as a fallback, FMPS_Rating tags.
 - `foobar2000` covers plain RATING tags.
-- `WMP` and `iTunes` cover their respective POPM/ASF representations. `WMP` also matches MusicBee's WMP-style rating tags.
+- `WMP` and `iTunes` cover their respective POPM/ASF representations. `MusicBee` covers MusicBee's POPM frame, `RATING` (FLAC/Ogg/Opus), `RATE` (M4A) and `WM/SharedUserRating` (WMA). Half-star values are never synced.
 
 This allows each user to mirror their own tagging workflow and keeps the first valid tag from taking precedence.
 

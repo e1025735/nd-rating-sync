@@ -50,11 +50,12 @@ func extractDSFMetadata(f *os.File) ([]byte, error) {
 		return out, nil
 	}
 
-	tag, err := readID3v2TagAt(f, int64(id3Offset))
+	// The tag is read straight into the synth, after room for the header.
+	out, err := readID3v2TagAt(f, int64(id3Offset), dsfHeaderSize)
 	if err != nil {
 		return nil, err
 	}
-	if len(tag) == 0 {
+	if len(out) == 0 {
 		// Offset present but no parseable tag there. Pretend untagged.
 		out := make([]byte, dsfHeaderSize)
 		copy(out, hdr[:])
@@ -65,9 +66,7 @@ func extractDSFMetadata(f *os.File) ([]byte, error) {
 	// Synthesise: original header but with id3Offset = dsfHeaderSize, then
 	// the tag placed immediately after. parseDSFRating reads the offset,
 	// jumps to byte 28, and finds the tag.
-	out := make([]byte, dsfHeaderSize+len(tag))
 	copy(out[:dsfHeaderSize], hdr[:])
 	binary.LittleEndian.PutUint64(out[20:28], dsfHeaderSize)
-	copy(out[dsfHeaderSize:], tag)
 	return out, nil
 }

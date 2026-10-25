@@ -156,3 +156,70 @@ func TestProcessSong_DryRunWouldRateTaggedFile(t *testing.T) {
 	assert.Equal(t, 1, tally.wouldRate)
 	host.SubsonicAPIMock.AssertNotCalled(t, "Call", "setRating?id=song-4&rating=3&u=alice")
 }
+
+// A renamed/moved file keeps its old mtime, but Navidrome imports it as a new
+// song. Incremental sync must still read it instead of counting it unchanged.
+func TestProcessSong_IncrementalProcessesNewlyAddedSongWithOldMTime(t *testing.T) {
+	resetSubsonicMock(t)
+
+	dir := t.TempDir()
+	path := writeFMPSFileAt(t, dir, "renamed.mp3", "0.6")
+	size := fileSize(t, path)
+	threshold := time.Now().Add(-time.Hour)
+	index := map[string][]FileEntry{
+		sizeKey(size, "mp3"): {{Path: path, Size: size, MTime: threshold.Add(-24 * time.Hour)}},
+	}
+
+	tally := &syncTally{}
+	song := subsonicSong{
+		ID:      "song-5",
+		Title:   "Renamed",
+		Suffix:  "mp3",
+		Size:    size,
+		Created: threshold.Add(time.Minute).UTC().Format(time.RFC3339Nano),
+	}
+
+	processSong(
+		UserConfig{Username: "alice", RatingTagOrder: []string{"MediaMonkey"}},
+		PluginConfig{DryRun: true},
+		song,
+		threshold,
+		index,
+		false,
+		"lib1",
+		nil,
+		tally,
+	)
+
+	assert.Equal(t, 0, tally.skippedUnchanged)
+	assert.Equal(t, 1, tally.wouldRate)
+}
+
+func TestProcessSong_IncrementalSkipsOldSongWithOldMTime(t *testing.T) {
+	resetSubsonicMock(t)
+
+	threshold := time.Now().Add(-time.Hour)
+	old := threshold.Add(-24 * time.Hour)
+	index := map[string][]FileEntry{
+		sizeKey(42, "mp3"): {{Path: "/nonexistent.mp3", Size: 42, MTime: old}},
+	}
+
+	for _, created := range []string{"", "not-a-date", old.UTC().Format(time.RFC3339Nano)} {
+		tally := &syncTally{}
+		song := subsonicSong{ID: "song-6", Title: "Old", Suffix: "mp3", Size: 42, Created: created}
+
+		processSong(
+			UserConfig{Username: "alice", RatingTagOrder: defaultTagOrder},
+			PluginConfig{},
+			song,
+			threshold,
+			index,
+			false,
+			"lib1",
+			nil,
+			tally,
+		)
+
+		assert.Equal(t, 1, tally.skippedUnchanged, "created=%q", created)
+	}
+}
