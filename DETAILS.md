@@ -66,16 +66,38 @@ run does redundant work, never incorrect work.
 
 ### FMPS_Rating
 
-FMPS_Rating is written as a float between `0.0` and `1.0`.
+FMPS_Rating is written as a float between `0.0` and `1.0`. Only whole stars
+are accepted; half stars (`0.1`, `0.3`, … `0.9`) are treated as unrated because
+Navidrome has no half stars.
 
 | Tag value | Stars |
 |-----------|-------|
-| `0`, `0.0`, empty, missing | (unrated → skip) |
-| `0.01` – `0.20` | ★ |
-| `0.21` – `0.40` | ★★ |
-| `0.41` – `0.60` | ★★★ |
-| `0.61` – `0.80` | ★★★★ |
-| `0.81` – `1.00` | ★★★★★ |
+| `0`, `0.0`, empty, missing, half stars | (unrated → skip) |
+| `0.2` | ★ |
+| `0.4` | ★★ |
+| `0.6` | ★★★ |
+| `0.8` | ★★★★ |
+| `1.0` (or above) | ★★★★★ |
+
+### MediaMonkey and MusicBee POPM
+
+MediaMonkey (`POPM` email `no@email`) and MusicBee (`POPM` email `MusicBee`)
+share one byte table, which also has half stars (½★ = `13`, 1½★ = `54`,
+2½★ = `118`, 3½★ = `186`, 4½★ = `242`). Because ½★ is a larger byte than 1★,
+these frames are decoded by exact value instead of by range:
+
+| POPM byte | Stars |
+|-----------|-------|
+| `1` (MediaMonkey 3.x: `23`) | ★ |
+| `64` | ★★ |
+| `128` | ★★★ |
+| `196` | ★★★★ |
+| `255` (MediaMonkey 3.x: `252`) | ★★★★★ |
+| anything else, incl. half stars | (unrated → skip) |
+
+MediaMonkey writes its rating as `POPM` in MP3, as `RATING` (0–100) in
+FLAC/Ogg/Opus and as `rate` in M4A. These take precedence over an
+`FMPS_Rating` tag in the same file when `MediaMonkey` is in `ratingTagOrder`.
 
 ### foobar2000 RATING
 
@@ -99,6 +121,23 @@ WMP ratings use non-linear fixed points. This includes WMP-style ratings also us
 | `129` – `196` | ★★★★ |
 | `197` – `255` | ★★★★★ |
 
+### WMA `WM/SharedUserRating`
+
+In WMA files Windows Media Player stores the rating as a DWORD on a 0–99
+scale (it writes `1`, `25`, `50`, `75`, `99`). MusicBee's WMA ratings use the
+same field. The plugin groups the values like the Windows `System.Rating`
+property:
+
+| Value | Stars |
+|-------|-------|
+| `0` | (unrated → skip) |
+| `1` – `12` | ★ |
+| `13` – `37` | ★★ |
+| `38` – `62` | ★★★ |
+| `63` – `87` | ★★★★ |
+| `88` – `99` | ★★★★★ |
+| `100`+ | (out of range → skip) |
+
 ### iTunes POPM
 
 iTunes ratings use a linear scale in steps of 20 across 0–100.
@@ -116,7 +155,8 @@ iTunes ratings use a linear scale in steps of 20 across 0–100.
 
 MusicBee uses a simple 0–100 scale in steps of 20 for tags written in the
 freeform `RATING` style used by Vorbis containers and the `RATE` freeform atom
-it writes in MP4/M4A files. Half-star values (`10`, `30`, … `90`) are treated
+it writes in MP4/M4A files (MediaMonkey writes the same scale in the same
+fields). Half-star values (`10`, `30`, … `90`) are treated
 as unrated because Navidrome has no half stars. For POPM / WMA-style ratings,
 the plugin uses the same WMP-style non-linear breakpoints.
 

@@ -105,7 +105,7 @@ func ExtractID3v2Metadata(f *os.File) ([]byte, error) {
 }
 
 func ReadID3v2TagAt(f *os.File, off int64) ([]byte, error) {
-	return readID3v2TagAt(f, off)
+	return readID3v2TagAt(f, off, 0)
 }
 
 func FmpsToStars(s string) (int, bool) {

@@ -276,3 +276,68 @@ func TestExtractID3v2Metadata_StopsAtTagEnd(t *testing.T) {
 	assert.Equal(t, tagFound, result)
 	assert.Equal(t, 3, stars)
 }
+
+// Parsing is limited to TXXX/POPM; a tag that also carries cover art and
+// text frames must still resolve its rating.
+func TestParseID3v2Rating_RatingFoundAlongsideCoverArt(t *testing.T) {
+	tag := id3v2.NewEmptyTag()
+	tag.SetTitle("Song")
+	tag.AddAttachedPicture(id3v2.PictureFrame{
+		Encoding:    id3v2.EncodingUTF8,
+		MimeType:    "image/jpeg",
+		PictureType: id3v2.PTFrontCover,
+		Picture:     bytes.Repeat([]byte{0xAB}, 256*1024),
+	})
+	tag.AddFrame("POPM", id3v2.PopularimeterFrame{Email: "Windows Media Player 9 Series", Rating: 196, Counter: big.NewInt(0)})
+	tag.AddFrame("TXXX", id3v2.UserDefinedTextFrame{Encoding: id3v2.EncodingUTF8, Description: "FMPS_Rating", Value: "0.4"})
+	var buf bytes.Buffer
+	_, err := tag.WriteTo(&buf)
+	require.NoError(t, err)
+
+	stars, ok := parseID3v2Rating(buf.Bytes(), "", []string{"WMP"})
+	assert.True(t, ok)
+	assert.Equal(t, 4, stars)
+
+	stars, ok = parseID3v2Rating(buf.Bytes(), "", []string{"MediaMonkey"})
+	assert.True(t, ok)
+	assert.Equal(t, 2, stars)
+}
+
+func TestParseID3v2Rating_MusicBeeHalfStarsAreUnrated(t *testing.T) {
+	for _, b := range []byte{13, 54, 118, 186, 242} {
+		data := makeTagWithPOPM(t, "MusicBee", b)
+		_, ok := parseID3v2Rating(data, "", []string{"MusicBee"})
+		assert.False(t, ok, "MusicBee rating=%d", b)
+	}
+}
+
+func TestParseID3v2Rating_MediaMonkeyPOPM(t *testing.T) {
+	cases := []struct {
+		rating byte
+		want   int
+	}{
+		{1, 1}, {64, 2}, {128, 3}, {196, 4}, {255, 5}, {23, 1}, {252, 5},
+	}
+	for _, tc := range cases {
+		data := makeTagWithPOPM(t, "no@email", tc.rating)
+		stars, ok := parseID3v2Rating(data, "", []string{"MediaMonkey"})
+		assert.True(t, ok, "MediaMonkey rating=%d", tc.rating)
+		assert.Equal(t, tc.want, stars, "MediaMonkey rating=%d", tc.rating)
+	}
+	for _, b := range []byte{0, 13, 54, 118, 186, 242} {
+		data := makeTagWithPOPM(t, "no@email", b)
+		_, ok := parseID3v2Rating(data, "", []string{"MediaMonkey"})
+		assert.False(t, ok, "MediaMonkey rating=%d", b)
+	}
+}
+
+// MediaMonkey's own POPM frame wins over an FMPS_Rating TXXX.
+func TestParseID3v2Rating_MediaMonkeyPOPMBeatsFMPS(t *testing.T) {
+	data := makeTagWithTXXXAndPOPM(t,
+		id3v2.UserDefinedTextFrame{Encoding: id3v2.EncodingUTF8, Description: "FMPS_Rating", Value: "0.2"},
+		id3v2.PopularimeterFrame{Email: "no@email", Rating: 196, Counter: big.NewInt(0)},
+	)
+	stars, ok := parseID3v2Rating(data, "", []string{"MediaMonkey"})
+	assert.True(t, ok)
+	assert.Equal(t, 4, stars)
+}

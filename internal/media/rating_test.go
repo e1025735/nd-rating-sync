@@ -25,7 +25,12 @@ func TestFmpsToStars(t *testing.T) {
 		{"3 stars canonical", "0.6", true, 3},
 		{"4 stars canonical", "0.8", true, 4},
 		{"5 stars canonical", "1.0", true, 5},
-		{"tiny positive rounds to 1", "0.01", true, 1},
+		{"tiny positive is not a whole star", "0.01", false, 0},
+		{"half star 0.5 is unrated", "0.1", false, 0},
+		{"half star 4.5 is unrated", "0.9", false, 0},
+		{"half star 2.5 is unrated", "0.5", false, 0},
+		{"float noise still whole", "0.60000002", true, 3},
+		{"two decimals", "0.80", true, 4},
 		{"above 1.0 clamps to 5", "1.5", true, 5},
 		{"leading/trailing whitespace", "  0.6  ", true, 3},
 	}
@@ -116,5 +121,30 @@ func TestRatingMusicBeeToStars(t *testing.T) {
 				assert.Equal(t, tc.want, got)
 			}
 		})
+	}
+}
+
+func TestPopmMusicBeeToStars(t *testing.T) {
+	for b, want := range map[byte]int{1: 1, 64: 2, 128: 3, 196: 4, 255: 5} {
+		assert.Equal(t, want, popmMusicBeeToStars(b), "byte %d", b)
+	}
+	// Unrated, half stars (13/54/118/186/242) and arbitrary bytes.
+	for _, b := range []byte{0, 13, 54, 118, 186, 242, 2, 100, 197, 23, 252} {
+		assert.Equal(t, 0, popmMusicBeeToStars(b), "byte %d", b)
+	}
+}
+
+func TestPopmMediaMonkeyToStars(t *testing.T) {
+	for b, want := range map[byte]int{1: 1, 64: 2, 128: 3, 196: 4, 255: 5, 23: 1, 252: 5} {
+		assert.Equal(t, want, popmMediaMonkeyToStars(b), "byte %d", b)
+	}
+	for _, b := range []byte{0, 13, 54, 118, 186, 242, 2, 100, 197} {
+		assert.Equal(t, 0, popmMediaMonkeyToStars(b), "byte %d", b)
+	}
+}
+
+func TestSharedUserRatingToStars(t *testing.T) {
+	for v, want := range map[uint32]int{0: 0, 1: 1, 12: 1, 13: 2, 25: 2, 50: 3, 75: 4, 87: 4, 88: 5, 99: 5, 100: 0, 255: 0} {
+		assert.Equal(t, want, sharedUserRatingToStars(v), "value %d", v)
 	}
 }

@@ -177,10 +177,25 @@ func TestParseM4ARating_MusicBeeRATEHalfStarsAndZeroAreUnrated(t *testing.T) {
 	}
 }
 
-func TestParseM4ARating_RATEOnlyMatchesMusicBee(t *testing.T) {
+func TestParseM4ARating_RATEMatchesMusicBeeAndMediaMonkeyOnly(t *testing.T) {
 	data := buildM4A(map[string]string{"RATE": "100"})
-	_, ok := parseM4ARating(data, "", []string{"WMP", "iTunes", "MediaMonkey", "foobar2000"})
+	_, ok := parseM4ARating(data, "", []string{"WMP", "iTunes", "foobar2000"})
 	assert.False(t, ok)
+
+	stars, ok := parseM4ARating(data, "", []string{"MediaMonkey"})
+	assert.True(t, ok)
+	assert.Equal(t, 5, stars)
+}
+
+// MediaMonkey's own "rate" atom beats an FMPS_Rating written by another app,
+// whatever order the atoms have in ilst (buildM4A uses map order).
+func TestParseM4ARating_MediaMonkeyRateBeatsFMPS(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		data := buildM4A(map[string]string{"rate": "80", "FMPS_Rating": "0.2"})
+		stars, ok := parseM4ARating(data, "", []string{"MediaMonkey"})
+		assert.True(t, ok)
+		assert.Equal(t, 4, stars)
+	}
 }
 
 // ─── tag order / priority ─────────────────────────────────────────────────────

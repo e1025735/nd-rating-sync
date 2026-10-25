@@ -66,7 +66,10 @@ func findAtom(data []byte, typ string) []byte {
 //   - "FMPS_Rating" (any case) → MediaMonkey, float 0.0–1.0
 //   - "rating" (lowercase)     → iTunes, integer 0/20/40/60/80/100
 //   - "RATING" (uppercase)     → foobar2000, integer 1–5
-//   - "RATE" (any case)        → MusicBee, integer 0/20/40/60/80/100
+//   - "RATE" (any case)        → MusicBee and MediaMonkey, integer 0/20/40/60/80/100
+//
+// For MediaMonkey, RATE (its own atom) wins over FMPS_Rating regardless of
+// the order the atoms appear in ilst.
 func parseM4ARating(data []byte, path string, tagOrder []string) (int, bool) {
 	moov := findAtom(data, "moov")
 	if moov == nil {
@@ -87,6 +90,7 @@ func parseM4ARating(data []byte, path string, tagOrder []string) (int, bool) {
 	}
 
 	found := map[string]int{}
+	mediaMonkeyRate := 0
 
 	walkAtoms(ilst, func(typ string, body []byte) bool {
 		if typ != "----" {
@@ -134,14 +138,19 @@ func parseM4ARating(data []byte, path string, tagOrder []string) (int, bool) {
 				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for foobar2000 for path %s", stars, path))
 			}
 		case nameUpper == "RATE":
-			// MusicBee writes "RATE" in MP4 containers with a 0–100 scale.
+			// MusicBee and MediaMonkey write "RATE" in MP4 containers with a 0–100 scale.
 			if stars, ok := ratingMusicBeeToStars(value); ok {
 				found["MusicBee"] = stars
 				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MusicBee for path %s", stars, path))
+				mediaMonkeyRate = stars
 			}
 		}
 		return true
 	})
+	if mediaMonkeyRate > 0 {
+		found["MediaMonkey"] = mediaMonkeyRate
+		logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MediaMonkey for path %s", mediaMonkeyRate, path))
+	}
 
 	for _, format := range tagOrder {
 		if stars, ok := found[format]; ok {

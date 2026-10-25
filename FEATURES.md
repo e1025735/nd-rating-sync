@@ -58,11 +58,11 @@ Incremental sync skips the per-*file* work, but a naive sweep still pages the en
 
 | Key | MP3 / WAV / DSF (ID3v2) | FLAC / Ogg / Opus (Vorbis) | M4A / AAC (MP4 atom) | WMA (ASF) | Scale / notes |
 |-----|-------------------------|----------------------------|----------------------|-----------|---------------|
-| `WMP` | POPM ("windows media player") | — | — | `WM/SharedUserRating` WORD | Non-linear: 1/64/128/196/255 → 1–5 stars |
+| `WMP` | POPM ("windows media player") | — | — | `WM/SharedUserRating` DWORD | MP3: non-linear 1/64/128/196/255 → 1–5 stars. WMA: 0–99 scale (WMP writes 1/25/50/75/99) → 1–5 stars |
 | `iTunes` | POPM ("itunes" / "com.apple.itunes") | — | `rating` freeform (lowercase) | — | Linear 0–100 in steps of 20 → 1–5 stars |
-| `MediaMonkey` | TXXX `FMPS_Rating` | `FMPS_RATING` | `FMPS_Rating` freeform | `FMPS_Rating` Unicode string | Float 0.0–1.0, ceiling × 5 → 1–5 stars |
+| `MediaMonkey` | POPM ("no@email"), else TXXX `FMPS_Rating` | `RATING` (0–100), else `FMPS_RATING` | `rate` freeform, else `FMPS_Rating` freeform | `FMPS_Rating` Unicode string | POPM: 1/64/128/196/255 → 1–5 stars; `RATING`/`rate`: 20–100 in steps of 20; FMPS: 0.2/0.4/…/1.0. Half stars are unrated |
 | `foobar2000` | TXXX `RATING` | `RATING` | `RATING` freeform (uppercase) | — | Integer 1–5 (0 / empty / out-of-range = unrated) |
-| `MusicBee` | POPM ("musicbee") | `RATING` | `RATE` freeform | `WM/SharedUserRating` WORD | MusicBee-style `0/20/40/60/80/100` values → 1–5 stars (half-star values are treated as unrated, since Navidrome has no half stars); WMA uses the same WMP-style breakpoints as `WM/SharedUserRating` |
+| `MusicBee` | POPM ("musicbee") | `RATING` | `RATE` freeform | `WM/SharedUserRating` DWORD | MusicBee-style `0/20/40/60/80/100` values → 1–5 stars (half-star values are treated as unrated, since Navidrome has no half stars); WMA uses the same 0–99 scale as `WMP` |
 
 ---
 
@@ -152,6 +152,7 @@ disk. So the plugin never opens it.
 
 - Does not write tags back to files (read-only access to the filesystem)
 - Does not support container formats beyond MP3, FLAC, Ogg-Vorbis, Opus, WAV, DSF, M4A/AAC, and WMA (AIFF, WavPack, DFF, etc. are skipped with a warning)
-- Does not support tag formats beyond WMP POPM, iTunes POPM, MediaMonkey/foobar2000 FMPS_Rating, and foobar2000 RATING
+- Does not support tag formats beyond the ones listed in the table above
+- Does not sync half-star ratings (Navidrome has none); half-star tag values are treated as unrated
 - Does not import ratings in the other direction (Navidrome → file)
 - Does not cache the Subsonic `search3` results between callbacks — each chunk fetches the page(s) it needs. A sweep of a *changed* library still enumerates it page by page (incremental sync skips the per-file work within); a sweep of an *unchanged* library is skipped wholesale by the change-detection gate, so it does no paging at all
