@@ -13,8 +13,15 @@ import (
 // delegates to parseID3v2Rating. Both "id3 " and "ID3 " fourCCs are accepted
 // (different tag editors write different cases).
 func parseWAVRating(data []byte, path string, tagOrder []string) (int, bool) {
+	stars, ok, _ := ratingFromWAV(data, path, tagOrder)
+	return stars, ok
+}
+
+// ratingFromWAV is parseWAVRating with the error of the embedded ID3v2 tag
+// kept, so a corrupt tag is reported as unreadable rather than untagged.
+func ratingFromWAV(data []byte, path string, tagOrder []string) (int, bool, error) {
 	if len(data) < 12 || string(data[:4]) != "RIFF" || string(data[8:12]) != "WAVE" {
-		return 0, false
+		return 0, false, nil
 	}
 	pos := 12
 	for pos+8 <= len(data) {
@@ -26,7 +33,7 @@ func parseWAVRating(data []byte, path string, tagOrder []string) (int, bool) {
 			break
 		}
 		if fourCC == "id3 " {
-			return parseID3v2Rating(data[pos:end], path, tagOrder)
+			return ratingFromID3v2(data[pos:end], path, tagOrder)
 		}
 		// RIFF chunks are padded to even byte boundaries.
 		if chunkSize%2 != 0 {
@@ -34,7 +41,7 @@ func parseWAVRating(data []byte, path string, tagOrder []string) (int, bool) {
 		}
 		pos = end
 	}
-	return 0, false
+	return 0, false, nil
 }
 
 // extractWAVMetadata walks the RIFF chunk list at the start of a WAV file,

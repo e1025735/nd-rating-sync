@@ -47,9 +47,11 @@ func TestBuildFileIndex_StopsImmediatelyWhenDeadlineHasPassed(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "song.mp3"), []byte("12345"), 0o644))
 
+	// A walk cut short must not yield a partial index: a missing file would
+	// make another file with the same size look like a unique match.
 	index, err := buildFileIndexWithoutCache(root, time.Now().Add(-time.Second))
-	require.NoError(t, err)
-	assert.Empty(t, index)
+	assert.ErrorIs(t, err, errWalkDeadline)
+	assert.Nil(t, index)
 }
 
 func TestEnsureLibraryIndexed_ScansMountAndStoresState(t *testing.T) {
@@ -64,6 +66,7 @@ func TestEnsureLibraryIndexed_ScansMountAndStoresState(t *testing.T) {
 
 	host.LibraryMock.On("GetLibrary", int32(1)).Return(&host.Library{ID: 1, MountPoint: root}, nil)
 	host.KVStoreMock.On("Get", kvadapter.LibraryScanStateKey("1")).Return([]byte(nil), false, nil)
+	host.KVStoreMock.On("DeleteByPrefix", "bucket:1:").Return(int64(0), nil).Once()
 	bucketKeyName := bucketKey("1", info.Size(), "mp3")
 	bucketValue, err := json.Marshal([]FileRecord{{Path: path, Mtime: info.ModTime().Unix()}})
 	require.NoError(t, err)
@@ -97,6 +100,9 @@ func TestEnsureLibraryIndexed_ResetsStaleStateWhenLibraryRescanned(t *testing.T)
 	oldState, err := json.Marshal(ScanState{Complete: true, PendingDirs: nil, LastScanAt: oldScan.Unix()})
 	require.NoError(t, err)
 	host.KVStoreMock.On("Get", libraryScanStateKey("1")).Return(oldState, true, nil)
+	// The rebuild must drop the old buckets: records of files moved or deleted
+	// since the last build would otherwise make their songs ambiguous.
+	host.KVStoreMock.On("DeleteByPrefix", "bucket:1:").Return(int64(5), nil).Once()
 
 	bucketKeyName := bucketKey("1", info.Size(), "mp3")
 	bucketValue, err := json.Marshal([]FileRecord{{Path: path, Mtime: info.ModTime().Unix()}})
@@ -132,7 +138,9 @@ func TestEnsureLibraryIndexed_ReusesCompletedUnchangedIndex(t *testing.T) {
 	host.LibraryMock.AssertExpectations(t)
 }
 
-func TestScanLibraryChunk_DoesNotMarkCompleteWhenRootUnreadable(t *testing.T) {
+// An unreadable directory is skipped (and logged) rather than retried
+// forever, so the build still completes.
+func TestScanLibraryChunk_SkipsUnreadableRoot(t *testing.T) {
 	resetKVStoreMock(t)
 
 	missing := filepath.Join(t.TempDir(), "missing")
@@ -183,6 +191,7 @@ func TestPersistentCache_FullIntegration(t *testing.T) {
 
 	// Prepare KV expectations for first scan
 	host.KVStoreMock.On("Get", stateKey).Return([]byte(nil), false, nil).Once()
+	host.KVStoreMock.On("DeleteByPrefix", "bucket:1:").Return(int64(0), nil).Once()
 	host.KVStoreMock.On("Get", bucketKey5).Return([]byte(nil), false, nil).Once()
 	host.KVStoreMock.On("Get", bucketKey7).Return([]byte(nil), false, nil).Once()
 
@@ -226,4 +235,30 @@ func TestPersistentCache_FullIntegration(t *testing.T) {
 	ready, err = ensureLibraryIndexed("1", time.Now().Add(5*time.Second))
 	require.NoError(t, err)
 	assert.True(t, ready)
+}
+
+// TestEnsureLibraryIndexed_CompleteWithoutScanTimeIsRebuiltOnce covers an
+// index built while Navidrome reported no scan time: once a scan time
+// appears the index is rebuilt and stamped with it, instead of being rebuilt
+// on every call.
+func TestEnsureLibraryIndexed_CompleteWithoutScanTimeIsRebuiltOnce(t *testing.T) {
+	resetKVStoreMock(t)
+	resetLibraryMock(t)
+
+	root := t.TempDir()
+	scan := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	host.LibraryMock.On("GetLibrary", int32(1)).Return(&host.Library{ID: 1, MountPoint: root, LastScanAt: scan.Unix()}, nil)
+	oldState, err := json.Marshal(ScanState{Complete: true})
+	require.NoError(t, err)
+	host.KVStoreMock.On("Get", libraryScanStateKey("1")).Return(oldState, true, nil).Once()
+	host.KVStoreMock.On("DeleteByPrefix", "bucket:1:").Return(int64(0), nil).Once()
+	host.KVStoreMock.On("Set", libraryScanStateKey("1"), mock.MatchedBy(func(data []byte) bool {
+		var state ScanState
+		return json.Unmarshal(data, &state) == nil && state.Complete && state.LastScanAt == scan.Unix()
+	})).Return(nil).Once()
+
+	ready, err := ensureLibraryIndexed("1", time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	assert.True(t, ready)
+	host.KVStoreMock.AssertExpectations(t)
 }

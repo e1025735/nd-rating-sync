@@ -84,3 +84,15 @@ func TestSetRating_SubsonicReturnsError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "50")
 }
+
+// Navidrome allows any character in a username, and the host parses the URI
+// with url.Parse: "&" or "+" must be escaped or the user name is cut off or
+// changed.
+func TestSetRating_EscapesUsernameAndID(t *testing.T) {
+	resetSubsonicMock(t)
+	host.SubsonicAPIMock.On("Call", "setRating?id=a%26b&rating=2&u=tom+%26+jerry%2B").
+		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
+
+	require.NoError(t, SetRating("tom & jerry+", "a&b", 2))
+	host.SubsonicAPIMock.AssertExpectations(t)
+}

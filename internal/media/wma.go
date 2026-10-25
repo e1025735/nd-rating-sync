@@ -121,16 +121,16 @@ func parseASFExtContentDesc(body []byte, path string, tagOrder []string) (int, b
 			}
 			if stars := sharedUserRatingToStars(v); stars > 0 {
 				found["WMP"] = stars
-				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for WMP for path %s", stars, path))
+				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for WMP in %q", stars, path))
 				found["MusicBee"] = stars
-				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MusicBee for path %s", stars, path))
+				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for MusicBee in %q", stars, path))
 			}
 		case "FMPS_RATING":
 			if valueType == 0 { // Unicode string
 				s := strings.TrimSpace(decodeUTF16LE(valueBytes))
 				if stars, ok := fmpsToStars(s); ok {
 					found["MediaMonkey"] = stars
-					logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MediaMonkey for path %s", stars, path))
+					logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for MediaMonkey in %q", stars, path))
 				}
 			}
 		}

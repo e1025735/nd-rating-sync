@@ -41,7 +41,7 @@ func TestKVKeyLastSynced_IncludesLibraryAndUser(t *testing.T) {
 		KVKeyLastSynced("lib2", "alice"))
 }
 
-func TestKVStore_PurgeStaleKVEntries_DeletesAllRelevantPrefixes(t *testing.T) {
+func TestKVStore_PurgeStaleKVEntries_KeepsIncrementalThresholds(t *testing.T) {
 	host.KVStoreMock.ExpectedCalls = nil
 	host.KVStoreMock.Calls = nil
 	t.Cleanup(func() {
@@ -52,11 +52,11 @@ func TestKVStore_PurgeStaleKVEntries_DeletesAllRelevantPrefixes(t *testing.T) {
 	host.KVStoreMock.On("DeleteByPrefix", ConfigPrefix).Return(int64(1), nil).Once()
 	host.KVStoreMock.On("DeleteByPrefix", BucketPrefix).Return(int64(2), nil).Once()
 	host.KVStoreMock.On("DeleteByPrefix", LibraryStatePrefix).Return(int64(4), nil).Once()
-	host.KVStoreMock.On("DeleteByPrefix", LibraryUserLastSyncPrefix).Return(int64(8), nil).Once()
 
 	deleted, err := PurgeStaleKVEntries()
 	require.NoError(t, err)
-	assert.Equal(t, int64(15), deleted)
+	assert.Equal(t, int64(7), deleted)
+	host.KVStoreMock.AssertNotCalled(t, "DeleteByPrefix", LibraryUserLastSyncPrefix)
 	host.KVStoreMock.AssertExpectations(t)
 }
 
@@ -77,7 +77,6 @@ func TestRefreshConfigHash_PurgesPluginCacheOnMismatch(t *testing.T) {
 	host.KVStoreMock.On("DeleteByPrefix", ConfigPrefix).Return(int64(1), nil).Once()
 	host.KVStoreMock.On("DeleteByPrefix", BucketPrefix).Return(int64(2), nil).Once()
 	host.KVStoreMock.On("DeleteByPrefix", LibraryStatePrefix).Return(int64(4), nil).Once()
-	host.KVStoreMock.On("DeleteByPrefix", LibraryUserLastSyncPrefix).Return(int64(8), nil).Once()
 	host.KVStoreMock.On("Set", KVKeyConfigHash, []byte(currentHash)).Return(nil).Once()
 
 	EnsureConfigCacheIsCurrent(current)
@@ -90,7 +89,7 @@ func TestLoadLastSynced_KeyMissing(t *testing.T) {
 	host.KVStoreMock.On("Get", KVKeyLastSynced("lib1", "alice")).
 		Return([]byte(nil), false, nil)
 
-	got := LoadLastSynced("lib1", "alice")
+	got := LoadLastSynced("lib1", "alice", "fp")
 	assert.True(t, got.IsZero())
 	host.KVStoreMock.AssertExpectations(t)
 }
@@ -101,7 +100,7 @@ func TestLoadLastSynced_RoundTrip(t *testing.T) {
 	host.KVStoreMock.On("Get", KVKeyLastSynced("lib1", "alice")).
 		Return([]byte(want.Format(time.RFC3339Nano)), true, nil)
 
-	got := LoadLastSynced("lib1", "alice")
+	got := LoadLastSynced("lib1", "alice", "fp")
 	assert.True(t, want.Equal(got), "want=%s got=%s", want, got)
 }
 
@@ -110,7 +109,7 @@ func TestLoadLastSynced_MalformedFallsBackToZero(t *testing.T) {
 	host.KVStoreMock.On("Get", KVKeyLastSynced("lib1", "alice")).
 		Return([]byte("not a real timestamp"), true, nil)
 
-	got := LoadLastSynced("lib1", "alice")
+	got := LoadLastSynced("lib1", "alice", "fp")
 	assert.True(t, got.IsZero())
 }
 
@@ -119,7 +118,7 @@ func TestLoadLastSynced_KVErrorFallsBackToZero(t *testing.T) {
 	host.KVStoreMock.On("Get", KVKeyLastSynced("lib1", "alice")).
 		Return([]byte(nil), false, errors.New("kvstore unavailable"))
 
-	got := LoadLastSynced("lib1", "alice")
+	got := LoadLastSynced("lib1", "alice", "fp")
 	assert.True(t, got.IsZero())
 }
 
@@ -128,7 +127,7 @@ func TestLoadLastSynced_EmptyValueFallsBackToZero(t *testing.T) {
 	host.KVStoreMock.On("Get", KVKeyLastSynced("lib1", "alice")).
 		Return([]byte{}, true, nil)
 
-	got := LoadLastSynced("lib1", "alice")
+	got := LoadLastSynced("lib1", "alice", "fp")
 	assert.True(t, got.IsZero())
 }
 
@@ -137,10 +136,10 @@ func TestSaveLastSynced_WritesUTCFormatted(t *testing.T) {
 	when := time.Date(2026, 5, 7, 12, 0, 0, 0, time.FixedZone("X", 7200))
 	host.KVStoreMock.On("Set",
 		KVKeyLastSynced("lib1", "alice"),
-		[]byte(when.UTC().Format(time.RFC3339Nano)),
+		[]byte(when.UTC().Format(time.RFC3339Nano)+" fp"),
 	).Return(nil)
 
-	SaveLastSynced("lib1", "alice", when)
+	SaveLastSynced("lib1", "alice", when, "fp")
 	host.KVStoreMock.AssertExpectations(t)
 }
 
@@ -149,22 +148,52 @@ func TestSaveLastSynced_KVErrorIsSwallowed(t *testing.T) {
 	host.KVStoreMock.On("Set", KVKeyLastSynced("lib1", "alice"), mock.Anything).
 		Return(errors.New("disk full"))
 
-	SaveLastSynced("lib1", "alice", time.Now())
+	SaveLastSynced("lib1", "alice", time.Now(), "fp")
 }
 
 func TestStateRoundTrip(t *testing.T) {
 	resetKVStoreMock(t)
 
 	when := time.Now().UTC().Truncate(time.Nanosecond)
-	encoded := []byte(when.Format(time.RFC3339Nano))
+	encoded := []byte(when.Format(time.RFC3339Nano) + " fp")
 
 	host.KVStoreMock.On("Set", KVKeyLastSynced("lib1", "alice"), encoded).Return(nil).Once()
 	host.KVStoreMock.On("Get", KVKeyLastSynced("lib1", "alice")).Return(encoded, true, nil).Once()
 
-	SaveLastSynced("lib1", "alice", when)
-	got := LoadLastSynced("lib1", "alice")
+	SaveLastSynced("lib1", "alice", when, "fp")
+	got := LoadLastSynced("lib1", "alice", "fp")
 	require.True(t, when.Equal(got), "want=%s got=%s", when, got)
 	host.KVStoreMock.AssertExpectations(t)
+}
+
+// A threshold saved with other pair settings (tag order, skip/clear flags)
+// forces one full scan, so the new settings reach unchanged files too.
+func TestLoadLastSynced_FingerprintMismatchFallsBackToZero(t *testing.T) {
+	resetKVStoreMock(t)
+	when := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
+	host.KVStoreMock.On("Get", KVKeyLastSynced("lib1", "alice")).
+		Return([]byte(when.Format(time.RFC3339Nano)+" old"), true, nil)
+
+	assert.True(t, LoadLastSynced("lib1", "alice", "new").IsZero())
+}
+
+func TestDeleteLibraryBuckets_UsesLibraryScopedPrefix(t *testing.T) {
+	resetKVStoreMock(t)
+	host.KVStoreMock.On("DeleteByPrefix", "bucket:1:").Return(int64(3), nil).Once()
+
+	deleted, err := DeleteLibraryBuckets("1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), deleted)
+	host.KVStoreMock.AssertExpectations(t)
+}
+
+func TestGetPercentageKVStorageUsage_UsedOverMax(t *testing.T) {
+	resetKVStoreMock(t)
+	host.KVStoreMock.On("GetStorageUsed").Return(int64(250_000), nil)
+
+	pct, err := GetPercentageKVStorageUsage("1MB")
+	require.NoError(t, err)
+	assert.InDelta(t, 25.0, pct, 0.001)
 }
 
 func TestSweepInProgress_FreshHeartbeatIsActive(t *testing.T) {

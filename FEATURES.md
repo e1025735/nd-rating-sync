@@ -24,7 +24,8 @@ After a successful scan, the timestamp is persisted per `(library, user)` in Nav
 - Skip is decided by the matched file's modification time (captured while indexing the library mount) vs the stored threshold — file mtime is the right signal because tag editors update it the moment the user saves a rating, regardless of whether Navidrome's own library scan has caught up.
 - Songs Navidrome added since the last scan are always read, even when the file's mtime is older. Renaming or moving a file keeps its mtime, but Navidrome imports it as a new, unrated song.
 - KV failures are non-fatal: missing/corrupt state falls back to a full scan; failed writes mean the next run does redundant work, never incorrect work.
-- Disable with `incremental_sync=false` to force a full scan every run (useful after changing a user's `ratingTagOrder`).
+- The stored timestamp carries a fingerprint of the user's `ratingTagOrder`, `skip_already_rated` and `clear_rating_if_untagged`; changing any of them makes that user's next run a full pass automatically. Other config changes keep the timestamp.
+- Disable with `incremental_sync=false` to force a full scan every run (e.g. for debugging).
 
 ---
 
@@ -99,11 +100,13 @@ disk. So the plugin never opens it.
 
 - **Format-aware partial reads** — for every supported container (MP3, FLAC, Ogg/Opus, WAV, DSF, MP4, WMA) the plugin reads ONLY the bytes the format spec puts the metadata in (header + tag chunk / atom / block), using `Seek` to jump past audio samples — never loading the audio body into memory. Per-format read is bounded by the media-layer guard `maxMetadataReadBytes` (16 MiB) defined in `internal/media/constants.go`, so even a multi-GiB FLAC or MP4 costs a few hundred KiB of I/O instead of the full file size. This is the dominant per-song speedup over the old "read up to 64 MiB" approach for large libraries.
 - **No file-size cap** — files of any on-disk size are processable. The 16 MiB cap is on what each extractor will pull into RAM from the metadata region, not on file size. Hostile/misreported files (e.g. `/dev/zero` masquerading as audio) are bounded by the same per-extractor cap.
-- **Per-file panic isolation** — a panic in any container parser is recovered and the file is treated as unreadable, so a single hostile file cannot abort the whole sync run.
+- **Panic-free parsers** — TinyGo cannot recover panics on WebAssembly (a panic ends the plugin call), so the container parsers are written to never panic on any input: every length is bounds-checked, untrusted sizes are compared as `uint64`, and the parsers are fuzzed. The `recover()` around parsing only helps native test builds.
+- **Corrupt tags never clear a rating** — a tag that is cut off, has a broken size field, exceeds the 16 MiB cap or cannot be parsed (e.g. ID3v2.2) is reported as unreadable, not as "no tag", so `clear_rating_if_untagged` leaves the rating alone.
 - **32-bit-safe chunk arithmetic** — RIFF (WAV) and ASF (WMA) chunk-size fields are evaluated in `uint64` before narrowing to `int`, so a sign-wrap on TinyGo wasip1 (32-bit `int`) cannot rewind the cursor and produce an infinite loop in the chunk walker.
 - **Vorbis comment cap** — the FLAC / Ogg / Opus comment-block parser clamps the declared entry count to 1024 so a crafted file with `count = 2^32` cannot exhaust CPU/GC before the byte budget runs out.
 - **KV key escaping** — `last-synced` keys URL-escape both `libraryID` and `username`, so a `:` inside either component cannot collide with a different `(library, user)` tuple.
-- **Log-line hygiene** — every user-controlled string (paths, song IDs, library IDs, usernames, file extensions, server error messages) is rendered with `%q` so embedded `\r\n` or ANSI escapes cannot inject log lines into downstream aggregators.
+- **Log-line hygiene** — every user-controlled string (paths, song IDs, library IDs, usernames, file extensions, server and OS error messages) is rendered with `%q` so embedded `\r\n` or ANSI escapes cannot inject log lines into downstream aggregators. All packages (sync engine, media parsers, KV and Subsonic adapters) log through `pdk.Log`, including trace-level detail for debugging.
+- **Escaped API parameters** — `setRating` query-escapes the song ID and username; Navidrome allows any character in a username and the host parses the request URI, so an unescaped `&`, `+` or `%` would change the call.
 - **No raw OS errors in open/read warnings** — failures to open or read a music file log only the path; the underlying `os` error string (which would distinguish "permission denied" from "no such file or directory") is gated to debug-level only, so plugin warnings cannot be used to probe arbitrary paths' existence via planted symlinks.
 
 ---
@@ -120,9 +123,12 @@ disk. So the plugin never opens it.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `sync_schedule` | `0 * * * *` | Cron expression for recurring sync (hourly default; idle runs are cheap via the change-detection gate, so a frequent schedule is fine) |
-| `incremental_sync` | `true` | Skip files whose mtime predates the last successful scan; set false to force a full rescan every run |
+| `incremental_sync` | `true` | Skip files whose mtime predates the last successful scan (songs Navidrome added since then are always read; a change of a user's tag order or skip/clear flags forces one full pass for that user); set false to force a full rescan every run |
 | `dry_run` | `false` | Run the full scan pipeline without writing any ratings; logs `[DRY RUN] would_rate / would_clear` instead of calling `setRating`; does not advance the incremental-sync threshold |
-| `cache_libraries_filesystem_tree` | `false` | Persist a per-library file-index bucket cache in KV for very large or slow library mounts. Use only when repeated filesystem walks are too expensive. |
+| `cache_libraries_filesystem_tree` | `false` | Persist a per-library file-index bucket cache in KV for very large or slow library mounts. Use only when repeated filesystem walks are too expensive. The cache is rebuilt after each Navidrome library scan. |
+| `kv_storage_max_size` | `1MB` | Must equal `permissions.kvstore.maxSize` in `manifest.json`; used to report KV usage (warning at 90 %) |
+| `default_skip_already_rated` | *(none → true)* | Admin default for users whose `skip_already_rated` is Inherit |
+| `default_clear_rating_if_untagged` | *(none → false)* | Admin default for users whose `clear_rating_if_untagged` is Inherit |
 
 ---
 
@@ -139,9 +145,10 @@ disk. So the plugin never opens it.
 ## Sync execution model
 
 - Every scheduler callback is bound by Navidrome's hard **30s** plugin-call limit (force-closes the WASM module otherwise — not configurable by the plugin)
-- Each callback processes songs for a **~20s budget** (`callBudget`), then stops
+- Each callback processes songs for a **15 s budget** (`callBudget`), then stops
 - If songs remain, the callback serialises a cursor — `(library index, user index, song offset, pair scan-start)` — into the payload of a fresh one-time callback (empty schedule ID → host mints a unique one) and returns; the continuation resumes exactly there
-- Continuations are rescheduled with **zero delay**, which the host runs as `time.AfterFunc(0, …)` — so the next slice fires immediately. A large first import runs as a *continuous, back-to-back* chain of quick callbacks (`… time budget reached – rescheduled continuation …` → `sync complete`), completing in minutes. **Convergence speed is driven by this chain, not by the cron** — the cron interval only governs how often a *fresh* sweep starts
+- **Bounded retries:** a failed song listing, or a library walk that does not finish within a whole budget, is retried after **30 s**; after **3** attempts the `(library, user)` pair is skipped until the next sweep (its threshold is not saved). A lasting failure such as an unknown username can therefore never keep a continuation chain running forever
+- Continuations are otherwise rescheduled with **zero delay**, which the host runs as `time.AfterFunc(0, …)` — so the next slice fires immediately. A large first import runs as a *continuous, back-to-back* chain of quick callbacks (`… time budget reached – rescheduled continuation …` → `sync complete`), completing in minutes. **Convergence speed is driven by this chain, not by the cron** — the cron interval only governs how often a *fresh* sweep starts
 - **Overlap guard:** a full sweep records a short-lived heartbeat (`sweep-active` KV key) refreshed on every continuation; a freshly-triggered sweep skips if one is already running, so a frequent cron firing mid-import can't start a second concurrent chain. The heartbeat goes stale (≈2 min) so a crashed chain self-heals, and `OnInit` clears it on reload. Best-effort — `setRating` idempotency covers any residual race
 - Progress lives only in the scheduler payload + KV store — package globals do **not** survive between callbacks (fresh WASM instance per call)
 - The incremental-sync threshold for a `(library, user)` is saved only once that pair is fully processed, so an interrupted/continued sweep never advances the threshold past unprocessed songs

@@ -6,21 +6,19 @@ PLUGIN_NAME := nd-rating-sync
 WASM        := plugin.wasm
 PACKAGE     := $(PLUGIN_NAME).ndp
 
-.PHONY: all build package clean
+.PHONY: all build package clean install
 
 all: package
 
-## build – compile to WebAssembly using TinyGo
+# Every non-test Go source, including internal/, so a change anywhere rebuilds.
+GO_SOURCES := $(shell find . -name '*.go' -not -name '*_test.go') go.mod go.sum
+
+## build – compile to WebAssembly using TinyGo (the same command as the
+## release workflow, so local builds match released ones)
 build: $(WASM)
 
-$(WASM): *.go
-	tinygo build \
-		-o $(WASM) \
-		-target wasip1 \
-		-buildmode=c-shared \
-		-scheduler=none \
-		-gc=conservative \
-		.
+$(WASM): $(GO_SOURCES)
+	tinygo build -o $(WASM) -target wasip1 -buildmode=c-shared -scheduler=none .
 
 ## package – bundle manifest + wasm into an .ndp archive
 package: $(PACKAGE)

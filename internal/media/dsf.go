@@ -11,14 +11,21 @@ import (
 // header (always 28 bytes) stores the ID3v2 offset at bytes 20–27; an offset
 // of 0 means the file has no tag.
 func parseDSFRating(data []byte, path string, tagOrder []string) (int, bool) {
+	stars, ok, _ := ratingFromDSF(data, path, tagOrder)
+	return stars, ok
+}
+
+// ratingFromDSF is parseDSFRating with the error of the embedded ID3v2 tag
+// kept, so a corrupt tag is reported as unreadable rather than untagged.
+func ratingFromDSF(data []byte, path string, tagOrder []string) (int, bool, error) {
 	if len(data) < 28 || string(data[:4]) != "DSD " {
-		return 0, false
+		return 0, false, nil
 	}
 	id3Offset := binary.LittleEndian.Uint64(data[20:28])
 	if id3Offset == 0 || id3Offset >= uint64(len(data)) {
-		return 0, false
+		return 0, false, nil
 	}
-	return parseID3v2Rating(data[id3Offset:], path, tagOrder)
+	return ratingFromID3v2(data[id3Offset:], path, tagOrder)
 }
 
 // dsfHeaderSize is the fixed length of the DSD chunk header at the start of

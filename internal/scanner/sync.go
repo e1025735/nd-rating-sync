@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -21,20 +22,29 @@ const (
 // mid-sweep it returns allDone=false with a cursor the caller hands to a
 // continuation callback.
 //
-// Forward progress is guaranteed: the budget is only checked at pair
-// boundaries here and after each song in processPairChunk, so every invocation
-// either advances the cursor or completes the sweep – a chain of continuations
-// always terminates.
+// Forward progress is guaranteed: every invocation either processes at least
+// one song, advances a persistent index build, or counts a failed attempt in
+// cur.Retry, and a pair is skipped after maxPairAttempts failed attempts – so
+// a chain of continuations always terminates.
 func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCursor, bool) {
+	return runSyncChunkWithIndexCache(cfg, cur, deadline, map[string]fileIndexCacheEntry{})
+}
+
+// runSyncChunkWithIndexCache is runSyncChunk with the per-call file-index
+// cache passed in, so tests can stand in for a mount walk.
+func runSyncChunkWithIndexCache(cfg PluginConfig, cur SyncCursor, deadline time.Time, indexCache map[string]fileIndexCacheEntry) (SyncCursor, bool) {
 	// Per-call caches: LibraryGetLibrary results (for the LastScanAt gate),
 	// file-index results (for size-based file matching), and persistent index
 	// bucket lookups. Globals do not persist across callbacks, so all are
 	// intentionally scoped to one invocation.
 	libCache := map[string]libScanResult{}
-	indexCache := map[string]fileIndexCacheEntry{}
 	bucketCache := map[string][]FileRecord{}
+	// worked records that this callback already spent time on a pair, so a
+	// mount walk that later runs out of budget is not the walk's fault.
+	worked := false
 
-	logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk start lib=%q user=%q, offset=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
+	logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk start lib=%d user=%d offset=%d deadline=%s",
+		cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
 	for {
 		// Skip exhausted users/libraries. Also tolerates indices that point
 		// past the end after a config change between continuations.
@@ -43,43 +53,37 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 			cur.User = 0
 			cur.Offset = 0
 			cur.PairStart = ""
+			cur.Retry = 0
 		}
 		if cur.Lib >= len(cfg.Libraries) {
-			kvStorageUsage, err := kvadapter.GetPercentageKVStorageUsage(cfg.KVStorageMaxSize)
-			if err != nil {
-				logWarn("nd-rating-sync: kv storage usage could not be fetched")
-				logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, sweep complete lib=%q user=%q, offset=%q, deadline=%q",
-					cur.Lib, cur.User, cur.Offset, deadline))
-				return cur, true
-			}
-			logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, sweep complete lib=%q user=%q, offset=%q, deadline=%q, kvStorageUsage=%.2f%%",
-				cur.Lib, cur.User, cur.Offset, deadline, kvStorageUsage))
+			logKVUsage(cfg)
+			logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, sweep complete lib=%d user=%d offset=%d deadline=%s",
+				cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
 			return cur, true // whole sweep complete
 		}
 		// A valid pair is selected. If the budget is gone, resume here.
 		if time.Now().After(deadline) {
-			logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, deadline reached lib=%q user=%q, offset=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
+			logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, deadline reached lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
 			return cur, false
 		}
 
 		lib := cfg.Libraries[cur.Lib]
 		u := lib.Users[cur.User]
-		logDebug(fmt.Sprintf("nd-rating-sync: will look for the following ratings: %v", u.RatingTagOrder))
+		logDebug(fmt.Sprintf("nd-rating-sync: will look for the following ratings: %q", u.RatingTagOrder))
 		if u.Username == "" {
 			logWarn(fmt.Sprintf(
 				"nd-rating-sync: skipping library=%q user#%d – empty username in config", lib.LibraryID, cur.User))
-			cur.User++
-			cur.Offset = 0
-			cur.PairStart = ""
+			cur.nextPair()
 			continue
 		}
 
 		// Load the incremental threshold once for this pair; reused by the
 		// LastScanAt gate below and passed into processPairChunk for the
-		// per-file mtime skip.
+		// per-file mtime skip. A threshold saved with other pair settings
+		// reads as zero (full scan).
 		var threshold time.Time
 		if cfg.IncrementalSync {
-			threshold = kvadapter.LoadLastSynced(lib.LibraryID, u.Username)
+			threshold = kvadapter.LoadLastSynced(lib.LibraryID, u.Username, pairFingerprint(u))
 		}
 
 		// LastScanAt gate: when starting a fresh pair, skip the whole pair if
@@ -92,9 +96,7 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 				logInfo(fmt.Sprintf(
 					"nd-rating-sync: skipping user=%q library=%q – library unchanged since last sync (last_scan=%s threshold=%s)",
 					u.Username, lib.LibraryID, scanned.UTC().Format(time.RFC3339), threshold.UTC().Format(time.RFC3339)))
-				cur.User++
-				cur.Offset = 0
-				cur.PairStart = ""
+				cur.nextPair()
 				continue
 			}
 		}
@@ -106,49 +108,58 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 		// failure here is non-fatal and the pair is skipped WITHOUT saving the
 		// threshold – nothing was processed, so the next run retries from the
 		// same baseline.
-		index := map[string][]FileEntry{}
+		var index map[string][]FileEntry
 		usePersistentIndex := cfg.CacheLibrariesFilesystemTree
 
 		if usePersistentIndex {
 			ready, err := ensureLibraryIndexed(lib.LibraryID, deadline)
-
 			if err != nil {
 				logWarn(fmt.Sprintf(
-					"nd-rating-sync: skipping library=%q user#%d – library threw an error", lib.LibraryID, cur.User))
-				cur.User++
-				cur.Offset = 0
-				cur.PairStart = ""
+					"nd-rating-sync: skipping library=%q user#%d – file index failed: %q", lib.LibraryID, cur.User, err.Error()))
+				cur.nextPair()
 				continue
 			}
-
 			if !ready {
-				kvStorageUsage, err := kvadapter.GetPercentageKVStorageUsage(cfg.KVStorageMaxSize)
-				if err != nil {
-					logDebug("nd-rating-sync: kv storage usage could not be fetched")
-					logTrace(fmt.Sprintf(
-						"nd-rating-sync: runSyncChunk stop, deadline reached with cache lib=%q user=%q, offset=%q, deadline=%q",
-						cur.Lib, cur.User, cur.Offset, deadline))
-					return cur, false
-				}
-				logTrace(fmt.Sprintf(
-					"nd-rating-sync: runSyncChunk stop, deadline reached with cache lib=%q user=%q, offset=%q, deadline=%q, kvStorageUsage=%.2f%%",
-					cur.Lib, cur.User, cur.Offset, deadline, kvStorageUsage))
+				// The build's progress is saved in the KV store; the next
+				// callback continues it.
+				logKVUsage(cfg)
+				logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, deadline reached with cache lib=%d user=%d offset=%d library=%q deadline=%s",
+					cur.Lib, cur.User, cur.Offset, lib.LibraryID, deadline.Format(time.RFC3339Nano)))
 				return cur, false
 			}
 		} else {
-			indexTmp, indexOK := cachedFileIndex(indexCache, lib.LibraryID, deadline)
-			index = indexTmp
-			if time.Now().After(deadline) {
-				logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, deadline hit without cache lib=%q user=%q, offset=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
+			idx, err := cachedFileIndex(indexCache, lib.LibraryID, deadline)
+			switch {
+			case errors.Is(err, errWalkDeadline):
+				if worked {
+					// Earlier pairs used up this budget; a fresh callback
+					// walks with a whole one.
+					logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, deadline hit without cache after earlier pairs lib=%d user=%d offset=%d deadline=%s",
+						cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
+					return cur, false
+				}
+				cur.Retry++
+				if cur.Retry >= maxPairAttempts {
+					logWarn(fmt.Sprintf(
+						"nd-rating-sync: skipping user=%q library=%q – walking the library did not finish within %s in %d attempts; enable cache_libraries_filesystem_tree",
+						u.Username, lib.LibraryID, callBudget, cur.Retry))
+					cur.nextPair()
+					continue
+				}
+				logWarn(fmt.Sprintf(
+					"nd-rating-sync: walking library=%q did not finish within %s (attempt %d of %d) – retrying in %ds",
+					lib.LibraryID, callBudget, cur.Retry, maxPairAttempts, retryDelaySeconds))
+				logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, deadline hit without cache lib=%d user=%d offset=%d retry=%d deadline=%s",
+					cur.Lib, cur.User, cur.Offset, cur.Retry, deadline.Format(time.RFC3339Nano)))
 				return cur, false
-			}
-			if !indexOK {
-				cur.User++
-				cur.Offset = 0
-				cur.PairStart = ""
+			case err != nil:
+				logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk skipping pair, no file index lib=%d user=%d library=%q", cur.Lib, cur.User, lib.LibraryID))
+				cur.nextPair()
 				continue
 			}
+			index = idx
 		}
+		worked = true
 
 		if cur.PairStart == "" {
 			cur.PairStart = time.Now().UTC().Format(time.RFC3339Nano)
@@ -157,23 +168,54 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 		next, pairDone := processPairChunk(lib, u, cfg, cur, threshold, deadline, index, usePersistentIndex, bucketCache)
 		cur = next
 		if !pairDone {
-			logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, deadline hit in processPairChunk lib=%q user=%q, offset=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
+			if cur.Retry >= maxPairAttempts {
+				logWarn(fmt.Sprintf(
+					"nd-rating-sync: skipping user=%q library=%q until the next sweep – listing its songs failed %d times in a row",
+					u.Username, lib.LibraryID, cur.Retry))
+				cur.nextPair()
+				continue
+			}
+			logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, deadline hit in processPairChunk lib=%d user=%d offset=%d retry=%d deadline=%s", cur.Lib, cur.User, cur.Offset, cur.Retry, deadline.Format(time.RFC3339Nano)))
 			return cur, false // deadline hit (or fetch failed) mid-pair
 		}
 
 		// Pair finished: persist the threshold captured when the pair started.
 		if cfg.IncrementalSync && !cfg.DryRun {
 			if ps, err := time.Parse(time.RFC3339Nano, cur.PairStart); err == nil {
-				kvadapter.SaveLastSynced(lib.LibraryID, u.Username, ps)
+				kvadapter.SaveLastSynced(lib.LibraryID, u.Username, ps, pairFingerprint(u))
 			}
 		}
 
-		cur.User++
-		cur.Offset = 0
-		cur.PairStart = ""
+		cur.nextPair()
 	}
 }
 
+// kvUsageWarnPercent is the persistent-index KV usage that triggers a warning.
+const kvUsageWarnPercent = 90
+
+// logKVUsage reports how full the plugin's KV store is and, when the
+// persistent file index (the only large KV user) is on, warns before the host
+// starts rejecting writes.
+func logKVUsage(cfg PluginConfig) {
+	usage, err := kvadapter.GetPercentageKVStorageUsage(cfg.KVStorageMaxSize)
+	if err != nil {
+		logDebug(fmt.Sprintf("nd-rating-sync: KV storage usage could not be determined: %q", err.Error()))
+		return
+	}
+	logTrace(fmt.Sprintf("nd-rating-sync: kvStorageUsage=%.2f%%", usage))
+	logDebug(fmt.Sprintf("nd-rating-sync: KV storage usage %.1f%% of %s", usage, cfg.KVStorageMaxSize))
+	if cfg.CacheLibrariesFilesystemTree && usage >= kvUsageWarnPercent {
+		logWarn(fmt.Sprintf(
+			"nd-rating-sync: KV storage is %.1f%% full – raise permissions.kvstore.maxSize in manifest.json and kv_storage_max_size together",
+			usage))
+	}
+}
+
+// ensureLibraryIndexed advances the persistent file index of a library and
+// reports whether it is complete. A complete index is reused until Navidrome
+// rescans the library; a rescan (also one in the middle of a build) starts a
+// new build, and every new build first deletes the library's old buckets so
+// records of moved or deleted files cannot linger in it.
 func ensureLibraryIndexed(libraryID string, deadline time.Time) (bool, error) {
 	logTrace(fmt.Sprintf("nd-rating-sync: ensureLibraryIndexed start libraryID=%q", libraryID))
 	state, err := kvadapter.LoadLibraryScanState(libraryID)
@@ -191,29 +233,39 @@ func ensureLibraryIndexed(libraryID string, deadline time.Time) (bool, error) {
 			libraryID, currentLastScan.UTC().Format(time.RFC3339Nano)))
 	}
 
-	if state.Complete && len(state.PendingDirs) == 0 {
+	rebuild := false
+	switch {
+	case state.Complete:
 		if !lastScanOK || state.LastScanAt >= currentLastScan.Unix() {
 			logTrace(fmt.Sprintf("nd-rating-sync: ensureLibraryIndexed cached index still valid libraryID=%q", libraryID))
 			return true, nil
 		}
-	}
-
-	mountPoint, err := resolveMountPoint(libraryID)
-	if err != nil {
-		return false, err
-	}
-
-	if lastScanOK && state.LastScanAt != 0 && currentLastScan.Unix() > state.LastScanAt {
 		logInfo(fmt.Sprintf(
-			"nd-rating-sync: ensureLibraryIndexed stale index libraryID=%q lastScan=%s saved=%s, restarting scan",
-			libraryID, currentLastScan.UTC().Format(time.RFC3339Nano), time.Unix(state.LastScanAt, 0).UTC().Format(time.RFC3339Nano)))
-		state = ScanState{PendingDirs: []string{mountPoint}, LastScanAt: currentLastScan.Unix()}
+			"nd-rating-sync: library=%q was rescanned at %s – rebuilding the file index",
+			libraryID, currentLastScan.UTC().Format(time.RFC3339)))
+		rebuild = true
+	case len(state.PendingDirs) > 0:
+		if lastScanOK && state.LastScanAt != 0 && currentLastScan.Unix() > state.LastScanAt {
+			logInfo(fmt.Sprintf(
+				"nd-rating-sync: library=%q was rescanned during the file index build – starting it again", libraryID))
+			rebuild = true
+		}
+	default:
+		rebuild = true
 	}
 
-	if len(state.PendingDirs) == 0 {
-		state.PendingDirs = []string{mountPoint}
-		logDebug(fmt.Sprintf("nd-rating-sync: ensureLibraryIndexed initializing pending_dirs for libraryID=%q mountPoint=%q", libraryID, mountPoint))
-		if !state.Complete && lastScanOK {
+	if rebuild {
+		mountPoint, err := resolveMountPoint(libraryID)
+		if err != nil {
+			return false, err
+		}
+		deleted, err := kvadapter.DeleteLibraryBuckets(libraryID)
+		if err != nil {
+			return false, err
+		}
+		logDebug(fmt.Sprintf("nd-rating-sync: starting file index build libraryID=%q – deleted %d old buckets", libraryID, deleted))
+		state = ScanState{PendingDirs: []string{mountPoint}}
+		if lastScanOK {
 			state.LastScanAt = currentLastScan.Unix()
 		}
 	}
@@ -222,14 +274,13 @@ func ensureLibraryIndexed(libraryID string, deadline time.Time) (bool, error) {
 		if err := scanLibraryChunk(libraryID, &state, deadline); err != nil {
 			return false, err
 		}
-
 		if state.Complete {
-			logInfo(fmt.Sprintf("nd-rating-sync: ensureLibraryIndexed complete libraryID=%q", libraryID))
+			logInfo(fmt.Sprintf("nd-rating-sync: file index complete libraryID=%q", libraryID))
 			return true, nil
 		}
 		logTrace(fmt.Sprintf(
-			"nd-rating-sync: ensureLibraryIndexed paused libraryID=%q pending_dirs=%d deadline=%s",
-			libraryID, len(state.PendingDirs), deadline))
+			"nd-rating-sync: ensureLibraryIndexed paused libraryID=%q pending_dirs=%d resume_after=%q deadline=%s",
+			libraryID, len(state.PendingDirs), state.ResumeAfter, deadline.Format(time.RFC3339Nano)))
 	}
 
 	logTrace(fmt.Sprintf("nd-rating-sync: ensureLibraryIndexed stop libraryID=%q deadline reached pending_dirs=%d", libraryID, len(state.PendingDirs)))
@@ -245,10 +296,11 @@ func ensureLibraryIndexed(libraryID string, deadline time.Time) (bool, error) {
 // terminate.
 //
 // A page-fetch failure returns pairDone=false without advancing past the failed
-// page, so the next run retries the same offset; the cursor already points at
-// the first unprocessed song.
+// page and counts the failure in cur.Retry, so the continuation retries the
+// same offset after a delay and runSyncChunk gives up on the pair after
+// maxPairAttempts. Every processed song resets cur.Retry.
 func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur SyncCursor, threshold time.Time, deadline time.Time, index map[string][]FileEntry, usePersistentIndex bool, bucketCache map[string][]FileRecord) (SyncCursor, bool) {
-	logTrace(fmt.Sprintf("nd-rating-sync: processPairChunk start lib=%q user=%q, offset=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
+	logTrace(fmt.Sprintf("nd-rating-sync: processPairChunk start lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
 	if cfg.DryRun {
 		logInfo(fmt.Sprintf(
 			"nd-rating-sync: [DRY RUN] user=%q – no ratings will be written", u.Username))
@@ -270,9 +322,10 @@ func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur Syn
 
 		page, more, err := subsonicadapter.FetchSongPage(u.Username, lib.LibraryID, pageOffset, songPageSize)
 		if err != nil {
+			cur.Retry++
 			logWarn(fmt.Sprintf(
-				"nd-rating-sync: fetching songs for user=%q library=%q at offset=%d failed: %q – will retry next run",
-				u.Username, lib.LibraryID, pageOffset, err.Error()))
+				"nd-rating-sync: fetching songs for user=%q library=%q at offset=%d failed (attempt %d of %d): %q",
+				u.Username, lib.LibraryID, pageOffset, cur.Retry, maxPairAttempts, err.Error()))
 			tally.log(u.Username, lib.LibraryID, cfg.DryRun)
 			return cur, false
 		}
@@ -281,7 +334,7 @@ func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur Syn
 		// page came back shorter than expected). Advance or finish.
 		if skip >= len(page) {
 			if !more {
-				logTrace(fmt.Sprintf("nd-rating-sync: processPairChunk stop, no more lib=%q user=%q, offset=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
+				logTrace(fmt.Sprintf("nd-rating-sync: processPairChunk stop, no more songs lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
 				tally.log(u.Username, lib.LibraryID, cfg.DryRun)
 				return cur, true
 			}
@@ -292,19 +345,20 @@ func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur Syn
 		for i := skip; i < len(page); i++ {
 			processSong(u, cfg, page[i], threshold, index, usePersistentIndex, lib.LibraryID, bucketCache, &tally)
 			cur.Offset = pageOffset + i + 1
+			cur.Retry = 0
 			// Check the deadline only every deadlineCheckEvery songs so the
 			// hot loop does not hammer the WASI clock import. Reducing the
 			// rate also reduces the surface area for the host-side clock
 			// panic we have seen in production (see callBudget docs).
 			if (i-skip+1)%deadlineCheckEvery == 0 && time.Now().After(deadline) {
-				logTrace(fmt.Sprintf("nd-rating-sync: processPairChunk stop, deadline reached lib=%q user=%q, offset=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
+				logTrace(fmt.Sprintf("nd-rating-sync: processPairChunk stop, deadline reached lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
 				tally.log(u.Username, lib.LibraryID, cfg.DryRun)
 				return cur, false
 			}
 		}
 
 		if !more {
-			logTrace(fmt.Sprintf("nd-rating-sync: processPairChunk done lib=%q user=%q, offset=%q, deadline=%q", cur.Lib, cur.User, cur.Offset, deadline))
+			logTrace(fmt.Sprintf("nd-rating-sync: processPairChunk done lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
 			tally.log(u.Username, lib.LibraryID, cfg.DryRun)
 			return cur, true
 		}

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	kvadapter "github.com/e1025735/nd-rating-sync/internal/adapter/kv_store"
+	scanner "github.com/e1025735/nd-rating-sync/internal/scanner"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 	"github.com/navidrome/navidrome/plugins/pdk/go/scheduler"
 	"github.com/stretchr/testify/assert"
@@ -56,7 +57,7 @@ func TestOnInit_ClearsSweepGuard(t *testing.T) {
 	resetKVStoreMock(t)
 
 	cfg := loadConfig()
-	host.KVStoreMock.On("Get", kvadapter.KVKeyConfigHash).Return([]byte(kvadapter.ConfigHashFor(mustJSONBytes(cfg))), true, nil)
+	host.KVStoreMock.On("Get", kvadapter.KVKeyConfigHash).Return([]byte(kvadapter.ConfigHashFor(mustJSONBytes(scanner.FileCacheConfig(cfg)))), true, nil)
 	host.KVStoreMock.On("Delete", kvadapter.KVKeySweepActive()).Return(nil)
 	// loadConfig() returns the hourly default and no libraries in non-WASM builds.
 	host.SchedulerMock.On("ScheduleRecurring", "0 * * * *", "", scheduleID).Return("id-1", nil)

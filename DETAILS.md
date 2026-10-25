@@ -27,11 +27,13 @@ Navidrome added since the last run (for example a renamed or moved file,
 which keeps its old mtime but is imported as a new, unrated song): it is
 always read.
 
+Changing a user's `ratingTagOrder`, `skip_already_rated` or
+`clear_rating_if_untagged` is detected automatically: the stored timestamp
+carries a fingerprint of those settings, so that user's next sync reads every
+file once and applies the new settings to unchanged files too.
+
 **When should I disable it?**
-- Right after you change a user's `ratingTagOrder` — the new order won't
-  re-evaluate unchanged files until they're touched again. Set
-  `incremental_sync = false` for one run to force a full pass.
-- For debugging, when you want to see every song processed.
+- For debugging, when you want to see every song processed on every run.
 
 ## Change-detection gate
 
@@ -58,7 +60,7 @@ Notes:
   never-scanned) falls back to a normal full listing.
 
 State is stored under the KV key `last-synced:{libraryId}:{username}` and
-survives plugin reloads. KV-store failures are non-fatal: a missing or
+survives plugin reloads and unrelated config changes. KV-store failures are non-fatal: a missing or
 malformed value falls back to a full scan; a failed write means the next
 run does redundant work, never incorrect work.
 
@@ -110,7 +112,9 @@ The foobar2000 `RATING` tag is a plain integer. Anything outside 1–5 is treate
 
 ### WMP POPM
 
-WMP ratings use non-linear fixed points. This includes WMP-style ratings also used by MusicBee. The plugin maps the tag byte to stars as follows:
+WMP ratings use non-linear fixed points. The plugin maps the tag byte to stars
+by range (MusicBee and MediaMonkey POPM frames use the exact-value table
+above instead):
 
 | POPM byte | Stars |
 |-----------|-------|
@@ -157,8 +161,9 @@ MusicBee uses a simple 0–100 scale in steps of 20 for tags written in the
 freeform `RATING` style used by Vorbis containers and the `RATE` freeform atom
 it writes in MP4/M4A files (MediaMonkey writes the same scale in the same
 fields). Half-star values (`10`, `30`, … `90`) are treated
-as unrated because Navidrome has no half stars. For POPM / WMA-style ratings,
-the plugin uses the same WMP-style non-linear breakpoints.
+as unrated because Navidrome has no half stars. MusicBee's POPM frame uses the
+exact-value table under *MediaMonkey and MusicBee POPM*, and its WMA rating
+uses `WM/SharedUserRating` (see above).
 
 | Tag value | Stars |
 |-----------|-------|
@@ -171,7 +176,17 @@ the plugin uses the same WMP-style non-linear breakpoints.
 
 ## How the plugin works
 
-The plugin is executed inside the Navidrome sandbox and is subject to a hard 30-second callback timeout. It therefore works in short budgeted chunks and reschedules continuations until the scan completes.
+The plugin is executed inside the Navidrome sandbox and is subject to a hard 30-second callback timeout. It therefore works in short budgeted chunks (15 seconds each) and reschedules continuations until the scan completes.
+
+If a user's song listing fails (for example a username Navidrome does not
+know), or the library walk does not finish within one chunk, the plugin waits
+30 seconds and tries again. After three failed attempts it skips that
+`(library, user)` pair until the next scheduled sync and logs a warning, so a
+lasting problem can never keep the plugin busy forever.
+
+A file whose tag cannot be read or parsed — cut off, corrupt, larger than
+16 MiB, or an unsupported ID3v2.2 tag — is counted as *unreadable*, never as
+*no tag*, so `clear_rating_if_untagged` cannot clear its rating.
 
 ```
 Navidrome startup
@@ -205,9 +220,9 @@ plugin OnInit
                                        │
                                        ├─ mtime < threshold and song not newly added? → skip (unchanged)
                                        │
-                                       ├─ read file (≤ 64 MiB)     → fail or oversize? skip (unreadable, never clears)
+                                       ├─ read only the tag area (≤ 16 MiB) → fail or oversize? skip (unreadable, never clears)
                                        │
-                                       ├─ parse tags (ID3v2 / Vorbis / MP4 / ASF)
+                                       ├─ parse tags (ID3v2 / Vorbis / MP4 / ASF) → corrupt? skip (unreadable, never clears)
                                        │
                                        ├─ pick the first match by ratingTagOrder
                                        │
@@ -217,8 +232,10 @@ plugin OnInit
                                                        → SubsonicAPICall("setRating?id=…&rating=0")
                                                               │
                                                               ▼
-                                                budget (~20s) reached with songs still pending?
+                                                budget (15 s) reached with songs still pending?
                                                   → reschedule a one-time continuation carrying the cursor, return
+                                                listing failed / walk too slow?
+                                                  → retry in 30 s; after 3 attempts skip the pair until the next sync
                                                 (library, user) fully processed?
                                                   → save scan-start timestamp to KVStore (incremental_sync)
 ```

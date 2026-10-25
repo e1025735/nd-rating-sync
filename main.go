@@ -1,11 +1,11 @@
 // nd-rating-sync – a Navidrome plugin that reads the embedded rating tag
 // from each music file and writes it back into Navidrome via the Subsonic
 // setRating API. Supported containers: MP3, FLAC, Ogg-Vorbis, Opus, WAV,
-// DSF, M4A/AAC, and WMA. Supported tag sources: MediaMonkey FMPS_Rating,
-// foobar2000 RATING, WMP POPM / WM/SharedUserRating, iTunes POPM / lowercase
-// "rating" atom.
+// DSF, M4A/AAC, and WMA. Supported rating sources (ratingTagOrder): WMP,
+// iTunes, MediaMonkey, foobar2000 and MusicBee — see CLAUDE.md, "Supported
+// tag formats", for the tag each one writes in each container.
 //
-// Build: tinygo build -o plugin.wasm -target wasip1 -buildmode=c-shared .
+// Build: tinygo build -o plugin.wasm -target wasip1 -buildmode=c-shared -scheduler=none .
 // Package: zip -j nd-rating-sync.ndp manifest.json plugin.wasm
 package main
 
@@ -46,8 +46,9 @@ func (ratingPlugin) OnInit() error {
 	// in-progress guard up front — a heartbeat left over from just before the
 	// restart must not suppress the immediate-on-load sweep until it goes stale.
 	kvadapter.ClearSweepActive()
-	kvadapter.EnsureConfigCacheIsCurrent(loadConfig())
-	return registerSchedules(loadConfig())
+	cfg := loadConfig()
+	kvadapter.EnsureConfigCacheIsCurrent(scanner.FileCacheConfig(cfg))
+	return registerSchedules(cfg)
 }
 
 // registerSchedules is the testable half of OnInit. It takes the resolved
@@ -71,5 +72,5 @@ func registerSchedules(cfg pluginConfig) error {
 
 func (ratingPlugin) OnCallback(req scheduler.SchedulerCallbackRequest) error {
 	logInfo(fmt.Sprintf("nd-rating-sync: running scheduled rating sync (scheduleId=%q)", req.ScheduleID))
-	return scanner.RunSyncStep(toScannerConfig(loadConfig()), req.Payload)
+	return scanner.RunSyncStep(loadConfig(), req.Payload)
 }

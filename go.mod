@@ -1,7 +1,7 @@
 module github.com/e1025735/nd-rating-sync
 
-// TinyGo targets a specific Go version; check your TinyGo release notes
-// and align this with the supported version (typically 1.22+).
+// TinyGo supports a range of Go versions; when raising this, check that the
+// TinyGo release used by the release workflow supports it.
 go 1.25
 
 require (

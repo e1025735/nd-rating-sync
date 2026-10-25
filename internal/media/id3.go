@@ -18,11 +18,12 @@ const id3v2HeaderSize = 10
 // header carries the tag size in a syncsafe field, so we can read exactly
 // (header + tagSize) bytes and stop — never touching the MP3 audio frames.
 //
-// On a missing/invalid header it returns (nil, nil); the caller hands the
-// empty slice to parseID3v2Rating, which treats it as "no tag" (tagAbsent) —
-// preserving the existing behaviour for files that look corrupt or untagged.
-// An I/O error returns (nil, err) so the caller surfaces fileUnreadable and
-// clear_rating_if_untagged cannot wipe a rating for a file we couldn't read.
+// A file without the "ID3" magic returns (nil, nil); the caller hands the
+// empty slice to the parser, which reports "no tag" (tagAbsent). A tag that
+// starts but is corrupt (invalid size field), larger than
+// maxMetadataReadBytes, or cut off returns an error, as does any I/O error,
+// so the caller reports fileUnreadable and clear_rating_if_untagged cannot
+// wipe a rating for a tag we could not read.
 func extractID3v2Metadata(f *os.File) ([]byte, error) {
 	return readID3v2Tag(f, 0)
 }
@@ -30,8 +31,8 @@ func extractID3v2Metadata(f *os.File) ([]byte, error) {
 // readID3v2Tag reads one ID3v2 tag (header + body) from the current file
 // position into a single buffer that starts with prefix reserved bytes, so a
 // container (DSF) can write its own header there without copying the tag
-// again. The returned slice holds prefix+10+tagSize bytes, or is nil when no
-// valid tag is present.
+// again. The returned slice holds prefix+10+tagSize bytes, or is nil when the
+// "ID3" magic is absent.
 func readID3v2Tag(f *os.File, prefix int) ([]byte, error) {
 	var hdr [id3v2HeaderSize]byte
 	if _, err := io.ReadFull(f, hdr[:]); err != nil {
@@ -44,14 +45,17 @@ func readID3v2Tag(f *os.File, prefix int) ([]byte, error) {
 		return nil, nil
 	}
 	size := id3v2SyncsafeSize(hdr[6:10])
-	if size < 0 || size > maxMetadataReadBytes {
-		return nil, nil // bail to "no tag" rather than read pathological size
+	if size < 0 {
+		return nil, errors.New("ID3v2 tag size is not a valid syncsafe integer")
+	}
+	if size > maxMetadataReadBytes {
+		return nil, fmt.Errorf("ID3v2 tag size %d exceeds cap %d", size, maxMetadataReadBytes)
 	}
 	out := make([]byte, prefix+id3v2HeaderSize+size)
 	copy(out[prefix:], hdr[:])
 	if _, err := io.ReadFull(f, out[prefix+id3v2HeaderSize:]); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, nil
+			return nil, errors.New("ID3v2 tag is cut off before its declared end")
 		}
 		return nil, err
 	}
@@ -100,9 +104,17 @@ var id3v2RatingFrames = []string{"TXXX", "POPM"}
 //   - "WMP"         – POPM frame written by Windows Media Player
 //   - "iTunes"      – POPM frame written by iTunes / Apple Music
 func parseID3v2Rating(data []byte, path string, tagOrder []string) (int, bool) {
+	stars, ok, _ := ratingFromID3v2(data, path, tagOrder)
+	return stars, ok
+}
+
+// ratingFromID3v2 is parseID3v2Rating with the parse error kept, so a corrupt
+// or unsupported tag (e.g. ID3v2.2) is reported as unreadable rather than as
+// untagged. Empty data (no "ID3" magic) is not an error.
+func ratingFromID3v2(data []byte, path string, tagOrder []string) (int, bool, error) {
 	tag, err := id3v2.ParseReader(bytes.NewReader(data), id3v2.Options{Parse: true, ParseFrames: id3v2RatingFrames})
 	if err != nil {
-		return 0, false
+		return 0, false, fmt.Errorf("parse ID3v2 tag: %w", err)
 	}
 	defer tag.Close()
 
@@ -118,12 +130,12 @@ func parseID3v2Rating(data []byte, path string, tagOrder []string) (int, bool) {
 		case "FMPS_RATING":
 			if stars, ok := fmpsToStars(txxx.Value); ok {
 				found["MediaMonkey"] = stars
-				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MediaMonkey for path %s", stars, path))
+				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for MediaMonkey in %q", stars, path))
 			}
 		case "RATING":
 			if stars, ok := ratingIntToStars(txxx.Value); ok {
 				found["foobar2000"] = stars
-				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for foobar2000 for path %s", stars, path))
+				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for foobar2000 in %q", stars, path))
 			}
 		}
 	}
@@ -138,32 +150,32 @@ func parseID3v2Rating(data []byte, path string, tagOrder []string) (int, bool) {
 		case strings.Contains(e, "windows media player"):
 			if stars := popmWMPToStars(popm.Rating); stars > 0 {
 				found["WMP"] = stars
-				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for WMP for path %s", stars, path))
+				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for WMP in %q", stars, path))
 			}
 		case strings.Contains(e, "itunes") || "com.apple.itunes" == e:
 			if stars := popmITunesToStars(popm.Rating); stars > 0 {
 				found["iTunes"] = stars
-				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for iTunes for path %s", stars, path))
+				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for iTunes in %q", stars, path))
 			}
 		case "musicbee" == e:
 			if stars := popmMusicBeeToStars(popm.Rating); stars > 0 {
 				found["MusicBee"] = stars
-				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MusicBee for path %s", stars, path))
+				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for MusicBee in %q", stars, path))
 			}
 		case "no@email" == e:
 			// MediaMonkey's own rating frame. It runs after the TXXX loop, so it
 			// takes precedence over an FMPS_Rating another app may have written.
 			if stars := popmMediaMonkeyToStars(popm.Rating); stars > 0 {
 				found["MediaMonkey"] = stars
-				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MediaMonkey for path %s", stars, path))
+				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for MediaMonkey in %q", stars, path))
 			}
 		}
 	}
 
 	for _, format := range tagOrder {
 		if stars, ok := found[format]; ok {
-			return stars, true
+			return stars, true, nil
 		}
 	}
-	return 0, false
+	return 0, false, nil
 }

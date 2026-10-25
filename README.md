@@ -29,7 +29,7 @@ The plugin supports these embedded rating sources:
 - `MediaMonkey`
 - `foobar2000`
 - `MusicBee`
-- `WMP` (Windows Media Player; also used by MusicBee)
+- `WMP` (Windows Media Player; MusicBee uses the same field in WMA files)
 - `iTunes`
 
 The order in `ratingTagOrder` determines which tag wins when a file contains multiple rating formats.
@@ -62,7 +62,9 @@ See [`DETAILS.md`](DETAILS.md) for runtime behavior and rating value mapping det
 
 - Start with `dry_run=true`.
 - If every file is skipped as unreadable, verify library mount permissions and plugin assignment.
-- If the first scan stalls during the directory walk, enable the cache and increase KV storage sizing.
+- If the log suggests enabling the cache, or a library is skipped because walking it did not finish, enable the cache and increase KV storage sizing.
+- If a user is skipped after three failed attempts to list their songs, check that the username matches Navidrome exactly.
+- Files whose tags cannot be read or parsed are counted as unreadable; their ratings are never cleared.
 - If `setRating` fails with API error 50, the user is not authorised in plugin User Access.
 
 ## Notes

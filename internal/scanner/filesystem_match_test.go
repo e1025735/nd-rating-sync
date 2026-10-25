@@ -93,3 +93,19 @@ func TestMatchFileInBucketCache_CachesMissingBuckets(t *testing.T) {
 	require.False(t, ok2)
 	host.KVStoreMock.AssertExpectations(t)
 }
+
+// Bucket records keep whole seconds; the match reports the end of that
+// second so a file changed in the same second the last sweep started is not
+// skipped as unchanged.
+func TestMatchFileInBucketCache_MTimeIsEndOfStoredSecond(t *testing.T) {
+	resetKVStoreMock(t)
+	data, err := json.Marshal([]FileRecord{{Path: "/libraries/1/song.mp3", Mtime: 1000}})
+	require.NoError(t, err)
+	host.KVStoreMock.On("Get", bucketKey("1", 5, "mp3")).Return(data, true, nil).Once()
+
+	entry, ok := matchFileInBucketCache("1", subsonicSong{ID: "s1", Size: 5, Suffix: "mp3"}, nil)
+	require.True(t, ok)
+	threshold := time.Unix(1000, 500_000_000) // last sweep started mid-second
+	assert.False(t, entry.MTime.Before(threshold), "same-second change must be re-read")
+	assert.True(t, entry.MTime.Before(time.Unix(1001, 0)))
+}

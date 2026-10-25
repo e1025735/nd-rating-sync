@@ -16,7 +16,7 @@ import (
 // ─── extractStarsFromFile ─────────────────────────────────────────────────────
 
 func TestExtractStarsFromFile_FileNotFound(t *testing.T) {
-	stars, result := extractStarsFromFile("/no/such/file.mp3", "mp3", defaultTagOrder)
+	stars, result := extractStarsFromFile("/no/such/file.mp3", "mp3", DefaultTagOrder)
 	assert.Equal(t, fileUnreadable, result)
 	assert.Equal(t, 0, stars)
 }
@@ -29,7 +29,7 @@ func TestExtractStarsFromFile_EmptyWAVIsUnreadable(t *testing.T) {
 	require.NoError(t, err)
 	f.Close()
 
-	stars, result := extractStarsFromFile(f.Name(), "wav", defaultTagOrder)
+	stars, result := extractStarsFromFile(f.Name(), "wav", DefaultTagOrder)
 	assert.Equal(t, tagAbsent, result, "empty WAV currently parses as 'no tag found' — this is fine; the read itself succeeded")
 	assert.Equal(t, 0, stars)
 }
@@ -71,7 +71,7 @@ func TestExtractStarsFromFile_UnsupportedExtensionFromPath(t *testing.T) {
 	require.NoError(t, err)
 	f.Close()
 
-	_, result := extractStarsFromFile(f.Name(), "", defaultTagOrder)
+	_, result := extractStarsFromFile(f.Name(), "", DefaultTagOrder)
 	assert.Equal(t, fileUnreadable, result, "aiff is unsupported and must surface as unreadable so clear_rating_if_untagged does not wipe the rating")
 }
 
@@ -84,7 +84,7 @@ func TestExtractStarsFromFile_MP3NoRatingTag(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "song.mp3")
 	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o644))
 
-	stars, result := extractStarsFromFile(path, "mp3", defaultTagOrder)
+	stars, result := extractStarsFromFile(path, "mp3", DefaultTagOrder)
 	assert.Equal(t, tagAbsent, result)
 	assert.Equal(t, 0, stars)
 }

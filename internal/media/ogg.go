@@ -65,9 +65,23 @@ func extractOggPackets(data []byte, maxPackets int) ([][]byte, error) {
 // only) is ignored — parseVorbisCommentBlock stops once it has read the
 // declared comment count.
 func parseOggVorbisRating(data []byte, path string, tagOrder []string) (int, bool) {
+	stars, ok, _ := ratingFromOgg(data, path, tagOrder)
+	return stars, ok
+}
+
+// ratingFromOgg is parseOggVorbisRating with the parse error kept. A stream
+// without a comment packet or with an unknown codec is untagged; a broken
+// page layout or comment block is an error.
+func ratingFromOgg(data []byte, path string, tagOrder []string) (int, bool, error) {
+	if len(data) == 0 {
+		return 0, false, nil
+	}
 	packets, err := extractOggPackets(data, 2)
-	if err != nil || len(packets) < 2 {
-		return 0, false
+	if err != nil {
+		return 0, false, err
+	}
+	if len(packets) < 2 {
+		return 0, false, nil
 	}
 	commentPkt := packets[1]
 
@@ -78,14 +92,15 @@ func parseOggVorbisRating(data []byte, path string, tagOrder []string) (int, boo
 	case len(commentPkt) >= 8 && string(commentPkt[:8]) == "OpusTags":
 		body = commentPkt[8:]
 	default:
-		return 0, false
+		return 0, false, nil
 	}
 
 	cmts, err := parseVorbisCommentBlock(body)
 	if err != nil {
-		return 0, false
+		return 0, false, err
 	}
-	return ratingFromVorbisComments(cmts, path, tagOrder)
+	stars, ok := ratingFromVorbisComments(cmts, path, tagOrder)
+	return stars, ok, nil
 }
 
 // Bounds for extractOggMetadata. They only guard against corrupt or hostile

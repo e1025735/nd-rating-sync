@@ -51,17 +51,12 @@ func TestLibraryLastScan_NeverScannedFailsOpen(t *testing.T) {
 	assert.False(t, ok, "LastScanAt==0 (never scanned) → gate open (false)")
 }
 
-func TestLibraryLastScan_AllLibrariesUsesNewest(t *testing.T) {
+// File access needs a numeric library ID, so an empty one never reaches the
+// host either.
+func TestLibraryLastScan_EmptyIDFailsOpen(t *testing.T) {
 	resetLibraryMock(t)
-	older := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
-	newer := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	host.LibraryMock.On("GetAllLibraries").Return([]host.Library{
-		{ID: 1, LastScanAt: older.Unix()},
-		{ID: 2, LastScanAt: newer.Unix()},
-	}, nil)
-
-	got, ok := libraryLastScan("")
-	require.True(t, ok)
-	assert.True(t, newer.Equal(got), "empty ID → newest LastScanAt across all libraries")
-	host.LibraryMock.AssertExpectations(t)
+	_, ok := libraryLastScan("")
+	assert.False(t, ok)
+	host.LibraryMock.AssertNotCalled(t, "GetLibrary", mock.Anything)
+	host.LibraryMock.AssertNotCalled(t, "GetAllLibraries")
 }
