@@ -41,6 +41,7 @@ type SubsonicSong struct {
 	Suffix     string `json:"suffix"`     // file extension without the dot, e.g. "mp3"
 	Size       int64  `json:"size"`       // file size in bytes — used to locate the real file under the library mount
 	UserRating int    `json:"userRating"` // 0 = unrated, 1–5 = stars
+	Created    string `json:"created"`    // when Navidrome added the song (RFC3339) — kept as a string so an odd format can't fail the whole page
 }
 
 // FetchSongPage retrieves a single page of songs accessible by username in the

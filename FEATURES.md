@@ -22,6 +22,7 @@ its own; this plugin bridges file tags and the UI.
 After a successful scan, the timestamp is persisted per `(library, user)` in Navidrome's KV store. Subsequent runs skip any song whose file mtime predates that timestamp, so recurring scans are nearly instant after the first pass.
 
 - Skip is decided by the matched file's modification time (captured while indexing the library mount) vs the stored threshold — file mtime is the right signal because tag editors update it the moment the user saves a rating, regardless of whether Navidrome's own library scan has caught up.
+- Songs Navidrome added since the last scan are always read, even when the file's mtime is older. Renaming or moving a file keeps its mtime, but Navidrome imports it as a new, unrated song.
 - KV failures are non-fatal: missing/corrupt state falls back to a full scan; failed writes mean the next run does redundant work, never incorrect work.
 - Disable with `incremental_sync=false` to force a full scan every run (useful after changing a user's `ratingTagOrder`).
 
@@ -61,7 +62,7 @@ Incremental sync skips the per-*file* work, but a naive sweep still pages the en
 | `iTunes` | POPM ("itunes" / "com.apple.itunes") | — | `rating` freeform (lowercase) | — | Linear 0–100 in steps of 20 → 1–5 stars |
 | `MediaMonkey` | TXXX `FMPS_Rating` | `FMPS_RATING` | `FMPS_Rating` freeform | `FMPS_Rating` Unicode string | Float 0.0–1.0, ceiling × 5 → 1–5 stars |
 | `foobar2000` | TXXX `RATING` | `RATING` | `RATING` freeform (uppercase) | — | Integer 1–5 (0 / empty / out-of-range = unrated) |
-| `MusicBee` | POPM ("musicbee") | `RATING` | `RATING` freeform | `WM/SharedUserRating` WORD | MusicBee-style `0/20/40/60/80/100` values → 1–5 stars; WMA uses the same WMP-style breakpoints as `WM/SharedUserRating` |
+| `MusicBee` | POPM ("musicbee") | `RATING` | `RATE` freeform | `WM/SharedUserRating` WORD | MusicBee-style `0/20/40/60/80/100` values → 1–5 stars (half-star values are treated as unrated, since Navidrome has no half stars); WMA uses the same WMP-style breakpoints as `WM/SharedUserRating` |
 
 ---
 

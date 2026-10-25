@@ -145,19 +145,42 @@ func TestParseM4ARating_iTunesZeroIsUnrated(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func TestParseM4ARating_MusicBeeCanonicalValues(t *testing.T) {
+// MusicBee writes "RATE" in M4A; a 0–100 "RATING" atom is not a MusicBee tag.
+func TestParseM4ARating_RATINGIsNotMusicBee(t *testing.T) {
+	data := buildM4A(map[string]string{"RATING": "100"})
+	_, ok := parseM4ARating(data, "", []string{"MusicBee"})
+	assert.False(t, ok)
+}
+
+func TestParseM4ARating_MusicBeeRATEAtom(t *testing.T) {
 	cases := []struct {
-		value string
-		want  int
+		name, value string
+		want        int
 	}{
-		{"20", 1}, {"40", 2}, {"60", 3}, {"80", 4}, {"100", 5},
+		{"RATE", "20", 1}, {"RATE", "40", 2}, {"RATE", "60", 3}, {"RATE", "80", 4}, {"RATE", "100", 5},
+		{"rate", "100", 5},
 	}
 	for _, tc := range cases {
-		data := buildM4A(map[string]string{"RATING": tc.value})
+		data := buildM4A(map[string]string{tc.name: tc.value})
 		stars, ok := parseM4ARating(data, "", []string{"MusicBee"})
-		assert.True(t, ok, "RATING=%s", tc.value)
-		assert.Equal(t, tc.want, stars, "RATING=%s", tc.value)
+		assert.True(t, ok, "%s=%s", tc.name, tc.value)
+		assert.Equal(t, tc.want, stars, "%s=%s", tc.name, tc.value)
 	}
+}
+
+// Navidrome has no half-star ratings, so MusicBee half-star values stay unrated.
+func TestParseM4ARating_MusicBeeRATEHalfStarsAndZeroAreUnrated(t *testing.T) {
+	for _, v := range []string{"0", "10", "90", "", "abc"} {
+		data := buildM4A(map[string]string{"RATE": v})
+		_, ok := parseM4ARating(data, "", []string{"MusicBee"})
+		assert.False(t, ok, "RATE=%q", v)
+	}
+}
+
+func TestParseM4ARating_RATEOnlyMatchesMusicBee(t *testing.T) {
+	data := buildM4A(map[string]string{"RATE": "100"})
+	_, ok := parseM4ARating(data, "", []string{"WMP", "iTunes", "MediaMonkey", "foobar2000"})
+	assert.False(t, ok)
 }
 
 // ─── tag order / priority ─────────────────────────────────────────────────────
@@ -239,4 +262,56 @@ func bytesContains(haystack, needle []byte) bool {
 		}
 	}
 	return false
+}
+
+// TestExtractM4AMetadata_SkipsTrak proves the extractor Seeks past the trak
+// children of moov (the sample tables, several MiB on long tracks) and only
+// pulls udta into memory — reading the whole moov on every file is what ran
+// the WASM heap out of memory on large full sweeps.
+func TestExtractM4AMetadata_SkipsTrak(t *testing.T) {
+	dir := t.TempDir()
+
+	ilst := buildAtom("ilst", buildFreeformAtom("com.apple.iTunes", "RATE", "80"))
+	udta := buildAtom("udta", buildAtom("meta", append([]byte{0, 0, 0, 0}, ilst...)))
+	mvhd := buildFullAtom("mvhd", make([]byte, 96))
+	trak := buildAtom("trak", junkAudio())
+	moov := buildAtom("moov", append(append(append([]byte{}, mvhd...), trak...), udta...))
+	ftyp := buildAtom("ftyp", []byte("M4A \x00\x00\x00\x00"))
+	mdat := buildAtom("mdat", []byte("audio"))
+
+	var content []byte
+	content = append(content, ftyp...)
+	content = append(content, moov...)
+	content = append(content, mdat...)
+
+	path := writeBinFile(t, dir, "song.m4a", content)
+
+	data := extractedBytes(t, path, "m4a")
+	if bytesContains(data, sentinel) {
+		t.Fatalf("MP4 extractor must Seek past trak atoms (sentinel found in %d-byte output)", len(data))
+	}
+	assert.Equal(t, 16+len(udta)-8, len(data), "synth must be moov header + udta only")
+
+	stars, result := extractStarsFromFile(path, "m4a", []string{"MusicBee"})
+	assert.Equal(t, tagFound, result)
+	assert.Equal(t, 4, stars)
+}
+
+func TestExtractM4AMetadata_MoovWithoutUdtaIsTagAbsent(t *testing.T) {
+	dir := t.TempDir()
+	moov := buildAtom("moov", buildAtom("trak", junkAudio()))
+	content := append(buildAtom("ftyp", []byte("M4A \x00\x00\x00\x00")), moov...)
+	path := writeBinFile(t, dir, "song.m4a", content)
+
+	_, result := extractStarsFromFile(path, "m4a", []string{"MusicBee"})
+	assert.Equal(t, tagAbsent, result)
+}
+
+func TestExtractM4AMetadata_TruncatedUdtaIsUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	full := buildM4A(map[string]string{"RATE": "100"})
+	path := writeBinFile(t, dir, "song.m4a", full[:len(full)-4])
+
+	_, result := extractStarsFromFile(path, "m4a", []string{"MusicBee"})
+	assert.Equal(t, fileUnreadable, result)
 }

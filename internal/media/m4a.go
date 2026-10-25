@@ -66,6 +66,7 @@ func findAtom(data []byte, typ string) []byte {
 //   - "FMPS_Rating" (any case) → MediaMonkey, float 0.0–1.0
 //   - "rating" (lowercase)     → iTunes, integer 0/20/40/60/80/100
 //   - "RATING" (uppercase)     → foobar2000, integer 1–5
+//   - "RATE" (any case)        → MusicBee, integer 0/20/40/60/80/100
 func parseM4ARating(data []byte, path string, tagOrder []string) (int, bool) {
 	moov := findAtom(data, "moov")
 	if moov == nil {
@@ -132,6 +133,8 @@ func parseM4ARating(data []byte, path string, tagOrder []string) (int, bool) {
 				found["foobar2000"] = stars
 				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for foobar2000 for path %s", stars, path))
 			}
+		case nameUpper == "RATE":
+			// MusicBee writes "RATE" in MP4 containers with a 0–100 scale.
 			if stars, ok := ratingMusicBeeToStars(value); ok {
 				found["MusicBee"] = stars
 				logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MusicBee for path %s", stars, path))
@@ -150,9 +153,10 @@ func parseM4ARating(data []byte, path string, tagOrder []string) (int, bool) {
 
 // extractM4AMetadata walks the top-level MP4 atom list, Seeks past every
 // non-moov atom (notably mdat, which holds the audio samples and can be
-// many GiB), and returns a synthesised file containing only the moov atom.
-// The existing parseM4ARating walks the synth identically; findAtom finds
-// "moov" first thing and descends into udta→meta→ilst.
+// many GiB), and returns a synthesised file containing only the moov atom
+// with its udta child (see extractMoovUdta). The existing parseM4ARating
+// walks the synth identically; findAtom finds "moov" first thing and
+// descends into udta→meta→ilst.
 //
 // MP4 puts moov either at the start (fast-start muxing) or after mdat
 // (default ffmpeg / iTunes layout). In the slow case we Seek over mdat
@@ -210,22 +214,7 @@ func extractM4AMetadata(f *os.File) ([]byte, error) {
 			if bodyLen < 0 {
 				return nil, nil
 			}
-			if bodyLen > maxMetadataReadBytes {
-				return nil, fmt.Errorf("MP4 moov atom size %d exceeds cap %d", bodyLen, maxMetadataReadBytes)
-			}
-			body := make([]byte, bodyLen)
-			if _, err := io.ReadFull(f, body); err != nil {
-				return nil, err
-			}
-			out := make([]byte, 0, int(headerLen)+int(bodyLen))
-			out = append(out, hdr[:]...)
-			if headerLen == 16 {
-				var ext [8]byte
-				binary.BigEndian.PutUint64(ext[:], uint64(atomSize))
-				out = append(out, ext[:]...)
-			}
-			out = append(out, body...)
-			return out, nil
+			return extractMoovUdta(f, pos+headerLen, bodyLen)
 		}
 
 		// Skip non-moov atom body without reading it (this is the big win
@@ -236,4 +225,71 @@ func extractM4AMetadata(f *os.File) ([]byte, error) {
 		}
 		pos += atomSize
 	}
+}
+
+// extractMoovUdta walks the children of a moov atom whose body starts at
+// bodyStart and returns a synthesised moov atom holding only its udta child.
+// The trak children carry the sample tables (stbl), which run to several MiB
+// on long tracks; Seeking past them instead of reading the whole moov keeps a
+// full sweep from exhausting the WASM heap. The udta body is read straight
+// into the output buffer, so each file costs exactly one allocation.
+func extractMoovUdta(f *os.File, bodyStart, bodyLen int64) ([]byte, error) {
+	end := bodyStart + bodyLen
+	pos := bodyStart
+	for pos+8 <= end {
+		if _, err := f.Seek(pos, io.SeekStart); err != nil {
+			return nil, nil
+		}
+		var hdr [8]byte
+		if _, err := io.ReadFull(f, hdr[:]); err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		size32 := binary.BigEndian.Uint32(hdr[:4])
+		typ := string(hdr[4:8])
+		var atomSize int64
+		var headerLen int64 = 8
+
+		switch size32 {
+		case 0:
+			// Extends to the end of the enclosing moov.
+			atomSize = end - pos
+		case 1:
+			if pos+16 > end {
+				return nil, nil
+			}
+			var ext [8]byte
+			if _, err := io.ReadFull(f, ext[:]); err != nil {
+				return nil, err
+			}
+			atomSize = int64(binary.BigEndian.Uint64(ext[:]))
+			headerLen = 16
+		default:
+			atomSize = int64(size32)
+		}
+		// A negative atomSize (high-bit-set 64-bit size) also fails here.
+		if atomSize < headerLen || atomSize > end-pos {
+			return nil, nil
+		}
+
+		if typ == "udta" {
+			udtaLen := atomSize - headerLen
+			if udtaLen > maxMetadataReadBytes {
+				return nil, fmt.Errorf("MP4 udta atom size %d exceeds cap %d", udtaLen, maxMetadataReadBytes)
+			}
+			out := make([]byte, 16+udtaLen)
+			binary.BigEndian.PutUint32(out[0:4], uint32(16+udtaLen))
+			copy(out[4:8], "moov")
+			binary.BigEndian.PutUint32(out[8:12], uint32(8+udtaLen))
+			copy(out[12:16], "udta")
+			if _, err := io.ReadFull(f, out[16:]); err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+		pos += atomSize
+	}
+	return nil, nil
 }

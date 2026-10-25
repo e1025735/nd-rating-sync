@@ -22,7 +22,10 @@ skips even the song listing.
 This is fast and correct because most music tag editors (MediaMonkey,
 foobar2000, Mp3tag, Picard, Kid3, Strawberry…) update the file's
 modification time the moment they save a tag change. So if a file's mtime
-hasn't moved, neither has its rating tag.
+hasn't moved, neither has its rating tag. The one exception is a song
+Navidrome added since the last run (for example a renamed or moved file,
+which keeps its old mtime but is imported as a new, unrated song): it is
+always read.
 
 **When should I disable it?**
 - Right after you change a user's `ratingTagOrder` — the new order won't
@@ -112,8 +115,10 @@ iTunes ratings use a linear scale in steps of 20 across 0–100.
 ### MusicBee
 
 MusicBee uses a simple 0–100 scale in steps of 20 for tags written in the
-freeform `RATING` style used by Vorbis/MP4 containers. For POPM / WMA-style
-ratings, the plugin uses the same WMP-style non-linear breakpoints.
+freeform `RATING` style used by Vorbis containers and the `RATE` freeform atom
+it writes in MP4/M4A files. Half-star values (`10`, `30`, … `90`) are treated
+as unrated because Navidrome has no half stars. For POPM / WMA-style ratings,
+the plugin uses the same WMP-style non-linear breakpoints.
 
 | Tag value | Stars |
 |-----------|-------|
@@ -158,7 +163,7 @@ plugin OnInit
                                        │
                                        ├─ match song → file by exact (size, suffix) → no unique match? skip (unreadable, never clears)
                                        │
-                                       ├─ matched file mtime < threshold?          → skip (unchanged)
+                                       ├─ mtime < threshold and song not newly added? → skip (unchanged)
                                        │
                                        ├─ read file (≤ 64 MiB)     → fail or oversize? skip (unreadable, never clears)
                                        │
