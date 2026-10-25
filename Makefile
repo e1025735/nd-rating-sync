@@ -18,7 +18,7 @@ GO_SOURCES := $(shell find . -name '*.go' -not -name '*_test.go') go.mod go.sum
 build: $(WASM)
 
 $(WASM): $(GO_SOURCES)
-	tinygo build -o $(WASM) -target wasip1 -buildmode=c-shared -scheduler=none .
+	tinygo build -o $(WASM) -target wasip1 -buildmode=c-shared .
 
 ## package – bundle manifest + wasm into an .ndp archive
 package: $(PACKAGE)

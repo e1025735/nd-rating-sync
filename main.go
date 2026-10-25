@@ -5,7 +5,7 @@
 // iTunes, MediaMonkey, foobar2000 and MusicBee — see CLAUDE.md, "Supported
 // tag formats", for the tag each one writes in each container.
 //
-// Build: tinygo build -o plugin.wasm -target wasip1 -buildmode=c-shared -scheduler=none .
+// Build: tinygo build -o plugin.wasm -target wasip1 -buildmode=c-shared .
 // Package: zip -j nd-rating-sync.ndp manifest.json plugin.wasm
 package main
 

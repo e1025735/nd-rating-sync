@@ -64,11 +64,11 @@ and out-of-range star counts.
 ## Building the plugin
 
 ```sh
-tinygo build -o plugin.wasm -target wasip1 -buildmode=c-shared -scheduler=none .
+tinygo build -o plugin.wasm -target wasip1 -buildmode=c-shared .
 zip -j nd-rating-sync.ndp manifest.json plugin.wasm
 ```
 
-`make package` does the same. `-scheduler=none` drops TinyGo's goroutine support, which the plugin does not use, for smaller and faster code. Code that starts a goroutine or uses a channel will then fail to build (see CLAUDE.md, "Build").
+`make package` does the same.
 
 Drop `nd-rating-sync.ndp` into your Navidrome plugins folder to test end-to-end.
 

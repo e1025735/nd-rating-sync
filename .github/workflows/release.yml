@@ -75,7 +75,7 @@ jobs:
           tinygo-version: '0.43.0'
 
       - name: Build WASM
-        run: tinygo build -o plugin.wasm -target wasip1 -buildmode=c-shared -scheduler=none .
+        run: tinygo build -o plugin.wasm -target wasip1 -buildmode=c-shared .
 
       - name: Package plugin
         run: zip -j nd-rating-sync.ndp manifest.json plugin.wasm

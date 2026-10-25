@@ -34,13 +34,12 @@ Navidrome plugin (WASM) that reads embedded star-rating tags from MP3, FLAC, Ogg
 Must be built with **TinyGo** targeting `wasip1`:
 
 ```
-tinygo build -o plugin.wasm -target wasip1 -buildmode=c-shared -scheduler=none .
+tinygo build -o plugin.wasm -target wasip1 -buildmode=c-shared .
 zip -j nd-rating-sync.ndp manifest.json plugin.wasm
 ```
 
 `make build`, the release workflow and the Renovate bump workflow all run this same command (`make` also rebuilds on any change under `internal/`). Keep them in sync.
 
-- `-scheduler=none` replaces TinyGo's default WebAssembly scheduler (`asyncify`), which instruments every function so goroutines can be paused — larger, slower code and extra memory for goroutines the plugin never starts. The cost: the plugin and its dependencies must not start goroutines or use channels; doing so fails the build, it does not fail at run time.
 - `-gc` is left at the target default (`conservative`). `leaking` would never free memory and a full sweep would run out of heap.
 - `-panic` stays at the default `abort`, which prints the panic message (`trap` prints nothing). Panics cannot be recovered on WebAssembly anyway, so the message is the only clue.
 
