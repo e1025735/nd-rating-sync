@@ -135,20 +135,20 @@ func ratingFromVorbisComments(cmts vorbisComments, path string, tagOrder []strin
 	if vs := cmts["FMPS_RATING"]; len(vs) > 0 {
 		if stars, ok := fmpsToStars(vs[0]); ok {
 			found["MediaMonkey"] = stars
-			logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MediaMonkey for path %s", stars, path))
+			logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for MediaMonkey in %q", stars, path))
 		}
 	}
 	if vs := cmts["RATING"]; len(vs) > 0 {
 		if stars, ok := ratingIntToStars(vs[0]); ok {
 			found["foobar2000"] = stars
-			logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for foobar2000 for path %s", stars, path))
+			logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for foobar2000 in %q", stars, path))
 		}
 		if stars, ok := ratingMusicBeeToStars(vs[0]); ok {
 			found["MusicBee"] = stars
-			logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MusicBee for path %s", stars, path))
+			logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for MusicBee in %q", stars, path))
 			// Overrides FMPS_RATING above: RATING is what MediaMonkey writes.
 			found["MediaMonkey"] = stars
-			logTrace(fmt.Sprintf("nd-rating-sync: found rating of \"%q\" for MediaMonkey for path %s", stars, path))
+			logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for MediaMonkey in %q", stars, path))
 		}
 	}
 	for _, format := range tagOrder {
@@ -161,11 +161,23 @@ func ratingFromVorbisComments(cmts vorbisComments, path string, tagOrder []strin
 
 // parseFLACRating parses a FLAC stream for a recognised star rating.
 func parseFLACRating(data []byte, path string, tagOrder []string) (int, bool) {
+	stars, ok, _ := ratingFromFLAC(data, path, tagOrder)
+	return stars, ok
+}
+
+// ratingFromFLAC is parseFLACRating with the parse error kept. Empty data
+// (the extractor found no fLaC magic) is reported as untagged, like every
+// other format; a corrupt metadata block is an error.
+func ratingFromFLAC(data []byte, path string, tagOrder []string) (int, bool, error) {
+	if len(data) == 0 {
+		return 0, false, nil
+	}
 	cmts, err := parseFLACVorbisComments(data)
 	if err != nil {
-		return 0, false
+		return 0, false, err
 	}
-	return ratingFromVorbisComments(cmts, path, tagOrder)
+	stars, ok := ratingFromVorbisComments(cmts, path, tagOrder)
+	return stars, ok, nil
 }
 
 // flacMetadataBlockHeaderSize is the fixed FLAC metadata block header length
@@ -195,7 +207,9 @@ func extractFLACMetadata(f *os.File) ([]byte, error) {
 		var hdr [flacMetadataBlockHeaderSize]byte
 		if _, err := io.ReadFull(f, hdr[:]); err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				return flacSynthEmpty(), nil
+				// The previous block was not flagged as the last one, so the
+				// metadata is cut off: unreadable, never "no tag".
+				return nil, errors.New("FLAC metadata ends before its last block")
 			}
 			return nil, err
 		}

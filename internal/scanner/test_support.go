@@ -44,7 +44,7 @@ func mustJSONBytes(v any) []byte {
 }
 
 func configHashFor(cfg PluginConfig) string {
-	return kvadapter.ConfigHashFor(mustJSONBytes(cfg))
+	return kvadapter.ConfigHashFor(mustJSONBytes(FileCacheConfig(cfg)))
 }
 
 func kvKeyLastSynced(libraryID, username string) string {

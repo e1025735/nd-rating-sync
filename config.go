@@ -4,32 +4,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	scanner "github.com/e1025735/nd-rating-sync/internal/scanner"
 )
 
-type userConfig struct {
-	Username              string
-	SkipAlreadyRated      bool
-	ClearRatingIfUntagged bool
-	RatingTagOrder        []string
-}
-
-type libraryConfig struct {
-	LibraryID   string
-	LibraryName string
-	Users       []userConfig
-}
-
-type pluginConfig struct {
-	SyncSchedule                 string
-	MaxSongsPerRun               int
-	IncrementalSync              bool
-	DryRun                       bool
-	CacheLibrariesFilesystemTree bool
-	DefaultSkipAlreadyRated      *bool
-	DefaultClearRatingIfUntagged *bool
-	KVStorageMaxSize             string
-	Libraries                    []libraryConfig
-}
+// The resolved config types are the scanner's own, so the config hash and
+// the sync engine always see exactly what loadConfig produced.
+type (
+	userConfig    = scanner.UserConfig
+	libraryConfig = scanner.LibraryConfig
+	pluginConfig  = scanner.PluginConfig
+)
 
 type jsonUserConfig struct {
 	Username              string   `json:"username"`
@@ -44,7 +29,7 @@ type jsonLibraryConfig struct {
 	Users       []jsonUserConfig `json:"users"`
 }
 
-var defaultTagOrder = []string{"WMP", "iTunes", "MediaMonkey", "foobar2000", "MusicBee"}
+var defaultTagOrder = scanner.DefaultTagOrder
 
 // parseTristateConfig parses a PDK string value into a tristate bool pointer.
 // "true"/"1"/"yes"/"on" → &true; "false"/"0"/"no"/"off" → &false; anything else → nil (not set).

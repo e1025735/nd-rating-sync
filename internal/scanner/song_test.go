@@ -39,7 +39,7 @@ func TestProcessSong_SkipsAlreadyRated(t *testing.T) {
 	}
 
 	processSong(
-		UserConfig{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder},
+		UserConfig{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: DefaultTagOrder},
 		PluginConfig{},
 		song,
 		time.Time{},
@@ -67,7 +67,7 @@ func TestProcessSong_MissingUniqueMatchCountsUnreadable(t *testing.T) {
 	}
 
 	processSong(
-		UserConfig{Username: "alice", RatingTagOrder: defaultTagOrder},
+		UserConfig{Username: "alice", RatingTagOrder: DefaultTagOrder},
 		PluginConfig{},
 		song,
 		time.Time{},
@@ -107,7 +107,7 @@ func TestProcessSong_ClearsRatingWhenUntaggedAndAllowed(t *testing.T) {
 		UserConfig{
 			Username:              "alice",
 			ClearRatingIfUntagged: true,
-			RatingTagOrder:        defaultTagOrder,
+			RatingTagOrder:        DefaultTagOrder,
 		},
 		PluginConfig{},
 		song,
@@ -209,7 +209,7 @@ func TestProcessSong_IncrementalSkipsOldSongWithOldMTime(t *testing.T) {
 		song := subsonicSong{ID: "song-6", Title: "Old", Suffix: "mp3", Size: 42, Created: created}
 
 		processSong(
-			UserConfig{Username: "alice", RatingTagOrder: defaultTagOrder},
+			UserConfig{Username: "alice", RatingTagOrder: DefaultTagOrder},
 			PluginConfig{},
 			song,
 			threshold,

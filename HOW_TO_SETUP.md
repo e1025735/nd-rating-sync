@@ -210,7 +210,9 @@ In that case, enable `Cache Libraries Filesystem Tree` in the plugin settings.
 When enabled, the plugin caches the discovered library file tree in Navidrome's KV store.
 That means the slow filesystem walk is not repeated from scratch on every scan.
 
-If the plugin config changes, it also compares a stored `config-hash` with the current config and, on mismatch, purges the plugin-owned KV prefixes for cached state (`bucket`, `libraryState`, and `config`) before writing the new hash and rebuilding the cache from the new config.
+The first build can span many callbacks; each one continues exactly where the previous one stopped, even in the middle of a large folder. The finished cache is reused until Navidrome rescans the library. Then it is rebuilt from scratch, so files that were moved or deleted in the meantime do not linger in it.
+
+The cache is purged only when the cache switch itself or the list of configured library IDs changes. Editing the schedule, `dry_run` or a user's settings keeps it.
 
 ### Required KV configuration
 
@@ -233,7 +235,7 @@ then also set:
 "kv_storage_max_size": "150MB"
 ```
 
-If these values differ, the plugin may not be able to use log the cache usage correctly.
+The value is only used to report how full the KV store is: the plugin logs the usage at debug level and warns at 90 %. If the two values differ, that report is wrong.
 
 ### Navidrome host cache sizing
 
@@ -244,7 +246,7 @@ If your plugin manifest requests more KV storage than the host allows, you may n
 
 `Cache Libraries Filesystem Tree` is an optimization for slow filesystem walks. It does not change how the plugin resolves files by size and extension, and it does not alter rating parsing logic.
 
-The cache is intentionally reset when configuration changes, because stale plugin KV state can otherwise reflect the old config. In other words, a config change triggers a plugin-owned purge and rebuild, not an incremental update of the old cache.
+The cache is reset when the cache switch or the list of library IDs changes, and rebuilt after every Navidrome library scan. Other config changes keep it.
 
 ## Important caution for huge scans
 
@@ -275,7 +277,7 @@ Start with one user and one library first, verify the results, and then add more
 - Use an hourly or more frequent cron schedule such as `0 * * * *` or `*/15 * * * *`.
 - Check logs after the first run and make sure the plugin completes or reschedules with a continuation.
 
-If the plugin repeatedly fails at the 30-second boundary during the library walk, enable the filesystem tree cache and increase KV store sizing.
+Without the cache, the plugin walks the whole library in every callback. If that walk takes more than about a third of the 15-second budget, it logs a hint to enable the cache. If the walk does not finish within a callback at all, the plugin retries it twice after 30 seconds each and then skips the library until the next scheduled sync, with a warning. In both cases, enable the filesystem tree cache and increase KV store sizing.
 
 ## How the plugin works
 
@@ -284,6 +286,8 @@ If the plugin repeatedly fails at the 30-second boundary during the library walk
 - The plugin reads only supported containers, parses the embedded rating tags, and calls `setRating` for the matched Navidrome song.
 - Navidrome closes plugin callbacks that exceed 30 seconds, so the plugin runs in short time-budgeted chunks.
 - If the budget is reached before completion, the plugin reschedules a continuation and resumes where it left off.
+- If a step fails without progress (the song listing fails, or the library walk is too slow), it retries after 30 seconds and gives up on that library/user after three attempts until the next scheduled sync.
+- A file whose tags cannot be read or parsed is skipped as unreadable; its rating is never cleared.
 
 For the full runtime flow and diagram, see [`DETAILS.md`](DETAILS.md).
 

@@ -1,7 +1,7 @@
 {
   "name": "nd-rating-sync",
   "version": "0.21.0",
-  "description": "Reads embedded rating tags from MP3, FLAC, Ogg-Vorbis, Opus, WAV, DSF, M4A/AAC and WMA files (ID3v2 TXXX FMPS_Rating / POPM iTunes / POPM WMP / TXXX:RATING; Vorbis comments FMPS_RATING / RATING; MP4 freeform atoms; ASF Extended Content Description Object) and syncs them to Navidrome's user ratings via the Subsonic API, with per-user per-library tag priority and overwrite control.",
+  "description": "Reads embedded rating tags from MP3, FLAC, Ogg-Vorbis, Opus, WAV, DSF, M4A/AAC and WMA files (WMP, iTunes, MediaMonkey, foobar2000 and MusicBee ratings: ID3v2 POPM / TXXX FMPS_Rating / TXXX RATING; Vorbis comments FMPS_RATING / RATING; MP4 freeform atoms rating / rate / RATE / RATING / FMPS_Rating; ASF WM/SharedUserRating / FMPS_Rating) and syncs them to Navidrome's user ratings via the Subsonic API, with per-user per-library tag priority and overwrite control.",
   "author": "e1025735",
   "website": "https://github.com/e1025735/nd-rating-sync",
   "permissions": {
@@ -38,7 +38,7 @@
         "incremental_sync": {
           "type": "boolean",
           "title": "Incremental sync",
-          "description": "When enabled (default), each (library, user) pair stores the timestamp of its last successful scan and skips songs whose file mtime predates it. Drastically reduces work on recurring runs after the first pass. Disable to force a full scan every run — useful for debugging or after changing a user's ratingTagOrder.",
+          "description": "When enabled (default), each (library, user) pair stores the timestamp of its last successful scan and skips songs whose file mtime predates it. Drastically reduces work on recurring runs after the first pass. Songs Navidrome added since the last scan are always read, and changing a user's ratingTagOrder or skip/clear settings makes that user's next run a full pass automatically. Disable to force a full scan every run — useful for debugging.",
           "default": true
         },
         "dry_run": {
@@ -90,7 +90,7 @@
         "cache_libraries_filesystem_tree": {
           "type": "boolean",
           "title": "Cache Libraries Filesystem Tree",
-          "description": "When true, the plugin caches the libraries filesystem tree. Only enabled this if the libraries are very huge or on a slow media (like CIFS share for example). Default: false.",
+          "description": "When true, the plugin caches the libraries filesystem tree in its KV store and rebuilds it after each Navidrome library scan. Only enable this if the libraries are very large or on slow media (like a CIFS share), or if the log suggests it. Default: false.",
           "default": false
         },
         "kv_storage_max_size": {

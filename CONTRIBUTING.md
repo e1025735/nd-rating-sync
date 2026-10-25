@@ -9,12 +9,12 @@ build, test, and extend the plugin.
 
 ```
 main.go          – lifecycle init and scheduler callback (entry points only)
-config.go        – pluginConfig / libraryConfig / userConfig types + loadConfig()
-internal/scanner/ – scanner implementation package: `sync.go` handles scheduling and chunk processing, `song.go` contains the per-song pipeline (`processSong`), and `metadata.go` contains `extractStarsFromFile` / `readAudioMetadata` / `dispatchParser` (format dispatch and panic recovery). Metadata reads are bounded by the media-layer cap in `internal/media/constants.go`.
-internal/adapter/subsonic/subsonic.go      – Subsonic API adapter: `FetchSongPage`, `SetRating`, and Subsonic response types
-id3.go           – ID3v2 tag parsing: reads frames once, picks winner by tagOrder
-rating.go        – pure star converters: fmpsToStars, popmWMPToStars, popmITunesToStars
-pdk_stub.go      – build-tag stub (!wasip1): no-op log helpers + getConfig, so tests
+config.go        – loadConfig(); the config types are aliases of the scanner's
+internal/scanner/ – sync engine: `types.go` holds the config/cursor types and `RunSyncStep`, `sync.go` the chunk processing (pairs, retries, persistent index), `song.go` the per-song pipeline (`processSong`), `metadata.go` `extractStarsFromFile` / `readAudioMetadata` / `parseStars`, `filesystem_*.go` mount walking, file matching and the persistent index, `library.go` the LastScanAt gate.
+internal/adapter/subsonic/ – Subsonic API adapter: `FetchSongPage`, `SetRating`, and Subsonic response types
+internal/adapter/kv_store/ – KV state: incremental thresholds, config hash, persistent index buckets, overlap guard
+internal/media/  – container extractors and tag parsers; `exports.go` (`ExtractMetadata`, `ParseRating`) is the package API, `rating.go` the pure star converters
+pdk_stub.go, internal/*/logging_stub.go – build-tag stubs (!wasip1): no-op log helpers + getConfig, so tests
                    compile without TinyGo or any WASM toolchain
 ```
 
@@ -64,9 +64,11 @@ and out-of-range star counts.
 ## Building the plugin
 
 ```sh
-tinygo build -o plugin.wasm -target wasip1 -buildmode=c-shared .
+tinygo build -o plugin.wasm -target wasip1 -buildmode=c-shared -scheduler=none .
 zip -j nd-rating-sync.ndp manifest.json plugin.wasm
 ```
+
+`make package` does the same. `-scheduler=none` drops TinyGo's goroutine support, which the plugin does not use, for smaller and faster code. Code that starts a goroutine or uses a channel will then fail to build (see CLAUDE.md, "Build").
 
 Drop `nd-rating-sync.ndp` into your Navidrome plugins folder to test end-to-end.
 

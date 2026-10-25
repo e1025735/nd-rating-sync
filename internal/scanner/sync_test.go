@@ -18,7 +18,7 @@ import (
 // ─── runSyncStep ─────────────────────────────────────────────────────────────
 
 func TestRunSyncStep_NoLibraries(t *testing.T) {
-	err := runSyncStep(PluginConfig{}, "")
+	err := RunSyncStep(PluginConfig{}, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no libraries configured")
 }
@@ -220,7 +220,7 @@ func TestProcessPairChunk_StopsAtDeadlineMidPair(t *testing.T) {
 	).Return(subsonicOK(songs), nil)
 
 	lib := LibraryConfig{LibraryID: "lib1"}
-	user := UserConfig{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}
+	user := UserConfig{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: DefaultTagOrder}
 
 	deadline := time.Now().Add(-time.Second) // already past
 	next, pairDone := processPairChunk(lib, user, PluginConfig{}, SyncCursor{}, time.Time{}, deadline, nil, false, nil)
@@ -251,8 +251,8 @@ func TestRunSyncChunk_AdvancesAcrossPairsToCompletion(t *testing.T) {
 	cfg := PluginConfig{Libraries: []LibraryConfig{{
 		LibraryID: "1",
 		Users: []UserConfig{
-			{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder},
-			{Username: "bob", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder},
+			{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: DefaultTagOrder},
+			{Username: "bob", SkipAlreadyRated: true, RatingTagOrder: DefaultTagOrder},
 		},
 	}}}
 
@@ -281,6 +281,8 @@ func TestRunSyncChunk_UsesPersistentIndexWhenEnabled(t *testing.T) {
 		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
 
 	host.KVStoreMock.On("Get", libraryScanStateKey("1")).Return([]byte(nil), false, nil)
+	// A fresh build starts by dropping the library's old buckets.
+	host.KVStoreMock.On("DeleteByPrefix", "bucket:1:").Return(int64(0), nil).Once()
 	bucketKeyName := bucketKey("1", info.Size(), "mp3")
 	bucketValue, err := json.Marshal([]FileRecord{{Path: path, Mtime: info.ModTime().Unix()}})
 	require.NoError(t, err)
@@ -312,7 +314,7 @@ func TestRunSyncStepUntil_ReschedulesWhenBudgetExceeded(t *testing.T) {
 
 	cfg := PluginConfig{Libraries: []LibraryConfig{{
 		LibraryID: "lib1",
-		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: DefaultTagOrder}},
 	}}}
 	host.KVStoreMock.On("Get", kvKeyConfigHash).Return([]byte(configHashFor(cfg)), true, nil)
 
@@ -338,7 +340,7 @@ func TestRunSyncStepUntil_NoRescheduleWhenComplete(t *testing.T) {
 
 	cfg := PluginConfig{Libraries: []LibraryConfig{{
 		LibraryID: "1",
-		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: DefaultTagOrder}},
 	}}}
 	host.KVStoreMock.On("Get", kvKeyConfigHash).Return([]byte(configHashFor(cfg)), true, nil)
 
@@ -365,7 +367,7 @@ func TestRunSyncStepUntil_SkipsWhenSweepInProgress(t *testing.T) {
 
 	cfg := PluginConfig{Libraries: []LibraryConfig{{
 		LibraryID: "1",
-		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: DefaultTagOrder}},
 	}}}
 	host.KVStoreMock.On("Get", kvKeyConfigHash).Return([]byte(configHashFor(cfg)), true, nil)
 	host.KVStoreMock.On("Get", kvKeySweepActive()).
@@ -385,7 +387,7 @@ func TestRunSyncStepUntil_ProceedsWhenSweepStale(t *testing.T) {
 
 	cfg := PluginConfig{Libraries: []LibraryConfig{{
 		LibraryID: "1",
-		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: DefaultTagOrder}},
 	}}}
 	host.KVStoreMock.On("Get", kvKeyConfigHash).Return([]byte(configHashFor(cfg)), true, nil)
 
@@ -408,7 +410,7 @@ func TestRunSyncStepUntil_ContinuationRefreshesGuardNotChecks(t *testing.T) {
 
 	cfg := PluginConfig{Libraries: []LibraryConfig{{
 		LibraryID: "1",
-		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: DefaultTagOrder}},
 	}}}
 	host.KVStoreMock.On("Get", kvKeyConfigHash).Return([]byte(configHashFor(cfg)), true, nil)
 	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.Anything).Return(nil)
@@ -441,7 +443,7 @@ func TestRunSyncChunk_GateSkipsUnchangedLibrary(t *testing.T) {
 
 	cfg := PluginConfig{IncrementalSync: true, Libraries: []LibraryConfig{{
 		LibraryID: "1",
-		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: DefaultTagOrder}},
 	}}}
 
 	next, done := runSyncChunk(cfg, SyncCursor{}, time.Now().Add(time.Hour))
@@ -477,7 +479,7 @@ func TestRunSyncChunk_GateProcessesRescannedLibrary(t *testing.T) {
 
 	cfg := PluginConfig{IncrementalSync: true, Libraries: []LibraryConfig{{
 		LibraryID: "1",
-		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: defaultTagOrder}},
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: DefaultTagOrder}},
 	}}}
 
 	_, done := runSyncChunk(cfg, SyncCursor{}, time.Now().Add(time.Hour))
@@ -485,4 +487,99 @@ func TestRunSyncChunk_GateProcessesRescannedLibrary(t *testing.T) {
 	host.SubsonicAPIMock.AssertExpectations(t)
 	host.LibraryMock.AssertExpectations(t)
 	host.KVStoreMock.AssertExpectations(t)
+}
+
+// ─── Retries without progress ─────────────────────────────────────────────────
+
+// TestRunSyncChunk_FetchFailureCountsAttempt proves a failing song listing
+// does not re-run back to back: the attempt is counted in the cursor, which
+// delays the continuation.
+func TestRunSyncChunk_FetchFailureCountsAttempt(t *testing.T) {
+	resetSubsonicMock(t)
+	resetLibraryMock(t)
+	mockGetLibrary(1, t.TempDir())
+	host.SubsonicAPIMock.On("Call",
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=ghost&musicFolderId=1`,
+	).Return("", fmt.Errorf("user not found"))
+
+	cfg := PluginConfig{Libraries: []LibraryConfig{{
+		LibraryID: "1",
+		Users:     []UserConfig{{Username: "ghost", RatingTagOrder: DefaultTagOrder}},
+	}}}
+
+	next, done := runSyncChunk(cfg, SyncCursor{}, time.Now().Add(time.Hour))
+	assert.False(t, done)
+	assert.Equal(t, 1, next.Retry)
+	assert.Equal(t, 0, next.User, "the pair is retried, not skipped yet")
+}
+
+// TestRunSyncChunk_FetchFailureSkipsPairAfterMaxAttempts proves the chain
+// ends: the last allowed failure skips the pair and the sweep completes.
+func TestRunSyncChunk_FetchFailureSkipsPairAfterMaxAttempts(t *testing.T) {
+	resetSubsonicMock(t)
+	resetLibraryMock(t)
+	mockGetLibrary(1, t.TempDir())
+	host.SubsonicAPIMock.On("Call",
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=ghost&musicFolderId=1`,
+	).Return("", fmt.Errorf("user not found"))
+
+	cfg := PluginConfig{Libraries: []LibraryConfig{{
+		LibraryID: "1",
+		Users:     []UserConfig{{Username: "ghost", RatingTagOrder: DefaultTagOrder}},
+	}}}
+
+	cur := SyncCursor{Retry: maxPairAttempts - 1, PairStart: "2026-06-01T00:00:00Z"}
+	next, done := runSyncChunk(cfg, cur, time.Now().Add(time.Hour))
+	assert.True(t, done, "the failing pair is skipped, so the sweep finishes")
+	assert.Equal(t, 0, next.Retry)
+}
+
+// TestRunSyncStepUntil_RetryIsDelayed proves a continuation that carries a
+// failed attempt is scheduled with retryDelaySeconds instead of immediately.
+func TestRunSyncStepUntil_RetryIsDelayed(t *testing.T) {
+	resetSubsonicMock(t)
+	resetSchedulerMock(t)
+	resetKVStoreMock(t)
+	resetLibraryMock(t)
+	mockGetLibrary(1, t.TempDir())
+
+	cfg := PluginConfig{Libraries: []LibraryConfig{{
+		LibraryID: "1",
+		Users:     []UserConfig{{Username: "ghost", RatingTagOrder: DefaultTagOrder}},
+	}}}
+	host.KVStoreMock.On("Get", kvKeyConfigHash).Return([]byte(configHashFor(cfg)), true, nil)
+	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.Anything).Return(nil)
+	host.SubsonicAPIMock.On("Call",
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=ghost&musicFolderId=1`,
+	).Return("", fmt.Errorf("user not found"))
+	host.SchedulerMock.On("ScheduleOneTime", int32(retryDelaySeconds), mock.Anything, "").Return("cont-id", nil)
+
+	err := runSyncStepUntil(cfg, `{"lib":0,"user":0,"off":0,"start":"2026-06-01T00:00:00Z"}`, time.Now().Add(time.Hour))
+	require.NoError(t, err)
+	host.SchedulerMock.AssertExpectations(t)
+}
+
+// TestRunSyncChunk_SlowWalkIsRetriedThenSkipped proves a mount walk that
+// never fits in a budget cannot keep the chain alive forever.
+func TestRunSyncChunk_SlowWalkIsRetriedThenSkipped(t *testing.T) {
+	resetLibraryMock(t)
+	mockGetLibrary(1, t.TempDir())
+	cfg := PluginConfig{Libraries: []LibraryConfig{{
+		LibraryID: "1",
+		Users:     []UserConfig{{Username: "alice", RatingTagOrder: DefaultTagOrder}},
+	}}}
+
+	// A cached walk result that ran out of budget stands in for a slow mount.
+	slow := func(cur SyncCursor) (SyncCursor, bool) {
+		indexCache := map[string]fileIndexCacheEntry{"1": {err: errWalkDeadline}}
+		return runSyncChunkWithIndexCache(cfg, cur, time.Now().Add(time.Hour), indexCache)
+	}
+
+	next, done := slow(SyncCursor{})
+	assert.False(t, done)
+	assert.Equal(t, 1, next.Retry)
+
+	next, done = slow(SyncCursor{Retry: maxPairAttempts - 1})
+	assert.True(t, done, "the last attempt skips the pair")
+	assert.Equal(t, 0, next.Retry)
 }

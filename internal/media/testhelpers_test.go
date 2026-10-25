@@ -78,34 +78,15 @@ func readAudioMetadata(path, ext string) ([]byte, bool) {
 	}
 	defer f.Close()
 
-	var (
-		data []byte
-		err2 error
-	)
-	switch ext {
-	case "mp3":
-		data, err2 = ExtractID3v2Metadata(f)
-	case "flac":
-		data, err2 = ExtractFLACMetadata(f)
-	case "ogg", "oga", "opus":
-		data, err2 = ExtractOggMetadata(f)
-	case "wav":
-		data, err2 = ExtractWAVMetadata(f)
-	case "dsf":
-		data, err2 = ExtractDSFMetadata(f)
-	case "m4a", "aac", "mp4":
-		data, err2 = ExtractM4AMetadata(f)
-	case "wma":
-		data, err2 = ExtractWMAMetadata(f)
-	default:
-		return nil, false
-	}
-	if err2 != nil {
+	data, err := ExtractMetadata(ext, f)
+	if err != nil {
 		return nil, false
 	}
 	return data, true
 }
 
+// extractStarsFromFile mirrors the scanner's pipeline: unreadable on any read
+// or parse error, tagAbsent when the tag carries no recognised rating.
 func extractStarsFromFile(path string, suffix string, tagOrder []string) (int, fileReadResult) {
 	ext := strings.ToLower(suffix)
 	if ext == "" {
@@ -120,26 +101,11 @@ func extractStarsFromFile(path string, suffix string, tagOrder []string) (int, f
 		return 0, fileUnreadable
 	}
 
-	var stars int
-	switch ext {
-	case "mp3":
-		stars, ok = ParseID3v2Rating(data, path, tagOrder)
-	case "flac":
-		stars, ok = ParseFLACRating(data, path, tagOrder)
-	case "ogg", "oga", "opus":
-		stars, ok = ParseOggVorbisRating(data, path, tagOrder)
-	case "wav":
-		stars, ok = ParseWAVRating(data, path, tagOrder)
-	case "dsf":
-		stars, ok = ParseDSFRating(data, path, tagOrder)
-	case "m4a", "aac", "mp4":
-		stars, ok = ParseM4ARating(data, path, tagOrder)
-	case "wma":
-		stars, ok = ParseWMARating(data, path, tagOrder)
-	default:
+	stars, found, err := ParseRating(ext, data, path, tagOrder)
+	if err != nil {
 		return 0, fileUnreadable
 	}
-	if ok {
+	if found {
 		return stars, tagFound
 	}
 	return 0, tagAbsent
