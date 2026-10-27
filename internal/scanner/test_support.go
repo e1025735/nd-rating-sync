@@ -13,6 +13,7 @@ import (
 
 	"github.com/bogem/id3v2/v2"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
+	"github.com/navidrome/navidrome/plugins/pdk/go/types"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
@@ -20,7 +21,6 @@ import (
 	subsonicadapter "github.com/e1025735/nd-rating-sync/internal/adapter/subsonic"
 )
 
-var kvKeyConfigHash = kvadapter.KVKeyConfigHash
 var sweepStaleAfter = kvadapter.SweepStaleAfter
 
 func kvKeySweepActive() string { return kvadapter.KVKeySweepActive() }
@@ -43,20 +43,8 @@ func mustJSONBytes(v any) []byte {
 	return b
 }
 
-func configHashFor(cfg PluginConfig) string {
-	return kvadapter.ConfigHashFor(mustJSONBytes(FileCacheConfig(cfg)))
-}
-
 func kvKeyLastSynced(libraryID, username string) string {
 	return kvadapter.KVKeyLastSynced(libraryID, username)
-}
-
-func bucketKey(libraryID string, size int64, ext string) string {
-	return kvadapter.BucketKey(libraryID, size, ext)
-}
-
-func libraryScanStateKey(libraryID string) string {
-	return kvadapter.LibraryScanStateKey(libraryID)
 }
 
 func subsonicOK(songs []subsonicSong) string {
@@ -243,7 +231,6 @@ func resetKVStoreMockNoDefault(t *testing.T) {
 }
 
 func init() {
-	_ = kvadapter.KVKeyConfigHash
 	_ = mock.Anything
 }
 
@@ -273,7 +260,42 @@ func fileSize(t *testing.T, path string) int64 {
 	return fi.Size()
 }
 
+// hostLibraryRoot is the library root on the (simulated) Navidrome host. The
+// matcher reports track paths relative to it; tests read the files through
+// a temp-dir mount instead.
+const hostLibraryRoot = "/music"
+
 func mockGetLibrary(libID int32, mountPoint string) {
 	host.LibraryMock.On("GetLibrary", libID).
-		Return(&host.Library{ID: libID, MountPoint: mountPoint, Path: mountPoint}, nil)
+		Return(&host.Library{ID: libID, MountPoint: mountPoint, Path: hostLibraryRoot}, nil)
+}
+
+func resetMatcherMock(t *testing.T) {
+	t.Helper()
+	host.MatcherMock.ExpectedCalls = nil
+	host.MatcherMock.Calls = nil
+	t.Cleanup(func() {
+		host.MatcherMock.ExpectedCalls = nil
+		host.MatcherMock.Calls = nil
+	})
+}
+
+// songRefs is the matcher request for the given song IDs.
+func songRefs(ids ...string) []types.SongRef {
+	refs := make([]types.SongRef, len(ids))
+	for i, id := range ids {
+		refs[i] = types.SongRef{ID: id}
+	}
+	return refs
+}
+
+// mockMatch makes the matcher resolve the given song IDs, in order, to the
+// given tracks.
+func mockMatch(ids []string, tracks ...*types.Track) {
+	host.MatcherMock.On("MatchSongs", songRefs(ids...), host.MatchOptions{}).Return(tracks, nil)
+}
+
+// trackAt is a matcher result for a file at rel inside library libID.
+func trackAt(id string, libID int32, rel string) *types.Track {
+	return &types.Track{ID: id, LibraryID: libID, Path: rel}
 }

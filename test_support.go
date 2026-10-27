@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"testing"
 
-	kvadapter "github.com/e1025735/nd-rating-sync/internal/adapter/kv_store"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 	"github.com/stretchr/testify/mock"
 )
@@ -39,6 +38,5 @@ func resetSchedulerMock(t *testing.T) {
 }
 
 func init() {
-	_ = kvadapter.KVKeyConfigHash
 	_ = mock.Anything
 }

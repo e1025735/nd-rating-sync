@@ -43,10 +43,7 @@ func TestProcessSong_SkipsAlreadyRated(t *testing.T) {
 		PluginConfig{},
 		song,
 		time.Time{},
-		nil,
-		false,
-		"lib1",
-		nil,
+		songFile{},
 		tally,
 	)
 
@@ -55,7 +52,7 @@ func TestProcessSong_SkipsAlreadyRated(t *testing.T) {
 	host.SubsonicAPIMock.AssertNotCalled(t, "Call", "setRating?id=song-1&rating=5&u=alice")
 }
 
-func TestProcessSong_MissingUniqueMatchCountsUnreadable(t *testing.T) {
+func TestProcessSong_UnlocatedFileCountsUnreadable(t *testing.T) {
 	resetSubsonicMock(t)
 
 	tally := &syncTally{}
@@ -71,10 +68,7 @@ func TestProcessSong_MissingUniqueMatchCountsUnreadable(t *testing.T) {
 		PluginConfig{},
 		song,
 		time.Time{},
-		map[string][]FileEntry{},
-		false,
-		"lib1",
-		nil,
+		songFile{reason: "Navidrome returned no track for this song ID"},
 		tally,
 	)
 
@@ -88,9 +82,7 @@ func TestProcessSong_ClearsRatingWhenUntaggedAndAllowed(t *testing.T) {
 	dir := t.TempDir()
 	path := writeEmptyID3MP3At(t, dir, "song.mp3")
 	size := fileSize(t, path)
-	index := map[string][]FileEntry{
-		sizeKey(size, "mp3"): {{Path: path, Size: size, MTime: time.Now()}},
-	}
+	file := songFile{entry: FileEntry{Path: path, Size: size, MTime: time.Now()}, found: true}
 
 	host.SubsonicAPIMock.On("Call", "setRating?id=song-3&rating=0&u=alice").
 		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
@@ -112,10 +104,7 @@ func TestProcessSong_ClearsRatingWhenUntaggedAndAllowed(t *testing.T) {
 		PluginConfig{},
 		song,
 		time.Time{},
-		index,
-		false,
-		"lib1",
-		nil,
+		file,
 		tally,
 	)
 
@@ -129,9 +118,7 @@ func TestProcessSong_DryRunWouldRateTaggedFile(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFMPSFileAt(t, dir, "song.mp3", "0.6")
 	size := fileSize(t, path)
-	index := map[string][]FileEntry{
-		sizeKey(size, "mp3"): {{Path: path, Size: size, MTime: time.Now()}},
-	}
+	file := songFile{entry: FileEntry{Path: path, Size: size, MTime: time.Now()}, found: true}
 
 	tally := &syncTally{}
 	song := subsonicSong{
@@ -146,10 +133,7 @@ func TestProcessSong_DryRunWouldRateTaggedFile(t *testing.T) {
 		PluginConfig{DryRun: true},
 		song,
 		time.Time{},
-		index,
-		false,
-		"lib1",
-		nil,
+		file,
 		tally,
 	)
 
@@ -166,9 +150,7 @@ func TestProcessSong_IncrementalProcessesNewlyAddedSongWithOldMTime(t *testing.T
 	path := writeFMPSFileAt(t, dir, "renamed.mp3", "0.6")
 	size := fileSize(t, path)
 	threshold := time.Now().Add(-time.Hour)
-	index := map[string][]FileEntry{
-		sizeKey(size, "mp3"): {{Path: path, Size: size, MTime: threshold.Add(-24 * time.Hour)}},
-	}
+	file := songFile{entry: FileEntry{Path: path, Size: size, MTime: threshold.Add(-24 * time.Hour)}, found: true}
 
 	tally := &syncTally{}
 	song := subsonicSong{
@@ -184,10 +166,7 @@ func TestProcessSong_IncrementalProcessesNewlyAddedSongWithOldMTime(t *testing.T
 		PluginConfig{DryRun: true},
 		song,
 		threshold,
-		index,
-		false,
-		"lib1",
-		nil,
+		file,
 		tally,
 	)
 
@@ -200,9 +179,7 @@ func TestProcessSong_IncrementalSkipsOldSongWithOldMTime(t *testing.T) {
 
 	threshold := time.Now().Add(-time.Hour)
 	old := threshold.Add(-24 * time.Hour)
-	index := map[string][]FileEntry{
-		sizeKey(42, "mp3"): {{Path: "/nonexistent.mp3", Size: 42, MTime: old}},
-	}
+	file := songFile{entry: FileEntry{Path: "/nonexistent.mp3", Size: 42, MTime: old}, found: true}
 
 	for _, created := range []string{"", "not-a-date", old.UTC().Format(time.RFC3339Nano)} {
 		tally := &syncTally{}
@@ -213,10 +190,7 @@ func TestProcessSong_IncrementalSkipsOldSongWithOldMTime(t *testing.T) {
 			PluginConfig{},
 			song,
 			threshold,
-			index,
-			false,
-			"lib1",
-			nil,
+			file,
 			tally,
 		)
 

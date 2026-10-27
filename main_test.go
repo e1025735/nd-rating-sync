@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	kvadapter "github.com/e1025735/nd-rating-sync/internal/adapter/kv_store"
-	scanner "github.com/e1025735/nd-rating-sync/internal/scanner"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 	"github.com/navidrome/navidrome/plugins/pdk/go/scheduler"
 	"github.com/stretchr/testify/assert"
@@ -51,14 +50,16 @@ func TestRegisterSchedules_RecurringFails(t *testing.T) {
 
 // TestOnInit_ClearsSweepGuard proves OnInit drops any stale in-progress
 // heartbeat (a reload kills the chain it belonged to) before registering the
-// schedules, so the immediate-on-load sweep is never suppressed.
+// schedules, so the immediate-on-load sweep is never suppressed. It also
+// removes the file index older versions stored in the KV store.
 func TestOnInit_ClearsSweepGuard(t *testing.T) {
 	resetSchedulerMock(t)
 	resetKVStoreMock(t)
 
-	cfg := loadConfig()
-	host.KVStoreMock.On("Get", kvadapter.KVKeyConfigHash).Return([]byte(kvadapter.ConfigHashFor(mustJSONBytes(scanner.FileCacheConfig(cfg)))), true, nil)
 	host.KVStoreMock.On("Delete", kvadapter.KVKeySweepActive()).Return(nil)
+	for _, prefix := range []string{"bucket", "libraryState", "config"} {
+		host.KVStoreMock.On("DeleteByPrefix", prefix).Return(int64(0), nil).Once()
+	}
 	// loadConfig() returns the hourly default and no libraries in non-WASM builds.
 	host.SchedulerMock.On("ScheduleRecurring", "0 * * * *", "", scheduleID).Return("id-1", nil)
 	host.SchedulerMock.On("ScheduleOneTime", int32(0), "", scheduleIDImmediate).Return("id-2", nil)

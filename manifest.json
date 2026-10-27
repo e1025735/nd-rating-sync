@@ -6,11 +6,14 @@
   "website": "https://github.com/e1025735/nd-rating-sync",
   "permissions": {
     "library": {
-      "reason": "Read music files from all assigned Navidrome libraries to extract embedded rating tags",
+      "reason": "Read music files from all assigned Navidrome libraries to extract embedded rating tags; filesystem access also makes the matcher return each song's path",
       "filesystem": true
     },
     "subsonicapi": {
       "reason": "Call setRating to write star ratings back into Navidrome per user"
+    },
+    "matcher": {
+      "reason": "Look up each song's file path inside its library by song ID, so the plugin can read the rating tag"
     },
     "users": {
       "reason": "Required by the subsonicapi permission for per-user authorisation and to scope scrobble/scan events"
@@ -19,7 +22,7 @@
       "reason": "Schedule periodic scans of the music library"
     },
     "kvstore": {
-      "reason": "Persist the last successful scan timestamp per (library, user) so recurring scans can skip files whose mtime has not changed since",
+      "reason": "Persist the last successful scan timestamp per (library, user) so recurring scans can skip files whose mtime has not changed since, and a heartbeat that keeps two sweeps from overlapping",
       "maxSize": "1MB"
     }
   },
@@ -86,18 +89,6 @@
             }
           ],
           "default": "inherit"
-        },
-        "cache_libraries_filesystem_tree": {
-          "type": "boolean",
-          "title": "Cache Libraries Filesystem Tree",
-          "description": "When true, the plugin caches the libraries filesystem tree in its KV store and rebuilds it after each Navidrome library scan. Only enable this if the libraries are very large or on slow media (like a CIFS share), or if the log suggests it. Default: false.",
-          "default": false
-        },
-        "kv_storage_max_size": {
-          "type": "string",
-          "title": "KV storage max size",
-          "description": "This only needs to be changed if: \"Cache Libraries Filesystem Tree\" is enabled and you changed permissions.kvstore.maxSize in the manifest. Add the same value here as in the manifest. Default: 1MB",
-          "default": "1MB"
         },
         "libraries": {
           "type": "array",
@@ -238,19 +229,11 @@
         },
         {
           "type": "Control",
-          "scope": "#/properties/cache_libraries_filesystem_tree"
-        },
-        {
-          "type": "Control",
           "scope": "#/properties/default_skip_already_rated"
         },
         {
           "type": "Control",
           "scope": "#/properties/default_clear_rating_if_untagged"
-        },
-        {
-          "type": "Control",
-          "scope": "#/properties/kv_storage_max_size"
         },
         {
           "type": "Control",

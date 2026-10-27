@@ -67,17 +67,3 @@ func TestPairFingerprint_ChangesWithPairSettings(t *testing.T) {
 		assert.NotEqual(t, fp, pairFingerprint(u), name)
 	}
 }
-
-// Only the library IDs and the cache switch decide whether the persistent
-// file index is purged.
-func TestFileCacheConfig_IgnoresUnrelatedSettings(t *testing.T) {
-	cfg := PluginConfig{Libraries: []LibraryConfig{{LibraryID: "1", Users: []UserConfig{{Username: "alice"}}}}}
-	other := cfg
-	other.SyncSchedule = "0 3 * * *"
-	other.DryRun = true
-	other.Libraries = []LibraryConfig{{LibraryID: "1", Users: []UserConfig{{Username: "bob", RatingTagOrder: []string{"WMP"}}}}}
-	assert.Equal(t, configHashFor(cfg), configHashFor(other))
-
-	other.CacheLibrariesFilesystemTree = true
-	assert.NotEqual(t, configHashFor(cfg), configHashFor(other))
-}

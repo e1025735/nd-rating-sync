@@ -46,9 +46,21 @@ func (ratingPlugin) OnInit() error {
 	// in-progress guard up front — a heartbeat left over from just before the
 	// restart must not suppress the immediate-on-load sweep until it goes stale.
 	kvadapter.ClearSweepActive()
-	cfg := loadConfig()
-	kvadapter.EnsureConfigCacheIsCurrent(scanner.FileCacheConfig(cfg))
-	return registerSchedules(cfg)
+	purgeLegacyFileIndex()
+	return registerSchedules(loadConfig())
+}
+
+// purgeLegacyFileIndex frees the KV space of the persistent file index that
+// versions before the switch to Navidrome's matcher kept. Failure only costs
+// space, so it is logged and ignored.
+func purgeLegacyFileIndex() {
+	deleted, err := kvadapter.PurgeLegacyFileIndex()
+	switch {
+	case err != nil:
+		logWarn(fmt.Sprintf("nd-rating-sync: removing the old file index from the KV store failed: %q", err.Error()))
+	case deleted > 0:
+		logInfo(fmt.Sprintf("nd-rating-sync: removed %d entries of the old file index from the KV store", deleted))
+	}
 }
 
 // registerSchedules is the testable half of OnInit. It takes the resolved

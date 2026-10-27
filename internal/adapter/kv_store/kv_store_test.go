@@ -13,12 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func init() {
-	host.KVStoreMock.On("Get", KVKeyConfigHash).
-		Return([]byte(ConfigHashFor([]byte("default-config"))), true, nil).Maybe()
-	host.KVStoreMock.On("Set", KVKeyConfigHash, mock.Anything).Return(nil).Maybe()
-}
-
 func resetKVStoreMock(t *testing.T) {
 	t.Helper()
 	host.KVStoreMock.ExpectedCalls = nil
@@ -27,8 +21,6 @@ func resetKVStoreMock(t *testing.T) {
 		host.KVStoreMock.ExpectedCalls = nil
 		host.KVStoreMock.Calls = nil
 	})
-	host.KVStoreMock.On("Get", KVKeyConfigHash).
-		Return([]byte(ConfigHashFor([]byte("default-config"))), true, nil).Maybe()
 }
 
 func TestKVKeyLastSynced_IncludesLibraryAndUser(t *testing.T) {
@@ -41,47 +33,27 @@ func TestKVKeyLastSynced_IncludesLibraryAndUser(t *testing.T) {
 		KVKeyLastSynced("lib2", "alice"))
 }
 
-func TestKVStore_PurgeStaleKVEntries_KeepsIncrementalThresholds(t *testing.T) {
-	host.KVStoreMock.ExpectedCalls = nil
-	host.KVStoreMock.Calls = nil
-	t.Cleanup(func() {
-		host.KVStoreMock.ExpectedCalls = nil
-		host.KVStoreMock.Calls = nil
-	})
+func TestPurgeLegacyFileIndex_KeepsIncrementalThresholds(t *testing.T) {
+	resetKVStoreMock(t)
 
-	host.KVStoreMock.On("DeleteByPrefix", ConfigPrefix).Return(int64(1), nil).Once()
-	host.KVStoreMock.On("DeleteByPrefix", BucketPrefix).Return(int64(2), nil).Once()
-	host.KVStoreMock.On("DeleteByPrefix", LibraryStatePrefix).Return(int64(4), nil).Once()
+	host.KVStoreMock.On("DeleteByPrefix", "config").Return(int64(1), nil).Once()
+	host.KVStoreMock.On("DeleteByPrefix", "bucket").Return(int64(2), nil).Once()
+	host.KVStoreMock.On("DeleteByPrefix", "libraryState").Return(int64(4), nil).Once()
 
-	deleted, err := PurgeStaleKVEntries()
+	deleted, err := PurgeLegacyFileIndex()
 	require.NoError(t, err)
 	assert.Equal(t, int64(7), deleted)
 	host.KVStoreMock.AssertNotCalled(t, "DeleteByPrefix", LibraryUserLastSyncPrefix)
 	host.KVStoreMock.AssertExpectations(t)
 }
 
-func TestRefreshConfigHash_PurgesPluginCacheOnMismatch(t *testing.T) {
-	host.KVStoreMock.ExpectedCalls = nil
-	host.KVStoreMock.Calls = nil
-	t.Cleanup(func() {
-		host.KVStoreMock.ExpectedCalls = nil
-		host.KVStoreMock.Calls = nil
-	})
+func TestPurgeLegacyFileIndex_StopsAtFirstError(t *testing.T) {
+	resetKVStoreMock(t)
+	host.KVStoreMock.On("DeleteByPrefix", "bucket").Return(int64(0), errors.New("kvstore unavailable")).Once()
 
-	staleHash := "stalehash"
-	current := map[string]any{"a": 1}
-	currentHash := ConfigHashFor(mustJSONBytes(current))
-	require.NotEqual(t, staleHash, currentHash)
-
-	host.KVStoreMock.On("Get", KVKeyConfigHash).Return([]byte(staleHash), true, nil).Once()
-	host.KVStoreMock.On("DeleteByPrefix", ConfigPrefix).Return(int64(1), nil).Once()
-	host.KVStoreMock.On("DeleteByPrefix", BucketPrefix).Return(int64(2), nil).Once()
-	host.KVStoreMock.On("DeleteByPrefix", LibraryStatePrefix).Return(int64(4), nil).Once()
-	host.KVStoreMock.On("Set", KVKeyConfigHash, []byte(currentHash)).Return(nil).Once()
-
-	EnsureConfigCacheIsCurrent(current)
-
-	host.KVStoreMock.AssertExpectations(t)
+	_, err := PurgeLegacyFileIndex()
+	require.Error(t, err)
+	host.KVStoreMock.AssertNotCalled(t, "DeleteByPrefix", "config")
 }
 
 func TestLoadLastSynced_KeyMissing(t *testing.T) {
@@ -177,25 +149,6 @@ func TestLoadLastSynced_FingerprintMismatchFallsBackToZero(t *testing.T) {
 	assert.True(t, LoadLastSynced("lib1", "alice", "new").IsZero())
 }
 
-func TestDeleteLibraryBuckets_UsesLibraryScopedPrefix(t *testing.T) {
-	resetKVStoreMock(t)
-	host.KVStoreMock.On("DeleteByPrefix", "bucket:1:").Return(int64(3), nil).Once()
-
-	deleted, err := DeleteLibraryBuckets("1")
-	require.NoError(t, err)
-	assert.Equal(t, int64(3), deleted)
-	host.KVStoreMock.AssertExpectations(t)
-}
-
-func TestGetPercentageKVStorageUsage_UsedOverMax(t *testing.T) {
-	resetKVStoreMock(t)
-	host.KVStoreMock.On("GetStorageUsed").Return(int64(250_000), nil)
-
-	pct, err := GetPercentageKVStorageUsage("1MB")
-	require.NoError(t, err)
-	assert.InDelta(t, 25.0, pct, 0.001)
-}
-
 func TestSweepInProgress_FreshHeartbeatIsActive(t *testing.T) {
 	resetKVStoreMock(t)
 	host.KVStoreMock.On("Get", KVKeySweepActive()).
@@ -234,4 +187,12 @@ func TestSweepInProgress_KVErrorFailsOpen(t *testing.T) {
 	host.KVStoreMock.On("Get", KVKeySweepActive()).
 		Return([]byte(nil), false, errors.New("kvstore unavailable"))
 	assert.False(t, SweepInProgress(), "KV error must not block a sync")
+}
+
+func TestMarkSweepActive_KVErrorIsSwallowed(t *testing.T) {
+	resetKVStoreMock(t)
+	host.KVStoreMock.On("Set", KVKeySweepActive(), mock.Anything).
+		Return(errors.New("storage limit exceeded: would use 1.0 MB of 1.0 MB allowed"))
+
+	MarkSweepActive()
 }

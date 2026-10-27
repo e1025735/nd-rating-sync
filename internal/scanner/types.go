@@ -26,10 +26,8 @@ type PluginConfig struct {
 	SyncSchedule                 string
 	IncrementalSync              bool
 	DryRun                       bool
-	CacheLibrariesFilesystemTree bool
 	DefaultSkipAlreadyRated      *bool
 	DefaultClearRatingIfUntagged *bool
-	KVStorageMaxSize             string
 	Libraries                    []LibraryConfig
 }
 
@@ -68,10 +66,6 @@ func (c *SyncCursor) nextPair() {
 	c.Retry = 0
 }
 
-type FileRecord = kvadapter.FileRecord
-
-type ScanState = kvadapter.ScanState
-
 type FileReadResult int
 
 const (
@@ -96,11 +90,10 @@ const callBudget = 15 * time.Second
 
 const (
 	// maxPairAttempts bounds how often one pair is retried after a callback
-	// that made no progress on it: the song listing failed, or the mount
-	// walk did not finish within a whole budget. Without it a lasting
-	// failure (a username Navidrome does not know, a mount too slow to walk)
-	// would re-run back to back forever. After the last attempt the pair is
-	// skipped until the next sweep, without saving its threshold.
+	// that made no progress on it: the song listing or the matcher lookup of
+	// a page failed. Without it a lasting failure (a username Navidrome does
+	// not know) would re-run back to back forever. After the last attempt
+	// the pair is skipped until the next sweep, without saving its threshold.
 	maxPairAttempts = 3
 	// retryDelaySeconds spaces those retries out. It must stay well below
 	// kvadapter.SweepStaleAfter so the waiting chain still counts as in
@@ -156,8 +149,6 @@ func runSyncStepUntil(cfg PluginConfig, payload string, deadline time.Time) erro
 	if len(cfg.Libraries) == 0 {
 		return fmt.Errorf("no libraries configured – add at least one library with users in the plugin settings")
 	}
-	kvadapter.EnsureConfigCacheIsCurrent(FileCacheConfig(cfg))
-
 	cur, resumed := parseCursor(payload)
 	if !resumed && kvadapter.SweepInProgress() {
 		logInfo("nd-rating-sync: a sweep is already in progress – skipping this run")
@@ -182,20 +173,6 @@ func runSyncStepUntil(cfg PluginConfig, payload string, deadline time.Time) erro
 		"nd-rating-sync: time budget reached – rescheduled continuation in %ds (lib=%d user=%d offset=%d)",
 		delay, next.Lib, next.User, next.Offset))
 	return nil
-}
-
-// FileCacheConfig returns the part of cfg the persistent file index depends
-// on. Only a change to it purges the index (kvadapter.EnsureConfigCacheIsCurrent);
-// editing a schedule, a dry-run flag or a user's tag order keeps it.
-func FileCacheConfig(cfg PluginConfig) any {
-	ids := make([]string, len(cfg.Libraries))
-	for i, lib := range cfg.Libraries {
-		ids[i] = lib.LibraryID
-	}
-	return struct {
-		Cache     bool     `json:"cache"`
-		Libraries []string `json:"libraries"`
-	}{cfg.CacheLibrariesFilesystemTree, ids}
 }
 
 // pairFingerprint identifies the settings of one (library, user) pair that

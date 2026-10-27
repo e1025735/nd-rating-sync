@@ -9,7 +9,9 @@ import (
 
 type subsonicSong = subsonicadapter.SubsonicSong
 
-func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.Time, index map[string][]FileEntry, usePersistentIndex bool, libraryID string, bucketCache map[string][]FileRecord, tally *syncTally) {
+// processSong syncs one song. file is where locateSongFiles found the song's
+// file; it is not consulted for a song skipped as already rated.
+func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.Time, file songFile, tally *syncTally) {
 	logTrace(fmt.Sprintf("nd-rating-sync: processSong start song=%q", s.ID))
 	if u.SkipAlreadyRated && s.UserRating > 0 {
 		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, already rated song=%q", s.ID))
@@ -19,21 +21,15 @@ func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.
 		return
 	}
 
-	var entry FileEntry
-	var found bool
-	if usePersistentIndex {
-		entry, found = matchFileInBucketCache(libraryID, s, bucketCache)
-	} else {
-		entry, found = matchFile(index, s)
-	}
-	if !found {
-		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, no unique file song=%q", s.ID))
-		logDebug(fmt.Sprintf(
-			"nd-rating-sync: no unique file for %q (size=%d suffix=%q) – skipping",
-			s.Title, s.Size, s.Suffix))
+	if !file.found {
+		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, file not located song=%q", s.ID))
+		logWarn(fmt.Sprintf(
+			"nd-rating-sync: cannot locate the file of %q (id=%q): %s – skipping",
+			s.Title, s.ID, file.reason))
 		tally.skippedUnreadable++
 		return
 	}
+	entry := file.entry
 
 	// A renamed/moved file keeps its old mtime but is imported by Navidrome as
 	// a new, unrated song – so a song added since the last sweep is processed
