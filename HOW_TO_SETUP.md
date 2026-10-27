@@ -1,7 +1,6 @@
 # nd-rating-sync — Setup Guide
 
 This guide explains how to install, configure, and run `nd-rating-sync` in Navidrome.
-It includes both the normal setup path and the optional filesystem tree cache option for very large or slow libraries.
 
 ## What this plugin does
 
@@ -15,59 +14,47 @@ It is designed to preserve ratings stored in file metadata formats such as FMPS_
 - Ogg / Opus: Vorbis comments
 - WAV: ID3v2 chunk inside RIFF
 - DSF: ID3v2 block in the DSD header
-- M4A / AAC: MP4 freeform atoms
+- M4A / MP4: MP4 freeform atoms
+- AAC (`.aac`): an ADTS stream with a leading ID3v2 tag (read like MP3), or an MP4 file with that extension (read like M4A). ADTS files without an ID3v2 tag are skipped as unreadable: their tags are usually APEv2, which the plugin does not read
 - WMA: ASF Extended Content Description
 
-Unsupported files are skipped without clearing ratings.
+Unsupported files are skipped without clearing ratings. The same holds for any file the plugin cannot read to a clean end (wrong format for its extension, cut off, corrupt): it is counted as unreadable, and only a file read completely without a rating tag can have its rating cleared.
 
 ## Prerequisites
 
-- Navidrome ≥ 0.60.0
-- A plugin-capable Navidrome build with plugin permissions enabled
-- `zip` utility for packaging the plugin
-- TinyGo for building from source (only if you build the plugin yourself)
+- Navidrome ≥ 0.63.0 (the plugin uses Navidrome's matcher service, which older versions do not have; on older versions the plugin cannot be loaded)
+- A plugin-capable Navidrome build with plugins enabled
+- To build from source only: TinyGo and the `zip` utility
 
 ## Install the plugin
 
-1. Get the plugin (either is fine)
-
-   1. Download the newest release version from github
-
-   2. Build and package the plugin into `nd-rating-sync.ndp`.
-   - `make`
-   - This produces `nd-rating-sync.ndp`.
-
+1. Get `nd-rating-sync.ndp`, either way:
+   - download it from the newest release on GitHub, or
+   - build it yourself with `make`, which produces `nd-rating-sync.ndp`.
 2. Copy `nd-rating-sync.ndp` into Navidrome's plugins folder.
+3. Enable plugins in the Navidrome config:
 
-3. Enable plugins in Navidrome config:
+   ```toml
+   [Plugins]
+   Enabled    = true
+   AutoReload = true
+   LogLevel   = "info"
+   ```
 
-```toml
-[Plugins]
-Enabled    = true
-AutoReload = true
-LogLevel   = "info"
-```
-
-4. In the Navidrome UI: Avatar → Plugins → Rescan (if still needed)
-
-5. Adapt the settings of the plugin and save them
-
-6. Enable `nd-rating-sync` 
+4. In the Navidrome UI: Avatar → Plugins → Rescan (if the plugin does not show up yet).
 
 ## Permissions and library access
 
-The plugin needs Navidrome to grant it the `library` permission with `filesystem: true`.
-This allows Navidrome to mount each assigned library inside the plugin sandbox.
+The plugin needs Navidrome to grant it the `library` permission with `filesystem: true` and the `matcher` permission.
+Filesystem access lets Navidrome mount each assigned library read-only inside the plugin sandbox, and it is also what makes the matcher return each song's path inside its library.
 
-Important:
-
-- The plugin itself only reads files and does not write to the library filesystem.
+- The plugin only reads files and never writes to the library filesystem.
 - Navidrome may label this permission as library access with "write access".
   That is a Navidrome-side permission name, not an indication that the plugin writes metadata.
-- The plugin must be assigned the library in Navidrome's plugin library access settings.
-- Every configured user must also be granted access under the plugin's User Access tab.
+- Every configured library must be granted under the plugin's **Library Access** tab.
+- Every configured user must be granted under the plugin's **User Access** tab.
 
-If the plugin cannot resolve the mount point or the library is not assigned, every file will be skipped as unreadable.
+Before a user's sync starts, the plugin checks the username against the users granted under User Access and the library against Library Access, and skips a mismatch at once with a warning that says which one. If the plugin cannot resolve a library's mount point, that library is skipped with a warning and no rating is touched.
 
 ## Configure the plugin
 
@@ -95,10 +82,10 @@ Each library entry requires a numeric `libraryId`.
       ]
     }
   ]
-} 
+}
 ```
 
-A bigger example can be seen in [`config.example.json`](config.example.json)
+A bigger, annotated example is in [`config.example.json`](config.example.json).
 
 ### Top-level admin settings
 
@@ -112,15 +99,15 @@ A bigger example can be seen in [`config.example.json`](config.example.json)
 
 ### Library settings
 
-Each entry in `libraries` must include:
+Each entry in `libraries` has:
 
-- `libraryId` — the numeric Navidrome library ID, not the display name.
+- `libraryId` — the numeric Navidrome library ID, not the display name (required).
 - `libraryName` — optional label for your reference.
 - `users` — an array of per-user settings.
 
 ### User settings
 
-Each user entry must include `username`.
+Each user entry must include `username`, the Navidrome login name (case does not matter).
 Additional options:
 
 - `skip_already_rated`
@@ -129,14 +116,14 @@ Additional options:
   - `inherit`: use the admin default.
 
 - `clear_rating_if_untagged`
-  - `yes`: clear the Navidrome rating when the file has no recognised rating tag.
+  - `yes`: clear the Navidrome rating when the file has no recognised rating tag. Songs skipped by `skip_already_rated` are not read, so their ratings are never cleared.
   - `no`: leave unrated files alone.
   - `inherit`: use the admin default.
 
 - `ratingTagOrder`
-  - Ordered list of tag sources to try.
-  - First match wins.
-  - Supported values: `WMP`, `iTunes`, `MediaMonkey`, `foobar2000`, `MusicBee`.
+  - Ordered list of tag sources to try; the first one found in the file wins.
+  - Supported values: `WMP`, `iTunes`, `MediaMonkey`, `foobar2000`, `MusicBee`, `FMPS`.
+  - Default (when left empty): `WMP`, `iTunes`, `MediaMonkey`, `foobar2000`, `MusicBee`, `FMPS`.
 
 Example:
 
@@ -154,145 +141,59 @@ Example:
 The plugin tries the configured sources in order and uses the first tag found for that file.
 Sources that do not exist in a container are simply skipped.
 
-For example:
-
 - `MediaMonkey` covers MediaMonkey's own fields (POPM `no@email` in MP3/WAV/DSF, `RATING` in FLAC/Ogg/Opus, `rate` in M4A) and, as a fallback, FMPS_Rating tags.
-- `foobar2000` covers plain RATING tags.
-- `WMP` and `iTunes` cover their respective POPM/ASF representations. `MusicBee` covers MusicBee's POPM frame, `RATING` (FLAC/Ogg/Opus), `RATE` (M4A) and `WM/SharedUserRating` (WMA). Half-star values are never synced.
+- `foobar2000` covers plain RATING tags and, in MP3, the Windows Media Player POPM frame foobar2000 writes there.
+- `FMPS` covers the freedesktop `FMPS_Rating` field (Strawberry, Clementine, Amarok and others) in every container.
+- `WMP` and `iTunes` cover their respective POPM/ASF representations. `iTunes` means iTunes-style tags written by other tools. iTunes and Apple Music keep ratings in their library, not in the file, so a rating set in iTunes is never in the file.
+- `MusicBee` covers MusicBee's POPM frame, `RATING` (FLAC/Ogg/Opus), `RATE` (M4A) and `WM/SharedUserRating` (WMA).
 
-This allows each user to mirror their own tagging workflow and keeps the first valid tag from taking precedence.
+Half-star values are never synced. This lets each user mirror their own tagging workflow.
 
-# How to setup
+## First run
 
-## 1: Normal setup flow
+1. Grant the plugin User Access for each configured username and Library Access for each configured library.
+2. Configure the plugin and set `dry_run=true`. Keep `incremental_sync=true` and an hourly or more frequent schedule such as `0 * * * *` or `*/15 * * * *`.
+3. Enable `nd-rating-sync`.
+4. Wait for the first scan to complete (`sync complete` in the log), then check the `nd-rating-sync:` lines. A large library runs as a chain of continuations (`time budget reached – rescheduled continuation`) before it completes.
+5. If the results look good, set `dry_run=false` and let it work for real. Confirm that ratings appear in the Navidrome UI after the next scan.
 
-1. Build/package `nd-rating-sync.ndp`
-2. Upload the NDP to Navidrome
-3. Open settings of the plugin
-4. Grant plugin User Access for each configured username
-5. Grant plugin Library Access for each configured library
-6. Configure the plugin as desired
-7. Start with `dry_run=true`
-8. Enable the plugin
-9. Wait for the first scan to complete, then inspect logs
-10. If results look good, set `dry_run=false` and let is work for real
+Start with one user and one library, verify the results, and then add more users once the base scan works.
 
-## 2: Cache Libraries Filesystem Tree (slow/huge libraries)
+## Large libraries
 
-If your library is very large or hosted on a slow filesystem such as a CIFS share, the normal filewalk can itself take longer than the 30-second budget.
+The plugin processes each configured user separately within the same library, and each user's pass reads the files again. Whenever files are actually read, the cost is **one file read per song per user**:
 
-1. Build/package `nd-rating-sync.ndp`
-2. Adjust the ndp file
-    1. The ndp file is like a zip file and contains manifest.json and a plugin.wasm files
-    2. Edit the permissions.kvstore.maxSize in manifest.json to something more fitting for your library. Maybe 150MB?
+- the first import,
+- every run with `incremental_sync=false`,
+- the one full re-read after a user's `ratingTagOrder`, `skip_already_rated` or `clear_rating_if_untagged` changes,
+- the files Navidrome found changed in a rescan.
 
-3. Upload the NDP to Navidrome
-4. Open settings of the plugin
-5. Grant plugin User Access for each configured username
-6. Grant plugin Library Access for each configured library
-7. Configure the plugin as desired
-8. Enable Cache Libraries Filesystem Tree and set KV storage max size to the same value as the permissions.kvstore.maxSize before. In this example 150MB
-9. Start with `dry_run=true`
-10. Enable the plugin
-11. Wait for the first scan to complete, then inspect logs
-12. If results look good, set `dry_run=false` and let is work for real
+For example, 50,000 songs with 3 users on a network share at about 10 ms per file take roughly 25 minutes for the first import instead of about 8 minutes with one user. Normal runs stay cheap: an unchanged library is skipped without listing it, and unchanged files are skipped without reading them.
 
-In that case, enable `Cache Libraries Filesystem Tree` in the plugin settings.
-
-### When to enable it
-
-- Your initial scan stalls or times out while scanning the library tree.
-- You are using a slow remote mount and the plugin spends a long time walking directories.
-- You have tens of thousands of files and repeated scans re-walk the same tree.
-
-### What it does
-
-When enabled, the plugin caches the discovered library file tree in Navidrome's KV store.
-That means the slow filesystem walk is not repeated from scratch on every scan.
-
-The first build can span many callbacks; each one continues exactly where the previous one stopped, even in the middle of a large folder. The finished cache is reused until Navidrome rescans the library. Then it is rebuilt from scratch, so files that were moved or deleted in the meantime do not linger in it.
-
-The cache is purged only when the cache switch itself or the list of configured library IDs changes. Editing the schedule, `dry_run` or a user's settings keeps it.
-
-### Required KV configuration
-
-The plugin setting `kv_storage_max_size` must match the manifest permission `permissions.kvstore.maxSize`.
-
-For example, if you set:
-
-```json
-"permissions": {
-  "kvstore": {
-    "reason": "...",
-    "maxSize": "150MB"
-  }
-}
-```
-
-then also set:
-
-```json
-"kv_storage_max_size": "150MB"
-```
-
-The value is only used to report how full the KV store is: the plugin logs the usage at debug level and warns at 90 %. If the two values differ, that report is wrong.
-
-### Navidrome host cache sizing
-
-Navidrome's plugin system also has a global plugin cache limit. The default is often `200MB`.
-If your plugin manifest requests more KV storage than the host allows, you may need to increase Navidrome's `Plugins.CacheSize` setting.
-
-### Important note
-
-`Cache Libraries Filesystem Tree` is an optimization for slow filesystem walks. It does not change how the plugin resolves files by size and extension, and it does not alter rating parsing logic.
-
-The cache is reset when the cache switch or the list of library IDs changes, and rebuilt after every Navidrome library scan. Other config changes keep it.
-
-## Important caution for huge scans
-
-The plugin currently processes each configured user separately within the same library.
-On a very large library, the initial scan for multiple users can take a long time, especially on slow remote storage.
-
-Start with one user and one library first, verify the results, and then add more users once the base scan works.
-
-# After setup
-
-- If you enabled `dry_run`, switch it off once you are confident the plugin is matching ratings correctly.
-- Watch the Navidrome logs for `nd-rating-sync:` messages.
-- Confirm that ratings appear in the Navidrome UI after the first successful scan.
-
-# Misc
 ## Common config gotchas
 
 - `libraryId` must be the numeric Navidrome library ID.
-- `username` must exactly match the Navidrome username.
+- `username` must match the Navidrome login name (case does not matter).
 - `User Access` and `Library Access` must both be granted in Navidrome for the plugin to work.
-- If the plugin is assigned a library but the filesystem mount is not available, everything will be skipped as unreadable.
-- If `cache_libraries_filesystem_tree` is enabled, `kv_storage_max_size` must be updated and match the manifest.
+- If the plugin is assigned a library but the filesystem mount is not available, the library is skipped with a warning.
+- If songs are skipped with `cannot locate the file of …`, the rest of the warning says why (no track for the song ID, file missing, no path because filesystem access is not granted, or the file is not in the mount).
 
-## Recommended first run
+## Incremental sync and file times
 
-- Set `dry_run=true`.
-- Keep `incremental_sync=true`.
-- Use an hourly or more frequent cron schedule such as `0 * * * *` or `*/15 * * * *`.
-- Check logs after the first run and make sure the plugin completes or reschedules with a continuation.
+With `incremental_sync=true` (the default) a file is only read again when its modification time is newer than the start of the last completed sync. That start time comes from the Navidrome server's clock; the file's modification time comes from wherever the file is stored, or, on a network share, often from the computer that wrote the tag. A changed rating can therefore be missed for good:
 
-Without the cache, the plugin walks the whole library in every callback. If that walk takes more than about a third of the 15-second budget, it logs a hint to enable the cache. If the walk does not finish within a callback at all, the plugin retries it twice after 30 seconds each and then skips the library until the next scheduled sync, with a warning. In both cases, enable the filesystem tree cache and increase KV store sizing.
+- **Clocks out of step.** If the file server or your desktop clock is behind the Navidrome server, a file you re-rated after the last sync can look older than it. Keep every machine on NTP (automatic time sync).
+- **Wrong timezone or DST settings.** A NAS whose clock is set to local time but reported as UTC, or FAT/exFAT and some older SMB servers that shift file times by an hour around daylight saving time, can make file times hours off. Set the NAS to UTC or its correct timezone and keep it consistent.
+- **Taggers that keep the file time.** Some tag editors can preserve the original modification time when writing tags (Mp3tag has such an option). Then neither Navidrome nor this plugin can see that the file changed. Turn that option off for rating changes.
+
+If ratings you changed in a file do not show up, run one sync with `incremental_sync=false` (or change and restore a user's `ratingTagOrder`) to read every file once, then switch it back on.
 
 ## How the plugin works
 
-- `nd-rating-sync` uses the library filesystem mount point provided by Navidrome to read files.
-- It matches songs to files by exact byte size and file extension. If there are multiple files with the same size and extension then no change will be made by the plugin.
-- The plugin reads only supported containers, parses the embedded rating tags, and calls `setRating` for the matched Navidrome song.
-- Navidrome closes plugin callbacks that exceed 30 seconds, so the plugin runs in short time-budgeted chunks.
-- If the budget is reached before completion, the plugin reschedules a continuation and resumes where it left off.
-- If a step fails without progress (the song listing fails, or the library walk is too slow), it retries after 30 seconds and gives up on that library/user after three attempts until the next scheduled sync.
+- For each page of songs the plugin asks Navidrome's matcher for the songs' paths (by song ID) and opens each file at that path inside the library's read-only mount. There is no directory walk and no file index.
+- The plugin reads only the tag area of supported containers, parses the embedded rating tags, and calls `setRating` for the song.
+- Navidrome closes plugin callbacks that exceed 30 seconds, so the plugin works in 15-second chunks. If a chunk ends before the sync is complete, the plugin schedules a continuation that resumes where it left off, so a large first scan runs as many chained callbacks.
+- If a step fails without progress (the song listing or the matcher lookup fails), it retries after 30 seconds and gives up on that library/user after three attempts until the next scheduled sync.
 - A file whose tags cannot be read or parsed is skipped as unreadable; its rating is never cleared.
 
 For the full runtime flow and diagram, see [`DETAILS.md`](DETAILS.md).
-
-## Why build a one-shot run around 30 seconds?
-
-Navidrome kills plugin callbacks that exceed 30 seconds. The plugin therefore limits each invocation to a conservative budget and continues in a fresh callback.
-
-This means a large first scan may take many chained callbacks, but it will complete without hitting the hard 30-second host timeout.

@@ -6,9 +6,11 @@ This file contains the plugin's rating value mappings, container/tag resolution 
 
 Navidrome does not provide a direct sandbox filesystem path for songs. `nd-rating-sync` resolves `libraryId` into the host library mount point and reads files from the mounted directory tree inside the plugin sandbox.
 
-The plugin builds a file index for each library mount keyed by exact file size and extension. A Navidrome song is matched only when there is exactly one candidate file. If no unique match is found, the song is skipped as unreadable and is never treated as "tag absent," so it cannot accidentally clear an existing rating.
+For each page of songs the plugin asks Navidrome's matcher service (Navidrome 0.63.0+) to look the songs up by ID. With filesystem access granted, each result carries the path Navidrome stored for the file, relative to the library root; the plugin opens that path inside the mount. A song the matcher returns no track for, whose file Navidrome marks as missing, whose path lies outside the library, or whose file is not in the mount is skipped as unreadable and is never treated as "tag absent," so it cannot accidentally clear an existing rating.
 
-The plugin also never trusts the `search3.path` value for the real filesystem location; it uses the host-mounted library tree instead.
+The same rule applies inside the file: a file counts as "no tag" only when its container was read to a clean end and holds no rating tag. A file that is not what its extension says, is cut off, or has a size field that does not fit the file is unreadable, never untagged.
+
+The `path` that the Subsonic `search3` API reports is a made-up string, so the plugin never uses it.
 
 ## Incremental sync
 
@@ -68,9 +70,14 @@ run does redundant work, never incorrect work.
 
 ### FMPS_Rating
 
-FMPS_Rating is written as a float between `0.0` and `1.0`. Only whole stars
+FMPS_Rating is the freedesktop rating field (Strawberry, Clementine, Amarok and
+others). The `FMPS` key reads it in every container; `MediaMonkey` also reads it
+as a fallback. It is written as a float between `0.0` and `1.0`. Only whole stars
 are accepted; half stars (`0.1`, `0.3`, … `0.9`) are treated as unrated because
-Navidrome has no half stars.
+Navidrome has no half stars. A value that is not a number or lies outside
+`0.0`–`1.0` (e.g. `4` or `80` written by a tool that confused the scale) makes the
+file unreadable: nothing is written or cleared, and the warning names the value.
+A valid rating from a source earlier in `ratingTagOrder` still wins.
 
 | Tag value | Stars |
 |-----------|-------|
@@ -79,7 +86,8 @@ Navidrome has no half stars.
 | `0.4` | ★★ |
 | `0.6` | ★★★ |
 | `0.8` | ★★★★ |
-| `1.0` (or above) | ★★★★★ |
+| `1.0` | ★★★★★ |
+| not a number, below `0` or above `1.0` | (file unreadable → skip, never cleared) |
 
 ### MediaMonkey and MusicBee POPM
 
@@ -103,7 +111,7 @@ FLAC/Ogg/Opus and as `rate` in M4A. These take precedence over an
 
 ### foobar2000 RATING
 
-The foobar2000 `RATING` tag is a plain integer. Anything outside 1–5 is treated as unrated.
+The foobar2000 `RATING` tag is a plain integer. Anything outside 1–5 is treated as unrated. In MP3 files foobar2000 writes its rating as a POPM frame with the email `Windows Media Player 9 Series`; when there is no `RATING` TXXX frame, the `foobar2000` key reads that frame with the Windows Media Player scale.
 
 | Tag value | Stars |
 |-----------|-------|
@@ -144,7 +152,7 @@ property:
 
 ### iTunes POPM
 
-iTunes ratings use a linear scale in steps of 20 across 0–100.
+iTunes ratings use a linear scale in steps of 20 across 0–100. These are iTunes-style tags written by other tools: iTunes and Apple Music keep their ratings in the library database and do not write them to the file.
 
 | POPM byte | Stars |
 |-----------|-------|
@@ -179,7 +187,7 @@ uses `WM/SharedUserRating` (see above).
 The plugin is executed inside the Navidrome sandbox and is subject to a hard 30-second callback timeout. It therefore works in short budgeted chunks (15 seconds each) and reschedules continuations until the scan completes.
 
 If a user's song listing fails (for example a username Navidrome does not
-know), or the library walk does not finish within one chunk, the plugin waits
+know) or the matcher cannot look up a page of songs, the plugin waits
 30 seconds and tries again. After three failed attempts it skips that
 `(library, user)` pair until the next scheduled sync and logs a warning, so a
 lasting problem can never keep the plugin busy forever.
@@ -210,13 +218,13 @@ plugin OnInit
                        │                                │                                 │                           │
                        ▼                                ▼                                 ▼                           │
             load last-synced threshold     SubsonicAPICall("search3") →     LibraryGetLibrary(id) → mount point       │
-            from KVStore (incremental)     paginate songs (id, size, …)     walk mount, index files by (size, ext)    │
+            from KVStore (incremental)     paginate songs (id, rating, …)   MatcherMatchSongs(page IDs) → paths       │
                       │                                 │                                 │                           │
                       └─────────────────────────── for each song ─────────────────────────┴───────────────────────────┘
                                        │
                                        ├─ song already rated in Navidrome?  → skip (skip_already_rated)
                                        │
-                                       ├─ match song → file by exact (size, suffix) → no unique match? skip (unreadable, never clears)
+                                       ├─ song → file via the matcher's path in the mount → not found? skip (unreadable, never clears)
                                        │
                                        ├─ mtime < threshold and song not newly added? → skip (unchanged)
                                        │
@@ -226,15 +234,15 @@ plugin OnInit
                                        │
                                        ├─ pick the first match by ratingTagOrder
                                        │
-                                       ├─ tag found?  → SubsonicAPICall("setRating?id=…&rating=N")
+                                       ├─ tag found and different from Navidrome's rating?  → SubsonicAPICall("setRating?id=…&rating=N")
                                        │
-                                       └─ no tag found + clear_rating_if_untagged?
+                                       └─ no tag found + clear_rating_if_untagged + Navidrome has a rating?
                                                        → SubsonicAPICall("setRating?id=…&rating=0")
                                                               │
                                                               ▼
                                                 budget (15 s) reached with songs still pending?
                                                   → reschedule a one-time continuation carrying the cursor, return
-                                                listing failed / walk too slow?
+                                                listing or matcher lookup failed?
                                                   → retry in 30 s; after 3 attempts skip the pair until the next sync
                                                 (library, user) fully processed?
                                                   → save scan-start timestamp to KVStore (incremental_sync)
