@@ -30,7 +30,7 @@ func TestExtractStarsFromFile_EmptyWAVIsUnreadable(t *testing.T) {
 	f.Close()
 
 	stars, result := extractStarsFromFile(f.Name(), "wav", DefaultTagOrder)
-	assert.Equal(t, tagAbsent, result, "empty WAV currently parses as 'no tag found' — this is fine; the read itself succeeded")
+	assert.Equal(t, fileUnreadable, result)
 	assert.Equal(t, 0, stars)
 }
 
@@ -76,13 +76,7 @@ func TestExtractStarsFromFile_UnsupportedExtensionFromPath(t *testing.T) {
 }
 
 func TestExtractStarsFromFile_MP3NoRatingTag(t *testing.T) {
-	tag := id3v2.NewEmptyTag()
-	var buf bytes.Buffer
-	_, err := tag.WriteTo(&buf)
-	require.NoError(t, err)
-
-	path := filepath.Join(t.TempDir(), "song.mp3")
-	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o644))
+	path := writeEmptyID3MP3At(t, t.TempDir(), "song.mp3")
 
 	stars, result := extractStarsFromFile(path, "mp3", DefaultTagOrder)
 	assert.Equal(t, tagAbsent, result)

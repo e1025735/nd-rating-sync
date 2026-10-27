@@ -2,6 +2,7 @@ package media
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -19,11 +20,12 @@ const id3v2HeaderSize = 10
 // (header + tagSize) bytes and stop — never touching the MP3 audio frames.
 //
 // A file without the "ID3" magic returns (nil, nil); the caller hands the
-// empty slice to the parser, which reports "no tag" (tagAbsent). A tag that
-// starts but is corrupt (invalid size field), larger than
-// maxMetadataReadBytes, or cut off returns an error, as does any I/O error,
-// so the caller reports fileUnreadable and clear_rating_if_untagged cannot
-// wipe a rating for a tag we could not read.
+// empty slice to the parser, which reports "no tag" (tagAbsent): an MP3
+// without a leading ID3v2 tag carries no rating any supported player writes.
+// A file too short for the 10-byte header, a tag that starts but is corrupt
+// (invalid size field), larger than maxMetadataReadBytes, or cut off returns
+// an error, as does any I/O error, so the caller reports fileUnreadable and
+// clear_rating_if_untagged cannot wipe a rating for a tag we could not read.
 func extractID3v2Metadata(f *os.File) ([]byte, error) {
 	return readID3v2Tag(f, 0)
 }
@@ -37,7 +39,7 @@ func readID3v2Tag(f *os.File, prefix int) ([]byte, error) {
 	var hdr [id3v2HeaderSize]byte
 	if _, err := io.ReadFull(f, hdr[:]); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, nil
+			return nil, errors.New("file ends before a complete ID3v2 header")
 		}
 		return nil, err
 	}
@@ -77,6 +79,36 @@ func id3v2SyncsafeSize(b []byte) int {
 	return int(b[0])<<21 | int(b[1])<<14 | int(b[2])<<7 | int(b[3])
 }
 
+// id3v2FooterFlag marks an ID3v2.4 tag followed by a 10-byte footer that its
+// size field does not include.
+const id3v2FooterFlag = 0x10
+
+// skipLeadingID3v2 moves f past an ID3v2 tag at the start of the file. Some
+// taggers put one in front of a FLAC stream; libFLAC skips it, and so does
+// the FLAC extractor. A broken or cut-off tag is an error.
+func skipLeadingID3v2(f *os.File) error {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	var hdr [id3v2HeaderSize]byte
+	if _, err := io.ReadFull(f, hdr[:]); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return errors.New("file ends inside a leading ID3v2 header")
+		}
+		return err
+	}
+	size := id3v2SyncsafeSize(hdr[6:10])
+	if string(hdr[:3]) != "ID3" || size < 0 {
+		return errors.New("leading ID3v2 tag has a broken header")
+	}
+	skip := int64(id3v2HeaderSize + size)
+	if hdr[3] == 4 && hdr[5]&id3v2FooterFlag != 0 {
+		skip += id3v2HeaderSize
+	}
+	_, err := f.Seek(skip, io.SeekStart)
+	return err
+}
+
 // readID3v2TagAt seeks to off and reads one full ID3v2 tag (header + body)
 // after prefix reserved bytes (see readID3v2Tag). Used by DSF (offset in the
 // DSD header). Returns (nil, nil) when no valid tag is found at the offset.
@@ -85,6 +117,102 @@ func readID3v2TagAt(f *os.File, off int64, prefix int) ([]byte, error) {
 		return nil, err
 	}
 	return readID3v2Tag(f, prefix)
+}
+
+// ID3v2 header and frame flags the tag library does not implement.
+const (
+	id3v2ExtendedHeaderFlag = 0x40
+
+	// v2.3 frame format flags (second flag byte).
+	id3v23FrameCompressed = 0x80
+	id3v23FrameEncrypted  = 0x40
+	id3v23FrameGrouped    = 0x20
+
+	// v2.4 frame format flags (second flag byte).
+	id3v24FrameGrouped    = 0x40
+	id3v24FrameCompressed = 0x08
+	id3v24FrameEncrypted  = 0x04
+	id3v24FrameDataLength = 0x01
+)
+
+// prepareID3v2 works around ID3v2 features bogem/id3v2 does not implement,
+// before the tag is handed to it:
+//
+//   - an extended header (v2.3/v2.4) is cut out and the header flag cleared;
+//     the library would read it as frame data and, for v2.3, silently find
+//     no frames at all;
+//   - a POPM or TXXX frame that is compressed, encrypted, grouped or carries
+//     a data-length indicator would be misread as "no rating", so it is an
+//     error and the file is unreadable rather than untagged.
+//
+// Data without the "ID3" magic, other versions and anything the walk does
+// not understand are returned unchanged for the library to judge.
+func prepareID3v2(data []byte) ([]byte, error) {
+	if len(data) < id3v2HeaderSize || string(data[:3]) != "ID3" {
+		return data, nil
+	}
+	version, flags := data[3], data[5]
+	if version != 3 && version != 4 {
+		return data, nil
+	}
+	size := id3v2SyncsafeSize(data[6:10])
+	if size < 0 || size > len(data)-id3v2HeaderSize {
+		return data, nil
+	}
+	frames := data[id3v2HeaderSize : id3v2HeaderSize+size]
+
+	if flags&id3v2ExtendedHeaderFlag != 0 {
+		if len(frames) < 4 {
+			return nil, errors.New("ID3v2 extended header is cut off")
+		}
+		var extLen int
+		if version == 3 {
+			// v2.3: the size excludes its own 4 bytes.
+			extLen = 4 + int(binary.BigEndian.Uint32(frames[:4])&0x7FFFFFFF)
+		} else {
+			// v2.4: a syncsafe size that includes itself.
+			extLen = id3v2SyncsafeSize(frames[:4])
+		}
+		if extLen < 4 || extLen > len(frames) {
+			return nil, errors.New("ID3v2 extended header does not fit the tag")
+		}
+		frames = frames[extLen:]
+		rebuilt := make([]byte, id3v2HeaderSize+len(frames))
+		copy(rebuilt, data[:id3v2HeaderSize])
+		rebuilt[5] = flags &^ id3v2ExtendedHeaderFlag
+		n := len(frames)
+		rebuilt[6], rebuilt[7], rebuilt[8], rebuilt[9] = byte(n>>21&0x7F), byte(n>>14&0x7F), byte(n>>7&0x7F), byte(n&0x7F)
+		copy(rebuilt[id3v2HeaderSize:], frames)
+		data = rebuilt
+	}
+
+	for pos := 0; pos+id3v2HeaderSize <= len(frames); {
+		id := string(frames[pos : pos+4])
+		if frames[pos] == 0 {
+			break // padding
+		}
+		var frameSize int
+		if version == 3 {
+			frameSize = int(binary.BigEndian.Uint32(frames[pos+4:pos+8]) & 0x7FFFFFFF)
+		} else {
+			frameSize = id3v2SyncsafeSize(frames[pos+4 : pos+8])
+		}
+		if frameSize < 0 || frameSize > len(frames)-pos-id3v2HeaderSize {
+			break // the library reports a broken frame itself
+		}
+		format := frames[pos+9]
+		var unsupported bool
+		if version == 3 {
+			unsupported = format&(id3v23FrameCompressed|id3v23FrameEncrypted|id3v23FrameGrouped) != 0
+		} else {
+			unsupported = format&(id3v24FrameGrouped|id3v24FrameCompressed|id3v24FrameEncrypted|id3v24FrameDataLength) != 0
+		}
+		if unsupported && (id == "POPM" || id == "TXXX") {
+			return nil, fmt.Errorf("ID3v2 %s frame is compressed, encrypted, grouped or has a data-length indicator (flags 0x%02x), which is not supported", id, format)
+		}
+		pos += id3v2HeaderSize + frameSize
+	}
+	return data, nil
 }
 
 // id3v2RatingFrames limits tag parsing to the frames that can carry a rating,
@@ -112,6 +240,10 @@ func parseID3v2Rating(data []byte, path string, tagOrder []string) (int, bool) {
 // or unsupported tag (e.g. ID3v2.2) is reported as unreadable rather than as
 // untagged. Empty data (no "ID3" magic) is not an error.
 func ratingFromID3v2(data []byte, path string, tagOrder []string) (int, bool, error) {
+	data, err := prepareID3v2(data)
+	if err != nil {
+		return 0, false, err
+	}
 	tag, err := id3v2.ParseReader(bytes.NewReader(data), id3v2.Options{Parse: true, ParseFrames: id3v2RatingFrames})
 	if err != nil {
 		return 0, false, fmt.Errorf("parse ID3v2 tag: %w", err)

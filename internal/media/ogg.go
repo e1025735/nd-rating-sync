@@ -69,9 +69,9 @@ func parseOggVorbisRating(data []byte, path string, tagOrder []string) (int, boo
 	return stars, ok
 }
 
-// ratingFromOgg is parseOggVorbisRating with the parse error kept. A stream
-// without a comment packet or with an unknown codec is untagged; a broken
-// page layout or comment block is an error.
+// ratingFromOgg is parseOggVorbisRating with the parse error kept. Empty data
+// is untagged; a missing comment packet, an unknown codec, a broken page
+// layout or a broken comment block is an error.
 func ratingFromOgg(data []byte, path string, tagOrder []string) (int, bool, error) {
 	if len(data) == 0 {
 		return 0, false, nil
@@ -81,7 +81,7 @@ func ratingFromOgg(data []byte, path string, tagOrder []string) (int, bool, erro
 		return 0, false, err
 	}
 	if len(packets) < 2 {
-		return 0, false, nil
+		return 0, false, errors.New("Ogg stream has no comment header packet")
 	}
 	commentPkt := packets[1]
 
@@ -92,7 +92,7 @@ func ratingFromOgg(data []byte, path string, tagOrder []string) (int, bool, erro
 	case len(commentPkt) >= 8 && string(commentPkt[:8]) == "OpusTags":
 		body = commentPkt[8:]
 	default:
-		return 0, false, nil
+		return 0, false, errOggUnsupportedCodec
 	}
 
 	cmts, err := parseVorbisCommentBlock(body)
@@ -120,6 +120,11 @@ const (
 )
 
 var errOggTruncated = errors.New("Ogg stream ends inside the header packets")
+
+// errOggUnsupportedCodec is a comment header that is neither Vorbis nor Opus
+// (Ogg-FLAC, Speex, a Skeleton stream first, …). Its tags are not read, so
+// the file is unreadable rather than untagged.
+var errOggUnsupportedCodec = errors.New("Ogg stream is neither Vorbis nor Opus")
 
 // oggPacketReader reads one logical packet at a time straight from the file,
 // following the lacing values across page boundaries. It holds only the
@@ -270,21 +275,16 @@ func oggReadErr(err error) error {
 // read, so memory stays at a few KiB however large the art is. The synth is
 // walked by parseOggVorbisRating exactly like a real file.
 //
-// A file that does not start with "OggS" returns (nil, nil) → tagAbsent, as
-// for the other formats. A comment packet of an unknown codec yields a synth
-// with only the identification packet → tagAbsent. Anything cut off or
-// malformed inside the header packets is an error → fileUnreadable, so a
-// truncated file can never have its rating cleared.
+// A file that does not start with "OggS", a comment packet of an unknown
+// codec, and anything cut off or malformed inside the header packets is an
+// error → fileUnreadable, so such a file can never have its rating cleared.
 func extractOggMetadata(f *os.File) ([]byte, error) {
 	var magic [4]byte
 	if _, err := io.ReadFull(f, magic[:]); err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, nil
-		}
-		return nil, err
+		return nil, oggReadErr(err)
 	}
 	if string(magic[:]) != "OggS" {
-		return nil, nil
+		return nil, errors.New("not an Ogg stream (OggS magic missing)")
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return nil, err
@@ -300,15 +300,12 @@ func extractOggMetadata(f *os.File) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if comment == nil {
-		return oggSynth(ident), nil
-	}
 	return oggSynth(ident, comment), nil
 }
 
 // readOggCommentPacket reads a Vorbis or Opus comment header from r and
 // rebuilds it with an empty vendor string and only the entries worth
-// keeping. It returns nil for a codec it does not recognise.
+// keeping. A codec it does not recognise is errOggUnsupportedCodec.
 func readOggCommentPacket(r *oggPacketReader) ([]byte, error) {
 	var prefix [8]byte
 	if err := r.readFull(prefix[:7]); err != nil {
@@ -325,11 +322,11 @@ func readOggCommentPacket(r *oggPacketReader) ([]byte, error) {
 			return nil, err
 		}
 		if prefix[7] != 's' {
-			return nil, nil
+			return nil, errOggUnsupportedCodec
 		}
 		magic = prefix[:8]
 	default:
-		return nil, nil
+		return nil, errOggUnsupportedCodec
 	}
 
 	vendorLen, err := r.readUint32()

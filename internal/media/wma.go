@@ -47,26 +47,47 @@ func decodeUTF16LE(b []byte) string {
 // parseWMARating walks the ASF Header Object looking for an Extended Content
 // Description Object and extracts a star rating from it.
 func parseWMARating(data []byte, path string, tagOrder []string) (int, bool) {
+	stars, ok, _ := ratingFromWMA(data, path, tagOrder)
+	return stars, ok
+}
+
+// errMalformedASF reports an ASF object or descriptor whose size does not fit
+// the data around it.
+var errMalformedASF = errors.New("ASF header object is malformed")
+
+// ratingFromWMA is parseWMARating with the parse error kept. Empty data and a
+// header without an Extended Content Description Object are untagged; a
+// header, child object or descriptor whose size does not fit is an error, so
+// the file is unreadable rather than untagged. Sizes are compared as uint64
+// before narrowing, so a high-bit-set size cannot wrap on 32-bit wasip1.
+func ratingFromWMA(data []byte, path string, tagOrder []string) (int, bool, error) {
+	if len(data) == 0 {
+		return 0, false, nil
+	}
 	// ASF Header Object layout: 16-byte GUID + 8-byte size + 4-byte num child
 	// objects + 2 reserved bytes = 30 bytes fixed.
-	if len(data) < 30 || !bytes.Equal(data[:16], asfHeaderObjectGUID) {
-		return 0, false
+	if len(data) < asfHeaderObjectFixedSize || !bytes.Equal(data[:16], asfHeaderObjectGUID) {
+		return 0, false, errors.New("not an ASF header object")
 	}
 	numHeaders := binary.LittleEndian.Uint32(data[24:28])
-	pos := 30
+	pos := asfHeaderObjectFixedSize
 
-	for i := uint32(0); i < numHeaders && pos+24 <= len(data); i++ {
+	for i := uint32(0); i < numHeaders; i++ {
+		if len(data)-pos < asfObjectHeaderSize {
+			return 0, false, errMalformedASF
+		}
 		guid := data[pos : pos+16]
-		objSize := int(binary.LittleEndian.Uint64(data[pos+16 : pos+24]))
-		if objSize < 24 || pos+objSize > len(data) {
-			break
+		objSize := binary.LittleEndian.Uint64(data[pos+16 : pos+24])
+		if objSize < asfObjectHeaderSize || objSize > uint64(len(data)-pos) {
+			return 0, false, errMalformedASF
 		}
+		end := pos + int(objSize)
 		if bytes.Equal(guid, asfExtContentDescObjectGUID) {
-			return parseASFExtContentDesc(data[pos+24:pos+objSize], path, tagOrder)
+			return parseASFExtContentDesc(data[pos+asfObjectHeaderSize:end], path, tagOrder)
 		}
-		pos += objSize
+		pos = end
 	}
-	return 0, false
+	return 0, false, nil
 }
 
 // parseASFExtContentDesc reads the body of an ASF Extended Content Description
@@ -75,34 +96,36 @@ func parseWMARating(data []byte, path string, tagOrder []string) (int, bool) {
 //
 //   - "WM/SharedUserRating" (DWORD/type 3, or WORD/type 5): WMP 0–99 scale
 //   - "FMPS_Rating"         (Unicode/type 0): MediaMonkey float 0.0–1.0
-func parseASFExtContentDesc(body []byte, path string, tagOrder []string) (int, bool) {
+//
+// A descriptor that runs past the object is an error.
+func parseASFExtContentDesc(body []byte, path string, tagOrder []string) (int, bool, error) {
 	if len(body) < 2 {
-		return 0, false
+		return 0, false, errMalformedASF
 	}
 	count := int(binary.LittleEndian.Uint16(body[:2]))
 	pos := 2
 	found := map[string]int{}
 
 	for i := 0; i < count; i++ {
-		if pos+4 > len(body) {
-			break
+		if pos+2 > len(body) {
+			return 0, false, errMalformedASF
 		}
 		nameLen := int(binary.LittleEndian.Uint16(body[pos : pos+2]))
 		pos += 2
 		if pos+nameLen > len(body) {
-			break
+			return 0, false, errMalformedASF
 		}
 		name := decodeUTF16LE(body[pos : pos+nameLen])
 		pos += nameLen
 
 		if pos+4 > len(body) {
-			break
+			return 0, false, errMalformedASF
 		}
 		valueType := binary.LittleEndian.Uint16(body[pos : pos+2])
 		valueLen := int(binary.LittleEndian.Uint16(body[pos+2 : pos+4]))
 		pos += 4
 		if pos+valueLen > len(body) {
-			break
+			return 0, false, errMalformedASF
 		}
 		valueBytes := body[pos : pos+valueLen]
 		pos += valueLen
@@ -138,10 +161,10 @@ func parseASFExtContentDesc(body []byte, path string, tagOrder []string) (int, b
 
 	for _, format := range tagOrder {
 		if stars, ok := found[format]; ok {
-			return stars, true
+			return stars, true, nil
 		}
 	}
-	return 0, false
+	return 0, false, nil
 }
 
 // asfHeaderObjectFixedSize is the fixed 30-byte ASF Header Object preamble
@@ -159,32 +182,47 @@ const asfObjectHeaderSize = 24
 //
 // parseWMARating walks this synth identically to a real file: it sees a
 // Header Object with numHeaders=1 and the ECDO as the only child.
+//
+// Only a header whose children were all walked without an ECDO is untagged
+// (an empty synth). A file without the ASF header GUID, a header that does
+// not fit the file, or a child object that is cut off or does not fit the
+// header is an error: the file is unreadable, never untagged.
 func extractWMAMetadata(f *os.File) ([]byte, error) {
 	var hdr [asfHeaderObjectFixedSize]byte
 	if _, err := io.ReadFull(f, hdr[:]); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, nil
+			return nil, errors.New("file ends inside the ASF header")
 		}
 		return nil, err
 	}
 	if !bytes.Equal(hdr[:16], asfHeaderObjectGUID) {
-		return nil, nil
+		return nil, errors.New("not an ASF file (header object GUID missing)")
 	}
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	headerSize := binary.LittleEndian.Uint64(hdr[16:24])
+	if headerSize < asfHeaderObjectFixedSize || headerSize > uint64(info.Size()) {
+		return nil, fmt.Errorf("ASF header size %d does not fit the %d-byte file", headerSize, info.Size())
+	}
+	headerEnd := int64(headerSize)
 	numHeaders := binary.LittleEndian.Uint32(hdr[24:28])
 
+	pos := int64(asfHeaderObjectFixedSize)
 	for i := uint32(0); i < numHeaders; i++ {
 		var objHdr [asfObjectHeaderSize]byte
 		if _, err := io.ReadFull(f, objHdr[:]); err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				return wmaSynthEmpty(), nil
+				return nil, errors.New("file ends inside the ASF header")
 			}
 			return nil, err
 		}
-		objSize := int64(binary.LittleEndian.Uint64(objHdr[16:24]))
-		if objSize < asfObjectHeaderSize {
-			return wmaSynthEmpty(), nil
+		objSize := binary.LittleEndian.Uint64(objHdr[16:24])
+		if objSize < asfObjectHeaderSize || objSize > uint64(headerEnd-pos) {
+			return nil, fmt.Errorf("ASF header object %d has size %d, which does not fit the header", i, objSize)
 		}
-		bodyLen := objSize - asfObjectHeaderSize
+		bodyLen := int64(objSize) - asfObjectHeaderSize
 
 		if bytes.Equal(objHdr[:16], asfExtContentDescObjectGUID) {
 			if bodyLen > maxMetadataReadBytes {
@@ -192,7 +230,7 @@ func extractWMAMetadata(f *os.File) ([]byte, error) {
 			}
 			// Synth: ASF Header (numHeaders=1, adjusted size) + ECDO only,
 			// with the ECDO body read straight into it (one allocation).
-			totalSize := int64(asfHeaderObjectFixedSize) + objSize
+			totalSize := int64(asfHeaderObjectFixedSize) + int64(objSize)
 			out := make([]byte, totalSize)
 			copy(out[:16], asfHeaderObjectGUID)
 			binary.LittleEndian.PutUint64(out[16:24], uint64(totalSize))
@@ -206,8 +244,9 @@ func extractWMAMetadata(f *os.File) ([]byte, error) {
 		}
 
 		// Skip non-ECDO object body without reading it.
-		if _, err := f.Seek(bodyLen, io.SeekCurrent); err != nil {
-			return wmaSynthEmpty(), nil
+		pos += int64(objSize)
+		if _, err := f.Seek(pos, io.SeekStart); err != nil {
+			return nil, err
 		}
 	}
 

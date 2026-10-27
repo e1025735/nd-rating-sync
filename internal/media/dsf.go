@@ -3,6 +3,7 @@ package media
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 )
@@ -38,16 +39,20 @@ const dsfHeaderSize = 28
 // header points at the tag immediately following — exactly what
 // parseDSFRating walks. Audio samples between header and tag are never
 // touched.
+//
+// Only an offset of 0 means "no tag". A file without the "DSD " magic, an
+// offset past the end of the file or anything but an ID3v2 tag at the offset
+// is an error, so the file is unreadable rather than untagged.
 func extractDSFMetadata(f *os.File) ([]byte, error) {
 	var hdr [dsfHeaderSize]byte
 	if _, err := io.ReadFull(f, hdr[:]); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, nil
+			return nil, errors.New("file ends inside the DSD header")
 		}
 		return nil, err
 	}
 	if string(hdr[:4]) != "DSD " {
-		return nil, nil
+		return nil, errors.New("not a DSF file (DSD magic missing)")
 	}
 	id3Offset := binary.LittleEndian.Uint64(hdr[20:28])
 	if id3Offset == 0 {
@@ -56,6 +61,13 @@ func extractDSFMetadata(f *os.File) ([]byte, error) {
 		copy(out, hdr[:])
 		return out, nil
 	}
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if id3Offset >= uint64(info.Size()) {
+		return nil, fmt.Errorf("DSF tag offset %d lies past the end of the file (%d bytes)", id3Offset, info.Size())
+	}
 
 	// The tag is read straight into the synth, after room for the header.
 	out, err := readID3v2TagAt(f, int64(id3Offset), dsfHeaderSize)
@@ -63,11 +75,7 @@ func extractDSFMetadata(f *os.File) ([]byte, error) {
 		return nil, err
 	}
 	if len(out) == 0 {
-		// Offset present but no parseable tag there. Pretend untagged.
-		out := make([]byte, dsfHeaderSize)
-		copy(out, hdr[:])
-		binary.LittleEndian.PutUint64(out[20:28], 0)
-		return out, nil
+		return nil, fmt.Errorf("no ID3v2 tag at the DSF tag offset %d", id3Offset)
 	}
 
 	// Synthesise: original header but with id3Offset = dsfHeaderSize, then

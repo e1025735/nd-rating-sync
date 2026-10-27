@@ -15,12 +15,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// writeEmptyID3MP3At writes an MP3 whose ID3v2 tag holds a title but no
+// rating, followed by a few bytes standing in for the audio frames.
 func writeEmptyID3MP3At(t *testing.T, dir, name string) string {
 	t.Helper()
 	tag := id3v2.NewEmptyTag()
+	tag.SetTitle("No rating")
 	var buf bytes.Buffer
 	_, err := tag.WriteTo(&buf)
 	require.NoError(t, err)
+	buf.Write([]byte{0xFF, 0xFB, 0x90, 0x64, 0, 0, 0, 0})
 
 	path := filepath.Join(dir, name)
 	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o644))

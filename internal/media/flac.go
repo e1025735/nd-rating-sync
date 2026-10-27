@@ -189,18 +189,28 @@ const flacMetadataBlockHeaderSize = 4
 // block bodies (which can be many MiB for PICTURE blocks), and reads only
 // the VORBIS_COMMENT body itself. The returned slice is a synthesised FLAC
 // containing the "fLaC" magic + the comment block marked as "last" — exactly
-// what parseFLACRating walks. When no VORBIS_COMMENT exists, returns a
-// minimal "fLaC + empty PADDING last-block" so the parser reports tagAbsent.
+// what parseFLACRating walks. When the metadata ends cleanly without a
+// VORBIS_COMMENT, returns a minimal "fLaC + empty PADDING last-block" so the
+// parser reports tagAbsent.
+//
+// An ID3v2 tag in front of the stream (written by some taggers, skipped by
+// libFLAC) is skipped. Any other start than "fLaC" means the file is not a
+// FLAC stream: an error, so the file is unreadable rather than untagged.
 func extractFLACMetadata(f *os.File) ([]byte, error) {
 	var magic [4]byte
 	if _, err := io.ReadFull(f, magic[:]); err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, nil
+		return nil, flacMagicErr(err)
+	}
+	if string(magic[:3]) == "ID3" {
+		if err := skipLeadingID3v2(f); err != nil {
+			return nil, err
 		}
-		return nil, err
+		if _, err := io.ReadFull(f, magic[:]); err != nil {
+			return nil, flacMagicErr(err)
+		}
 	}
 	if string(magic[:]) != "fLaC" {
-		return nil, nil
+		return nil, errors.New("not a FLAC stream (fLaC magic missing)")
 	}
 
 	for {
@@ -241,6 +251,13 @@ func extractFLACMetadata(f *os.File) ([]byte, error) {
 			return nil, err
 		}
 	}
+}
+
+func flacMagicErr(err error) error {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return errors.New("file ends before the fLaC magic")
+	}
+	return err
 }
 
 // flacSynthEmpty returns a minimal "no comments" FLAC: fLaC magic + a

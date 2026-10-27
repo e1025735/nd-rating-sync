@@ -358,12 +358,14 @@ func TestExtractOggMetadata_SmallPictureCommentDropped(t *testing.T) {
 	assert.Equal(t, 3, stars)
 }
 
-func TestExtractOggMetadata_NotOggIsTagAbsent(t *testing.T) {
+// A file that is not an Ogg stream despite its extension cannot be read, so
+// its rating must never be cleared.
+func TestExtractOggMetadata_NotOggIsUnreadable(t *testing.T) {
 	dir := t.TempDir()
 	path := writeBinFile(t, dir, "song.ogg", []byte("definitely not an ogg file"))
 
 	_, result := extractStarsFromFile(path, "ogg", []string{"foobar2000"})
-	assert.Equal(t, tagAbsent, result)
+	assert.Equal(t, fileUnreadable, result)
 }
 
 // oggSynth must split packets with more than 255 lacing values over several
