@@ -88,8 +88,9 @@ func parseStars(path, ext string, data []byte, tagOrder []string) (stars int, re
 	switch {
 	case err != nil:
 		logTrace(fmt.Sprintf("nd-rating-sync: parseStars stop, parse error path=%q, ext=%q", path, ext))
-		logWarn(fmt.Sprintf("nd-rating-sync: cannot parse the tags of %q (skipping)", path))
-		logDebug(fmt.Sprintf("nd-rating-sync: parse %q error: %q", path, err.Error()))
+		// The reason (e.g. an FMPS_Rating outside 0.0–1.0) comes from the tag
+		// itself, not from the OS, so it is safe to show in the warning.
+		logWarn(fmt.Sprintf("nd-rating-sync: cannot parse the tags of %q (skipping): %q", path, err.Error()))
 		return 0, FileUnreadable
 	case found:
 		logTrace(fmt.Sprintf("nd-rating-sync: parseStars done, rating found path=%q, ext=%q", path, ext))

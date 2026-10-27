@@ -18,8 +18,6 @@ func TestFmpsToStars(t *testing.T) {
 		{"empty string", "", false, 0},
 		{"zero bare", "0", false, 0},
 		{"zero float", "0.0", false, 0},
-		{"negative", "-0.5", false, 0},
-		{"invalid text", "abc", false, 0},
 		{"1 star canonical", "0.2", true, 1},
 		{"2 stars canonical", "0.4", true, 2},
 		{"3 stars canonical", "0.6", true, 3},
@@ -31,19 +29,47 @@ func TestFmpsToStars(t *testing.T) {
 		{"half star 2.5 is unrated", "0.5", false, 0},
 		{"float noise still whole", "0.60000002", true, 3},
 		{"two decimals", "0.80", true, 4},
-		{"above 1.0 clamps to 5", "1.5", true, 5},
 		{"leading/trailing whitespace", "  0.6  ", true, 3},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := fmpsToStars(tc.input)
+			got, ok, err := fmpsToStars(tc.input)
+			assert.NoError(t, err)
 			assert.Equal(t, tc.wantOK, ok)
 			if tc.wantOK {
 				assert.Equal(t, tc.want, got)
 			}
 		})
 	}
+}
+
+// A value that is not a number or lies outside 0.0–1.0 is an error, never a
+// rating: "4" (stars) or "80" (percent) must not become 5 stars.
+func TestFmpsToStars_InvalidValuesAreErrors(t *testing.T) {
+	for _, s := range []string{"abc", "0.6abc", "-0.5", "1.5", "4", "80", "NaN", "Inf", "1e10"} {
+		stars, ok, err := fmpsToStars(s)
+		assert.Error(t, err, s)
+		assert.False(t, ok, s)
+		assert.Equal(t, 0, stars, s)
+	}
+}
+
+func TestPickRating_InvalidSourceBeforeAValidOneIsAnError(t *testing.T) {
+	found := map[string]int{"WMP": 4}
+	invalid := map[string]error{"FMPS": assert.AnError}
+
+	stars, ok, err := pickRating([]string{"WMP", "FMPS"}, found, invalid)
+	assert.NoError(t, err, "an earlier valid source wins")
+	assert.True(t, ok)
+	assert.Equal(t, 4, stars)
+
+	_, _, err = pickRating([]string{"FMPS", "WMP"}, found, invalid)
+	assert.Error(t, err, "the invalid source comes first: unreadable")
+
+	_, ok, err = pickRating([]string{"MusicBee"}, found, invalid)
+	assert.NoError(t, err, "an invalid source outside the order does not matter")
+	assert.False(t, ok)
 }
 
 func TestPopmWMPToStars(t *testing.T) {
@@ -111,6 +137,10 @@ func TestRatingMusicBeeToStars(t *testing.T) {
 		{"five stars", "100", true, 5},
 		{"out of range", "101", false, 0},
 		{"non-numeric", "abc", false, 0},
+		{"leading zero", "060", true, 3},
+		{"plus sign", "+80", true, 4},
+		{"half star", "50", false, 0},
+		{"foobar2000 1-5 value is not MusicBee's", "4", false, 0},
 	}
 
 	for _, tc := range tests {
@@ -147,4 +177,39 @@ func TestSharedUserRatingToStars(t *testing.T) {
 	for v, want := range map[uint32]int{0: 0, 1: 1, 12: 1, 13: 2, 25: 2, 50: 3, 75: 4, 87: 4, 88: 5, 99: 5, 100: 0, 255: 0} {
 		assert.Equal(t, want, sharedUserRatingToStars(v), "value %d", v)
 	}
+}
+
+func TestRatingPercentToStars(t *testing.T) {
+	for in, want := range map[string]int{"20": 1, "40": 2, "60": 3, "80": 4, "100": 5, "1": 1, "50": 3, " 81 ": 5} {
+		stars, ok, err := ratingPercentToStars(in)
+		assert.NoError(t, err, in)
+		assert.True(t, ok, in)
+		assert.Equal(t, want, stars, in)
+	}
+	for _, in := range []string{"", "0", "  "} {
+		_, ok, err := ratingPercentToStars(in)
+		assert.NoError(t, err, in)
+		assert.False(t, ok, in)
+	}
+	// 300 used to wrap to byte 44 (3 stars), 101-255 used to become 5 stars.
+	for _, in := range []string{"300", "256", "101", "-20", "60abc", "4.5"} {
+		stars, ok, err := ratingPercentToStars(in)
+		assert.Error(t, err, in)
+		assert.False(t, ok, in)
+		assert.Equal(t, 0, stars, in)
+	}
+}
+
+// An invalid iTunes-style value makes the file unreadable when that source is
+// reached; an earlier valid source still wins.
+func TestRatingFromM4A_InvalidITunesRating(t *testing.T) {
+	data := buildM4A(map[string]string{"rating": "300", "RATE": "80"})
+
+	_, _, err := ratingFromM4A(data, "", []string{"iTunes", "MusicBee"})
+	assert.Error(t, err)
+
+	stars, found, err := ratingFromM4A(data, "", []string{"MusicBee", "iTunes"})
+	assert.NoError(t, err)
+	assert.True(t, found)
+	assert.Equal(t, 4, stars)
 }

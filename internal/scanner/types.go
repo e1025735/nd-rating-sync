@@ -80,8 +80,10 @@ const (
 	fileUnreadable = FileUnreadable
 )
 
-// DefaultTagOrder is the ratingTagOrder of a user who does not set one.
-var DefaultTagOrder = []string{"WMP", "iTunes", "MediaMonkey", "foobar2000", "MusicBee"}
+// DefaultTagOrder is the ratingTagOrder of a user who does not set one. A
+// change to it changes those users' pair fingerprint, so their next sweep
+// reads every file once.
+var DefaultTagOrder = []string{"WMP", "iTunes", "MediaMonkey", "foobar2000", "MusicBee", "FMPS"}
 
 // callBudget is how long one callback works before it hands over to a
 // continuation. Navidrome force-closes a call after 30 s; the budget stays

@@ -95,7 +95,7 @@ func ratingFromWMA(data []byte, path string, tagOrder []string) (int, bool, erro
 // Recognised descriptors:
 //
 //   - "WM/SharedUserRating" (DWORD/type 3, or WORD/type 5): WMP 0–99 scale
-//   - "FMPS_Rating"         (Unicode/type 0): MediaMonkey float 0.0–1.0
+//   - "FMPS_Rating"         (Unicode/type 0): FMPS and MediaMonkey, float 0.0–1.0
 //
 // A descriptor that runs past the object is an error.
 func parseASFExtContentDesc(body []byte, path string, tagOrder []string) (int, bool, error) {
@@ -105,6 +105,7 @@ func parseASFExtContentDesc(body []byte, path string, tagOrder []string) (int, b
 	count := int(binary.LittleEndian.Uint16(body[:2]))
 	pos := 2
 	found := map[string]int{}
+	invalid := map[string]error{}
 
 	for i := 0; i < count; i++ {
 		if pos+2 > len(body) {
@@ -151,20 +152,21 @@ func parseASFExtContentDesc(body []byte, path string, tagOrder []string) (int, b
 		case "FMPS_RATING":
 			if valueType == 0 { // Unicode string
 				s := strings.TrimSpace(decodeUTF16LE(valueBytes))
-				if stars, ok := fmpsToStars(s); ok {
+				stars, ok, err := fmpsToStars(s)
+				switch {
+				case err != nil:
+					invalid["FMPS"] = err
+					invalid["MediaMonkey"] = err
+				case ok:
+					found["FMPS"] = stars
 					found["MediaMonkey"] = stars
-					logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for MediaMonkey in %q", stars, path))
+					logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for FMPS and MediaMonkey in %q", stars, path))
 				}
 			}
 		}
 	}
 
-	for _, format := range tagOrder {
-		if stars, ok := found[format]; ok {
-			return stars, true, nil
-		}
-	}
-	return 0, false, nil
+	return pickRating(tagOrder, found, invalid)
 }
 
 // asfHeaderObjectFixedSize is the fixed 30-byte ASF Header Object preamble

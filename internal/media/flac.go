@@ -124,18 +124,26 @@ func parseVorbisCommentBlock(body []byte) (vorbisComments, error) {
 //   - "MediaMonkey" – RATING (0–100, MediaMonkey's own field), else FMPS_RATING (float 0.0–1.0)
 //   - "foobar2000"  – RATING (integer 1–5)
 //   - "MusicBee"    – RATING (0–100)
+//   - "FMPS"        – FMPS_RATING (float 0.0–1.0; Strawberry, Clementine, Amarok, …)
 //
 // The 1–5 and 0–100 scales never overlap (0–100 values are multiples of 20),
 // so one RATING value matches either foobar2000 or MusicBee/MediaMonkey.
 //
 // "WMP" and "iTunes" have no canonical Vorbis representation and are silently
 // skipped — listing them in tagOrder is harmless, they just never match.
-func ratingFromVorbisComments(cmts vorbisComments, path string, tagOrder []string) (int, bool) {
+func ratingFromVorbisComments(cmts vorbisComments, path string, tagOrder []string) (int, bool, error) {
 	found := map[string]int{}
+	invalid := map[string]error{}
 	if vs := cmts["FMPS_RATING"]; len(vs) > 0 {
-		if stars, ok := fmpsToStars(vs[0]); ok {
+		stars, ok, err := fmpsToStars(vs[0])
+		switch {
+		case err != nil:
+			invalid["FMPS"] = err
+			invalid["MediaMonkey"] = err
+		case ok:
+			found["FMPS"] = stars
 			found["MediaMonkey"] = stars
-			logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for MediaMonkey in %q", stars, path))
+			logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for FMPS and MediaMonkey in %q", stars, path))
 		}
 	}
 	if vs := cmts["RATING"]; len(vs) > 0 {
@@ -151,12 +159,7 @@ func ratingFromVorbisComments(cmts vorbisComments, path string, tagOrder []strin
 			logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for MediaMonkey in %q", stars, path))
 		}
 	}
-	for _, format := range tagOrder {
-		if stars, ok := found[format]; ok {
-			return stars, true
-		}
-	}
-	return 0, false
+	return pickRating(tagOrder, found, invalid)
 }
 
 // parseFLACRating parses a FLAC stream for a recognised star rating.
@@ -176,8 +179,7 @@ func ratingFromFLAC(data []byte, path string, tagOrder []string) (int, bool, err
 	if err != nil {
 		return 0, false, err
 	}
-	stars, ok := ratingFromVorbisComments(cmts, path, tagOrder)
-	return stars, ok, nil
+	return ratingFromVorbisComments(cmts, path, tagOrder)
 }
 
 // flacMetadataBlockHeaderSize is the fixed FLAC metadata block header length

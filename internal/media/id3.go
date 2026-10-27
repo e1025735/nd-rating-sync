@@ -228,9 +228,12 @@ var id3v2RatingFrames = []string{"TXXX", "POPM"}
 //   - "MediaMonkey" – POPM frame with email "no@email" (MediaMonkey's own
 //     frame, exact whole-star bytes), else TXXX "FMPS_Rating" (float 0.0–1.0)
 //   - "MusicBee"    – POPM frame with email "MusicBee" (exact whole-star bytes)
-//   - "foobar2000"  – TXXX frame with description "RATING" (integer 1–5)
+//   - "foobar2000"  – TXXX frame with description "RATING" (integer 1–5),
+//     else the "Windows Media Player" POPM frame foobar2000 writes to MP3
 //   - "WMP"         – POPM frame written by Windows Media Player
-//   - "iTunes"      – POPM frame written by iTunes / Apple Music
+//   - "iTunes"      – POPM frame with an iTunes email, written by other tools
+//     (iTunes itself keeps ratings in its library, not in the file)
+//   - "FMPS"        – TXXX "FMPS_Rating" (Strawberry, Clementine, Amarok, …)
 func parseID3v2Rating(data []byte, path string, tagOrder []string) (int, bool) {
 	stars, ok, _ := ratingFromID3v2(data, path, tagOrder)
 	return stars, ok
@@ -250,7 +253,8 @@ func ratingFromID3v2(data []byte, path string, tagOrder []string) (int, bool, er
 	}
 	defer tag.Close()
 
-	found := make(map[string]int) // format → stars
+	found := make(map[string]int)     // format → stars
+	invalid := make(map[string]error) // format → invalid value
 
 	for _, f := range tag.GetFrames("TXXX") {
 		txxx, ok := f.(id3v2.UserDefinedTextFrame)
@@ -260,9 +264,15 @@ func ratingFromID3v2(data []byte, path string, tagOrder []string) (int, bool, er
 		desc := strings.ToUpper(strings.TrimSpace(txxx.Description))
 		switch desc {
 		case "FMPS_RATING":
-			if stars, ok := fmpsToStars(txxx.Value); ok {
+			stars, ok, err := fmpsToStars(txxx.Value)
+			switch {
+			case err != nil:
+				invalid["FMPS"] = err
+				invalid["MediaMonkey"] = err
+			case ok:
+				found["FMPS"] = stars
 				found["MediaMonkey"] = stars
-				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for MediaMonkey in %q", stars, path))
+				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for FMPS and MediaMonkey in %q", stars, path))
 			}
 		case "RATING":
 			if stars, ok := ratingIntToStars(txxx.Value); ok {
@@ -283,6 +293,12 @@ func ratingFromID3v2(data []byte, path string, tagOrder []string) (int, bool, er
 			if stars := popmWMPToStars(popm.Rating); stars > 0 {
 				found["WMP"] = stars
 				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for WMP in %q", stars, path))
+				// foobar2000 writes its RATING field to MP3 as this frame.
+				// It runs after the TXXX loop, so a TXXX "RATING" wins.
+				if _, ok := found["foobar2000"]; !ok {
+					found["foobar2000"] = stars
+					logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for foobar2000 (WMP POPM) in %q", stars, path))
+				}
 			}
 		case strings.Contains(e, "itunes") || "com.apple.itunes" == e:
 			if stars := popmITunesToStars(popm.Rating); stars > 0 {
@@ -304,10 +320,5 @@ func ratingFromID3v2(data []byte, path string, tagOrder []string) (int, bool, er
 		}
 	}
 
-	for _, format := range tagOrder {
-		if stars, ok := found[format]; ok {
-			return stars, true, nil
-		}
-	}
-	return 0, false, nil
+	return pickRating(tagOrder, found, invalid)
 }

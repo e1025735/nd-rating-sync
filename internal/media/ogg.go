@@ -99,8 +99,7 @@ func ratingFromOgg(data []byte, path string, tagOrder []string) (int, bool, erro
 	if err != nil {
 		return 0, false, err
 	}
-	stars, ok := ratingFromVorbisComments(cmts, path, tagOrder)
-	return stars, ok, nil
+	return ratingFromVorbisComments(cmts, path, tagOrder)
 }
 
 // Bounds for extractOggMetadata. They only guard against corrupt or hostile

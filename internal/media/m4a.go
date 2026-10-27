@@ -84,8 +84,9 @@ func metaChildren(meta []byte) ([]byte, error) {
 // parseM4ARating walks the moov→udta→meta→ilst hierarchy and resolves a star
 // rating from freeform (----) atoms. Recognised atom names:
 //
-//   - "FMPS_Rating" (any case) → MediaMonkey, float 0.0–1.0
-//   - "rating" (lowercase)     → iTunes, integer 0/20/40/60/80/100
+//   - "FMPS_Rating" (any case) → FMPS and MediaMonkey, float 0.0–1.0
+//   - "rating" (lowercase)     → iTunes-style (written by other tools; iTunes
+//     itself keeps ratings in its library), integer 0/20/40/60/80/100
 //   - "RATING" (uppercase)     → foobar2000, integer 1–5
 //   - "RATE" (any case)        → MusicBee and MediaMonkey, integer 0/20/40/60/80/100
 //
@@ -124,6 +125,7 @@ func ratingFromM4A(data []byte, path string, tagOrder []string) (int, bool, erro
 	}
 
 	found := map[string]int{}
+	invalid := map[string]error{}
 	mediaMonkeyRate := 0
 	var innerErr error
 
@@ -156,18 +158,25 @@ func ratingFromM4A(data []byte, path string, tagOrder []string) (int, bool, erro
 		nameUpper := strings.ToUpper(name)
 		switch {
 		case nameUpper == "FMPS_RATING":
-			if stars, ok := fmpsToStars(value); ok {
+			stars, ok, err := fmpsToStars(value)
+			switch {
+			case err != nil:
+				invalid["FMPS"] = err
+				invalid["MediaMonkey"] = err
+			case ok:
+				found["FMPS"] = stars
 				found["MediaMonkey"] = stars
-				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for MediaMonkey in %q", stars, path))
+				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for FMPS and MediaMonkey in %q", stars, path))
 			}
 		case name == "rating":
-			// iTunes writes lowercase "rating" with 0/20/40/60/80/100 integer scale.
-			var n int
-			if _, err := fmt.Sscanf(value, "%d", &n); err == nil && n > 0 {
-				if stars := popmITunesToStars(byte(n)); stars > 0 {
-					found["iTunes"] = stars
-					logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for iTunes in %q", stars, path))
-				}
+			// iTunes-style tools write lowercase "rating" on a 0–100 scale.
+			stars, ok, err := ratingPercentToStars(value)
+			switch {
+			case err != nil:
+				invalid["iTunes"] = err
+			case ok:
+				found["iTunes"] = stars
+				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for iTunes in %q", stars, path))
 			}
 		case nameUpper == "RATING":
 			// foobar2000 writes uppercase "RATING" with 1–5 integer scale.
@@ -196,12 +205,7 @@ func ratingFromM4A(data []byte, path string, tagOrder []string) (int, bool, erro
 		logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for MediaMonkey in %q", mediaMonkeyRate, path))
 	}
 
-	for _, format := range tagOrder {
-		if stars, ok := found[format]; ok {
-			return stars, true, nil
-		}
-	}
-	return 0, false, nil
+	return pickRating(tagOrder, found, invalid)
 }
 
 // m4aReadErr maps a short read inside the atom structure to a clear error:
