@@ -238,9 +238,12 @@ func extractM4AMetadata(f *os.File) ([]byte, error) {
 	}
 	fileSize := info.Size()
 
-	for pos := int64(0); ; {
+	for pos, atoms := int64(0), 0; ; atoms++ {
 		if pos >= fileSize {
 			return nil, errors.New("MP4 file has no moov atom")
+		}
+		if atoms >= maxContainerEntries {
+			return nil, errTooManyEntries
 		}
 		if _, err := f.Seek(pos, io.SeekStart); err != nil {
 			return nil, err
@@ -295,7 +298,10 @@ func extractM4AMetadata(f *os.File) ([]byte, error) {
 func extractMoovUdta(f *os.File, bodyStart, bodyLen int64) ([]byte, error) {
 	end := bodyStart + bodyLen
 	pos := bodyStart
-	for pos+8 <= end {
+	for atoms := 0; pos+8 <= end; atoms++ {
+		if atoms >= maxContainerEntries {
+			return nil, errTooManyEntries
+		}
 		if _, err := f.Seek(pos, io.SeekStart); err != nil {
 			return nil, err
 		}

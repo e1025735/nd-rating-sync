@@ -26,12 +26,14 @@ func ratingFromWAV(data []byte, path string, tagOrder []string) (int, bool, erro
 	pos := 12
 	for pos+8 <= len(data) {
 		fourCC := strings.ToLower(string(data[pos : pos+4]))
-		chunkSize := int(binary.LittleEndian.Uint32(data[pos+4 : pos+8]))
+		chunkSize := uint64(binary.LittleEndian.Uint32(data[pos+4 : pos+8]))
 		pos += 8
-		end := pos + chunkSize
-		if end > len(data) {
+		// Compared as uint64 before narrowing: as a 32-bit int a size of
+		// 2 GiB or more turns negative and would pass the bounds check.
+		if chunkSize > uint64(len(data)-pos) {
 			break
 		}
+		end := pos + int(chunkSize)
 		if fourCC == "id3 " {
 			return ratingFromID3v2(data[pos:end], path, tagOrder)
 		}
@@ -74,7 +76,10 @@ func extractWAVMetadata(f *os.File) ([]byte, error) {
 	fileSize := info.Size()
 
 	pos := int64(len(hdr))
-	for {
+	for chunks := 0; ; chunks++ {
+		if chunks >= maxContainerEntries {
+			return nil, errTooManyEntries
+		}
 		var chHdr [8]byte
 		if _, err := io.ReadFull(f, chHdr[:]); err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {

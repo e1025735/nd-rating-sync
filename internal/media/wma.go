@@ -210,6 +210,9 @@ func extractWMAMetadata(f *os.File) ([]byte, error) {
 	}
 	headerEnd := int64(headerSize)
 	numHeaders := binary.LittleEndian.Uint32(hdr[24:28])
+	if numHeaders > maxContainerEntries {
+		return nil, errTooManyEntries
+	}
 
 	pos := int64(asfHeaderObjectFixedSize)
 	for i := uint32(0); i < numHeaders; i++ {

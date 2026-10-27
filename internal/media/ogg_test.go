@@ -378,3 +378,21 @@ func TestOggSynth_RoundTripsLargePacket(t *testing.T) {
 	assert.Equal(t, idHeaderPlaceholder, packets[0])
 	assert.Equal(t, big, packets[1])
 }
+
+// Comments small enough to be kept must not add up past the per-file cap.
+func TestExtractOggMetadata_KeptCommentsAreCapped(t *testing.T) {
+	entry := "X=" + string(bytes.Repeat([]byte{'a'}, oggMaxKeptComment-2))
+	count := maxMetadataReadBytes/len(entry) + 2
+	var pkt bytes.Buffer
+	pkt.WriteString("OpusTags")
+	require.NoError(t, binary.Write(&pkt, binary.LittleEndian, uint32(0)))     // vendor
+	require.NoError(t, binary.Write(&pkt, binary.LittleEndian, uint32(count))) // comment count
+	for i := 0; i < count; i++ {
+		require.NoError(t, binary.Write(&pkt, binary.LittleEndian, uint32(len(entry))))
+		pkt.WriteString(entry)
+	}
+	path := writeBinFile(t, t.TempDir(), "song.opus", makeOggMultiPage(t, 255, idHeaderPlaceholder, pkt.Bytes()))
+
+	_, result := extractStarsFromFile(path, "opus", []string{"foobar2000"})
+	assert.Equal(t, fileUnreadable, result)
+}

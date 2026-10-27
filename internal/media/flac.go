@@ -215,7 +215,10 @@ func extractFLACMetadata(f *os.File) ([]byte, error) {
 		return nil, errors.New("not a FLAC stream (fLaC magic missing)")
 	}
 
-	for {
+	for blocks := 0; ; blocks++ {
+		if blocks >= maxContainerEntries {
+			return nil, errTooManyEntries
+		}
 		var hdr [flacMetadataBlockHeaderSize]byte
 		if _, err := io.ReadFull(f, hdr[:]); err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {

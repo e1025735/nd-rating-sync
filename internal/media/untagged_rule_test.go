@@ -183,3 +183,49 @@ func TestRatingFromWMA_DescriptorPastObjectIsError(t *testing.T) {
 	assert.False(t, found)
 	assert.Error(t, err)
 }
+
+// A file made of nothing but minimal container entries is unreadable after
+// maxContainerEntries, instead of keeping the callback busy for each one.
+func TestExtractors_TooManyContainerEntries(t *testing.T) {
+	many := maxContainerEntries + 1
+	flac := []byte("fLaC")
+	for i := 0; i < many; i++ {
+		flac = append(flac, 1, 0, 0, 0) // empty PADDING block, not last
+	}
+	flac = append(flac, 0x81, 0, 0, 0)
+
+	var wavChunks [][]byte
+	for i := 0; i < many; i++ {
+		wavChunks = append(wavChunks, riffChunk("junk", nil, -1))
+	}
+
+	m4a := []byte{}
+	for i := 0; i < many; i++ {
+		m4a = append(m4a, buildAtom("free", nil)...)
+	}
+	m4a = append(m4a, buildAtom("moov", nil)...)
+
+	var moovChildren []byte
+	for i := 0; i < many; i++ {
+		moovChildren = append(moovChildren, buildAtom("free", nil)...)
+	}
+	m4aMoov := append(buildAtom("ftyp", []byte("M4A \x00\x00\x00\x00")), buildAtom("moov", moovChildren)...)
+
+	wma := asfHeader(0)
+	binary.LittleEndian.PutUint32(wma[24:28], uint32(many))
+
+	for name, tc := range map[string]struct {
+		ext     string
+		content []byte
+	}{
+		"FLAC blocks":    {"flac", flac},
+		"WAV chunks":     {"wav", riffWAVE(wavChunks...)},
+		"MP4 top atoms":  {"m4a", m4a},
+		"MP4 moov atoms": {"m4a", m4aMoov},
+		"ASF objects":    {"wma", wma},
+	} {
+		path := writeBinFile(t, t.TempDir(), "song."+tc.ext, tc.content)
+		_, result := extractStarsFromFile(path, tc.ext, []string{"WMP", "MediaMonkey", "MusicBee"})
+		assert.Equal(t, fileUnreadable, result, name)
+	}
+}

@@ -358,6 +358,12 @@ func readOggCommentPacket(r *oggPacketReader) ([]byte, error) {
 			}
 			continue
 		}
+		// The kept entries are bounded like every other extractor's read:
+		// many mid-sized comments (only a corrupt or crafted file has them)
+		// must not add up past the per-file cap.
+		if len(entries)+4+int(n) > maxMetadataReadBytes {
+			return nil, fmt.Errorf("Ogg comments exceed %d bytes", maxMetadataReadBytes)
+		}
 		start := len(entries)
 		entries = binary.LittleEndian.AppendUint32(entries, n)
 		entries = append(entries, make([]byte, n)...)
