@@ -21,10 +21,10 @@ func extractStarsFromFile(path string, suffix string, tagOrder []string) (int, F
 	if ext == "" {
 		ext = strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
 	}
-	if !isSupportedExt(ext) {
+	if !media.Supported(ext) {
 		logTrace(fmt.Sprintf("nd-rating-sync: extractStarsFromFile stop, unsupported file path=%q, suffix=%q", path, suffix))
 		logWarn(fmt.Sprintf(
-			"nd-rating-sync: skipping %q – supported formats are MP3, FLAC, Ogg, Opus, WAV, DSF, M4A/AAC and WMA (got .%q)", path, ext))
+			"nd-rating-sync: skipping %q – unsupported file type %q (supported: %s)", path, ext, strings.Join(media.SupportedExtensions(), ", ")))
 		return 0, FileUnreadable
 	}
 

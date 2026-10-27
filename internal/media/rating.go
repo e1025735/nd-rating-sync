@@ -95,6 +95,61 @@ func fmpsToStars(s string) (int, bool, error) {
 	return stars, true, nil
 }
 
+// ratings collects the rating every source holds in one file; pick then
+// chooses by tagOrder. Each format's parser fills it while it walks the tags.
+type ratings struct {
+	path    string           // for trace lines only
+	found   map[string]int   // source → stars
+	invalid map[string]error // source → error of a value that is present but invalid
+}
+
+func newRatings(path string) *ratings {
+	return &ratings{path: path, found: map[string]int{}, invalid: map[string]error{}}
+}
+
+// set records stars for each of sources. 0 (unrated) records nothing.
+func (r *ratings) set(stars int, sources ...string) {
+	if stars <= 0 {
+		return
+	}
+	for _, s := range sources {
+		r.found[s] = stars
+	}
+	logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for %s in %q", stars, strings.Join(sources, " and "), r.path))
+}
+
+// parsed records the result of a converter that rejects invalid values: an
+// error marks sources invalid, otherwise the stars are set when ok.
+func (r *ratings) parsed(stars int, ok bool, err error, sources ...string) {
+	if err != nil {
+		for _, s := range sources {
+			r.invalid[s] = err
+		}
+		return
+	}
+	if ok {
+		r.set(stars, sources...)
+	}
+}
+
+// fmps records an FMPS_Rating value. FMPS reads it, and so does MediaMonkey
+// as the fallback behind its own field.
+func (r *ratings) fmps(value string) {
+	stars, ok, err := fmpsToStars(value)
+	r.parsed(stars, ok, err, "FMPS", "MediaMonkey")
+}
+
+// has reports whether a rating was recorded for source.
+func (r *ratings) has(source string) bool {
+	_, ok := r.found[source]
+	return ok
+}
+
+// pick returns the rating of the first source in tagOrder (see pickRating).
+func (r *ratings) pick(tagOrder []string) (int, bool, error) {
+	return pickRating(tagOrder, r.found, r.invalid)
+}
+
 // pickRating returns the rating of the first source in tagOrder that the
 // file holds. found maps a source to its stars; invalid maps a source to the
 // error of a value that is present but invalid. Reaching an invalid source

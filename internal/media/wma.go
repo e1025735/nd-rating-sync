@@ -44,18 +44,12 @@ func decodeUTF16LE(b []byte) string {
 	return string(runes)
 }
 
-// parseWMARating walks the ASF Header Object looking for an Extended Content
-// Description Object and extracts a star rating from it.
-func parseWMARating(data []byte, path string, tagOrder []string) (int, bool) {
-	stars, ok, _ := ratingFromWMA(data, path, tagOrder)
-	return stars, ok
-}
-
 // errMalformedASF reports an ASF object or descriptor whose size does not fit
 // the data around it.
 var errMalformedASF = errors.New("ASF header object is malformed")
 
-// ratingFromWMA is parseWMARating with the parse error kept. Empty data and a
+// ratingFromWMA walks the ASF Header Object looking for an Extended Content
+// Description Object and extracts a star rating from it. Empty data and a
 // header without an Extended Content Description Object are untagged; a
 // header, child object or descriptor whose size does not fit is an error, so
 // the file is unreadable rather than untagged. Sizes are compared as uint64
@@ -104,8 +98,7 @@ func parseASFExtContentDesc(body []byte, path string, tagOrder []string) (int, b
 	}
 	count := int(binary.LittleEndian.Uint16(body[:2]))
 	pos := 2
-	found := map[string]int{}
-	invalid := map[string]error{}
+	r := newRatings(path)
 
 	for i := 0; i < count; i++ {
 		if pos+2 > len(body) {
@@ -143,30 +136,15 @@ func parseASFExtContentDesc(body []byte, path string, tagOrder []string) (int, b
 			case valueType == asfTypeWORD && valueLen >= 2:
 				v = uint32(binary.LittleEndian.Uint16(valueBytes[:2]))
 			}
-			if stars := sharedUserRatingToStars(v); stars > 0 {
-				found["WMP"] = stars
-				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for WMP in %q", stars, path))
-				found["MusicBee"] = stars
-				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for MusicBee in %q", stars, path))
-			}
+			r.set(sharedUserRatingToStars(v), "WMP", "MusicBee")
 		case "FMPS_RATING":
 			if valueType == 0 { // Unicode string
-				s := strings.TrimSpace(decodeUTF16LE(valueBytes))
-				stars, ok, err := fmpsToStars(s)
-				switch {
-				case err != nil:
-					invalid["FMPS"] = err
-					invalid["MediaMonkey"] = err
-				case ok:
-					found["FMPS"] = stars
-					found["MediaMonkey"] = stars
-					logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for FMPS and MediaMonkey in %q", stars, path))
-				}
+				r.fmps(decodeUTF16LE(valueBytes))
 			}
 		}
 	}
 
-	return pickRating(tagOrder, found, invalid)
+	return r.pick(tagOrder)
 }
 
 // asfHeaderObjectFixedSize is the fixed 30-byte ASF Header Object preamble
@@ -182,7 +160,7 @@ const asfObjectHeaderSize = 24
 // Audio data (which lives in a separate top-level ASF Data Object after the
 // Header Object — potentially hundreds of MiB) is never read.
 //
-// parseWMARating walks this synth identically to a real file: it sees a
+// ratingFromWMA walks this synth identically to a real file: it sees a
 // Header Object with numHeaders=1 and the ECDO as the only child.
 //
 // Only a header whose children were all walked without an ECDO is untagged
@@ -192,10 +170,7 @@ const asfObjectHeaderSize = 24
 func extractWMAMetadata(f *os.File) ([]byte, error) {
 	var hdr [asfHeaderObjectFixedSize]byte
 	if _, err := io.ReadFull(f, hdr[:]); err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, errors.New("file ends inside the ASF header")
-		}
-		return nil, err
+		return nil, cutOff(err, errors.New("file ends inside the ASF header"))
 	}
 	if !bytes.Equal(hdr[:16], asfHeaderObjectGUID) {
 		return nil, errors.New("not an ASF file (header object GUID missing)")
@@ -218,10 +193,7 @@ func extractWMAMetadata(f *os.File) ([]byte, error) {
 	for i := uint32(0); i < numHeaders; i++ {
 		var objHdr [asfObjectHeaderSize]byte
 		if _, err := io.ReadFull(f, objHdr[:]); err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				return nil, errors.New("file ends inside the ASF header")
-			}
-			return nil, err
+			return nil, cutOff(err, errors.New("file ends inside the ASF header"))
 		}
 		objSize := binary.LittleEndian.Uint64(objHdr[16:24])
 		if objSize < asfObjectHeaderSize || objSize > uint64(headerEnd-pos) {
@@ -259,7 +231,7 @@ func extractWMAMetadata(f *os.File) ([]byte, error) {
 }
 
 // wmaSynthEmpty returns a minimal valid ASF Header Object with numHeaders=0.
-// parseWMARating walks zero child objects and reports tagAbsent.
+// ratingFromWMA walks zero child objects and reports tagAbsent.
 func wmaSynthEmpty() []byte {
 	out := make([]byte, asfHeaderObjectFixedSize)
 	copy(out[:16], asfHeaderObjectGUID)

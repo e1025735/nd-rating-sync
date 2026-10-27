@@ -9,16 +9,10 @@ import (
 	"strings"
 )
 
-// parseWAVRating finds the ID3v2 chunk inside a RIFF/WAVE container and
-// delegates to parseID3v2Rating. Both "id3 " and "ID3 " fourCCs are accepted
-// (different tag editors write different cases).
-func parseWAVRating(data []byte, path string, tagOrder []string) (int, bool) {
-	stars, ok, _ := ratingFromWAV(data, path, tagOrder)
-	return stars, ok
-}
-
-// ratingFromWAV is parseWAVRating with the error of the embedded ID3v2 tag
-// kept, so a corrupt tag is reported as unreadable rather than untagged.
+// ratingFromWAV finds the ID3v2 chunk inside a RIFF/WAVE container and
+// delegates to ratingFromID3v2. Both "id3 " and "ID3 " fourCCs are accepted
+// (different tag editors write different cases). A corrupt tag is an error,
+// so the file is unreadable rather than untagged.
 func ratingFromWAV(data []byte, path string, tagOrder []string) (int, bool, error) {
 	if len(data) < 12 || string(data[:4]) != "RIFF" || string(data[8:12]) != "WAVE" {
 		return 0, false, nil
@@ -49,7 +43,7 @@ func ratingFromWAV(data []byte, path string, tagOrder []string) (int, bool, erro
 // extractWAVMetadata walks the RIFF chunk list at the start of a WAV file,
 // Seeks past audio (`data`/`fmt `/etc.) chunks without reading their bodies,
 // and returns a synthesised RIFF/WAVE container holding only the `id3 ` /
-// `ID3 ` chunk when present. The existing parseWAVRating walks this synth
+// `ID3 ` chunk when present. ratingFromWAV walks this synth
 // identically to a real file.
 //
 // Only a chunk list walked to the end of the file without an ID3 chunk is
@@ -61,10 +55,7 @@ func ratingFromWAV(data []byte, path string, tagOrder []string) (int, bool, erro
 func extractWAVMetadata(f *os.File) ([]byte, error) {
 	var hdr [12]byte
 	if _, err := io.ReadFull(f, hdr[:]); err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, errors.New("file ends inside the RIFF header")
-		}
-		return nil, err
+		return nil, cutOff(err, errors.New("file ends inside the RIFF header"))
 	}
 	if string(hdr[:4]) != "RIFF" || string(hdr[8:12]) != "WAVE" {
 		return nil, errors.New("not a RIFF/WAVE file")
@@ -82,7 +73,7 @@ func extractWAVMetadata(f *os.File) ([]byte, error) {
 		}
 		var chHdr [8]byte
 		if _, err := io.ReadFull(f, chHdr[:]); err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			if isShortRead(err) {
 				// Every chunk was walked to the end of the file; fewer than
 				// 8 trailing bytes cannot hold another chunk either.
 				return wavSynthEmpty(hdr[:]), nil
@@ -124,7 +115,7 @@ func extractWAVMetadata(f *os.File) ([]byte, error) {
 }
 
 // wavSynthEmpty returns the bare RIFF/WAVE preamble with the original
-// 12-byte header but no chunks. parseWAVRating walks zero chunks and
+// 12-byte header but no chunks. ratingFromWAV walks zero chunks and
 // reports tagAbsent.
 func wavSynthEmpty(hdr []byte) []byte {
 	out := make([]byte, 12)

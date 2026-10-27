@@ -38,10 +38,7 @@ func extractID3v2Metadata(f *os.File) ([]byte, error) {
 func readID3v2Tag(f *os.File, prefix int) ([]byte, error) {
 	var hdr [id3v2HeaderSize]byte
 	if _, err := io.ReadFull(f, hdr[:]); err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, errors.New("file ends before a complete ID3v2 header")
-		}
-		return nil, err
+		return nil, cutOff(err, errors.New("file ends before a complete ID3v2 header"))
 	}
 	if string(hdr[:3]) != "ID3" {
 		return nil, nil
@@ -56,10 +53,7 @@ func readID3v2Tag(f *os.File, prefix int) ([]byte, error) {
 	out := make([]byte, prefix+id3v2HeaderSize+size)
 	copy(out[prefix:], hdr[:])
 	if _, err := io.ReadFull(f, out[prefix+id3v2HeaderSize:]); err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, errors.New("ID3v2 tag is cut off before its declared end")
-		}
-		return nil, err
+		return nil, cutOff(err, errors.New("ID3v2 tag is cut off before its declared end"))
 	}
 	return out, nil
 }
@@ -92,10 +86,7 @@ func skipLeadingID3v2(f *os.File) error {
 	}
 	var hdr [id3v2HeaderSize]byte
 	if _, err := io.ReadFull(f, hdr[:]); err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return errors.New("file ends inside a leading ID3v2 header")
-		}
-		return err
+		return cutOff(err, errors.New("file ends inside a leading ID3v2 header"))
 	}
 	size := id3v2SyncsafeSize(hdr[6:10])
 	if string(hdr[:3]) != "ID3" || size < 0 {
@@ -220,9 +211,11 @@ func prepareID3v2(data []byte) ([]byte, error) {
 // being decoded into yet another copy.
 var id3v2RatingFrames = []string{"TXXX", "POPM"}
 
-// parseID3v2Rating inspects raw MP3 (or any file with an ID3v2 header) data
+// ratingFromID3v2 inspects raw MP3 (or any file with an ID3v2 header) data
 // and returns a 1–5 star rating. It first collects every recognised rating
-// frame from the file (one pass), then picks the winner by tagOrder.
+// frame from the file (one pass), then picks the winner by tagOrder. Empty
+// data (no "ID3" magic) is untagged; a corrupt or unsupported tag (e.g.
+// ID3v2.2) is an error, so the file is unreadable rather than untagged.
 //
 // Recognised tagOrder values:
 //   - "MediaMonkey" – POPM frame with email "no@email" (MediaMonkey's own
@@ -234,14 +227,6 @@ var id3v2RatingFrames = []string{"TXXX", "POPM"}
 //   - "iTunes"      – POPM frame with an iTunes email, written by other tools
 //     (iTunes itself keeps ratings in its library, not in the file)
 //   - "FMPS"        – TXXX "FMPS_Rating" (Strawberry, Clementine, Amarok, …)
-func parseID3v2Rating(data []byte, path string, tagOrder []string) (int, bool) {
-	stars, ok, _ := ratingFromID3v2(data, path, tagOrder)
-	return stars, ok
-}
-
-// ratingFromID3v2 is parseID3v2Rating with the parse error kept, so a corrupt
-// or unsupported tag (e.g. ID3v2.2) is reported as unreadable rather than as
-// untagged. Empty data (no "ID3" magic) is not an error.
 func ratingFromID3v2(data []byte, path string, tagOrder []string) (int, bool, error) {
 	data, err := prepareID3v2(data)
 	if err != nil {
@@ -253,31 +238,18 @@ func ratingFromID3v2(data []byte, path string, tagOrder []string) (int, bool, er
 	}
 	defer tag.Close()
 
-	found := make(map[string]int)     // format → stars
-	invalid := make(map[string]error) // format → invalid value
-
+	r := newRatings(path)
 	for _, f := range tag.GetFrames("TXXX") {
 		txxx, ok := f.(id3v2.UserDefinedTextFrame)
 		if !ok {
 			continue
 		}
-		desc := strings.ToUpper(strings.TrimSpace(txxx.Description))
-		switch desc {
+		switch strings.ToUpper(strings.TrimSpace(txxx.Description)) {
 		case "FMPS_RATING":
-			stars, ok, err := fmpsToStars(txxx.Value)
-			switch {
-			case err != nil:
-				invalid["FMPS"] = err
-				invalid["MediaMonkey"] = err
-			case ok:
-				found["FMPS"] = stars
-				found["MediaMonkey"] = stars
-				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for FMPS and MediaMonkey in %q", stars, path))
-			}
+			r.fmps(txxx.Value)
 		case "RATING":
 			if stars, ok := ratingIntToStars(txxx.Value); ok {
-				found["foobar2000"] = stars
-				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for foobar2000 in %q", stars, path))
+				r.set(stars, "foobar2000")
 			}
 		}
 	}
@@ -290,35 +262,23 @@ func ratingFromID3v2(data []byte, path string, tagOrder []string) (int, bool, er
 		e := strings.ToLower(strings.TrimSpace(popm.Email))
 		switch {
 		case strings.Contains(e, "windows media player"):
-			if stars := popmWMPToStars(popm.Rating); stars > 0 {
-				found["WMP"] = stars
-				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for WMP in %q", stars, path))
-				// foobar2000 writes its RATING field to MP3 as this frame.
-				// It runs after the TXXX loop, so a TXXX "RATING" wins.
-				if _, ok := found["foobar2000"]; !ok {
-					found["foobar2000"] = stars
-					logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for foobar2000 (WMP POPM) in %q", stars, path))
-				}
+			stars := popmWMPToStars(popm.Rating)
+			r.set(stars, "WMP")
+			// foobar2000 writes its RATING field to MP3 as this frame. It
+			// runs after the TXXX loop, so a TXXX "RATING" wins.
+			if !r.has("foobar2000") {
+				r.set(stars, "foobar2000")
 			}
 		case strings.Contains(e, "itunes") || "com.apple.itunes" == e:
-			if stars := popmITunesToStars(popm.Rating); stars > 0 {
-				found["iTunes"] = stars
-				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for iTunes in %q", stars, path))
-			}
+			r.set(popmITunesToStars(popm.Rating), "iTunes")
 		case "musicbee" == e:
-			if stars := popmMusicBeeToStars(popm.Rating); stars > 0 {
-				found["MusicBee"] = stars
-				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for MusicBee in %q", stars, path))
-			}
+			r.set(popmMusicBeeToStars(popm.Rating), "MusicBee")
 		case "no@email" == e:
 			// MediaMonkey's own rating frame. It runs after the TXXX loop, so it
 			// takes precedence over an FMPS_Rating another app may have written.
-			if stars := popmMediaMonkeyToStars(popm.Rating); stars > 0 {
-				found["MediaMonkey"] = stars
-				logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for MediaMonkey in %q", stars, path))
-			}
+			r.set(popmMediaMonkeyToStars(popm.Rating), "MediaMonkey")
 		}
 	}
 
-	return pickRating(tagOrder, found, invalid)
+	return r.pick(tagOrder)
 }

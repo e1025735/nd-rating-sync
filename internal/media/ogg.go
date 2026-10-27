@@ -55,8 +55,7 @@ func extractOggPackets(data []byte, maxPackets int) ([][]byte, error) {
 	return packets, nil
 }
 
-// parseOggVorbisRating parses an Ogg-Vorbis or Ogg-Opus stream for a star
-// rating. The Ogg container's second packet is the comment header; after
+// ratingFromOgg parses an Ogg-Vorbis or Ogg-Opus stream for a star rating. The Ogg container's second packet is the comment header; after
 // stripping the format-specific magic prefix, its body is a standard Vorbis
 // comment block (vendor + count + entries).
 //
@@ -64,14 +63,9 @@ func extractOggPackets(data []byte, maxPackets int) ([][]byte, error) {
 // Opus it starts with "OpusTags". A trailing Vorbis "framing bit" (Vorbis
 // only) is ignored — parseVorbisCommentBlock stops once it has read the
 // declared comment count.
-func parseOggVorbisRating(data []byte, path string, tagOrder []string) (int, bool) {
-	stars, ok, _ := ratingFromOgg(data, path, tagOrder)
-	return stars, ok
-}
-
-// ratingFromOgg is parseOggVorbisRating with the parse error kept. Empty data
-// is untagged; a missing comment packet, an unknown codec, a broken page
-// layout or a broken comment block is an error.
+//
+// Empty data is untagged; a missing comment packet, an unknown codec, a
+// broken page layout or a broken comment block is an error.
 func ratingFromOgg(data []byte, path string, tagOrder []string) (int, bool, error) {
 	if len(data) == 0 {
 		return 0, false, nil
@@ -146,14 +140,14 @@ func (r *oggPacketReader) nextPage() error {
 	}
 	var hdr [27]byte
 	if _, err := io.ReadFull(r.f, hdr[:]); err != nil {
-		return oggReadErr(err)
+		return cutOff(err, errOggTruncated)
 	}
 	if string(hdr[:4]) != "OggS" {
 		return errors.New("Ogg page magic missing inside the header packets")
 	}
 	n := int(hdr[26])
 	if _, err := io.ReadFull(r.f, r.lacingBuf[:n]); err != nil {
-		return oggReadErr(err)
+		return cutOff(err, errOggTruncated)
 	}
 	r.lacing = r.lacingBuf[:n]
 	r.pages++
@@ -200,7 +194,7 @@ func (r *oggPacketReader) readFull(p []byte) error {
 		}
 		n := min(len(p), r.segLeft)
 		if _, err := io.ReadFull(r.f, p[:n]); err != nil {
-			return oggReadErr(err)
+			return cutOff(err, errOggTruncated)
 		}
 		p = p[n:]
 		r.segLeft -= n
@@ -243,7 +237,7 @@ func (r *oggPacketReader) readPacket(max int) ([]byte, error) {
 		start := len(out)
 		out = append(out, make([]byte, r.segLeft)...)
 		if _, err := io.ReadFull(r.f, out[start:]); err != nil {
-			return nil, oggReadErr(err)
+			return nil, cutOff(err, errOggTruncated)
 		}
 		r.segLeft = 0
 	}
@@ -257,22 +251,13 @@ func (r *oggPacketReader) readUint32() (uint32, error) {
 	return binary.LittleEndian.Uint32(b[:]), nil
 }
 
-// oggReadErr maps a short read to errOggTruncated so a cut-off file reports
-// fileUnreadable (never tagAbsent, which clear_rating_if_untagged acts on).
-func oggReadErr(err error) error {
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return errOggTruncated
-	}
-	return err
-}
-
 // extractOggMetadata streams the two header packets of the leading logical
 // bitstream and returns a synthesised Ogg stream holding the identification
 // packet plus a compact comment packet. Comment entries larger than
 // oggMaxKeptComment (above all cover art, which Opus stores inside the
 // comment packet as METADATA_BLOCK_PICTURE) are Seeked past without being
 // read, so memory stays at a few KiB however large the art is. The synth is
-// walked by parseOggVorbisRating exactly like a real file.
+// walked by ratingFromOgg exactly like a real file.
 //
 // A file that does not start with "OggS", a comment packet of an unknown
 // codec, and anything cut off or malformed inside the header packets is an
@@ -280,7 +265,7 @@ func oggReadErr(err error) error {
 func extractOggMetadata(f *os.File) ([]byte, error) {
 	var magic [4]byte
 	if _, err := io.ReadFull(f, magic[:]); err != nil {
-		return nil, oggReadErr(err)
+		return nil, cutOff(err, errOggTruncated)
 	}
 	if string(magic[:]) != "OggS" {
 		return nil, errors.New("not an Ogg stream (OggS magic missing)")

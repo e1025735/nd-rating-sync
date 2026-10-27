@@ -24,10 +24,7 @@ var mp4LeadingAtoms = map[string]bool{"ftyp": true, "moov": true, "mdat": true, 
 func extractAACMetadata(f *os.File) ([]byte, error) {
 	var head [8]byte
 	if _, err := io.ReadFull(f, head[:]); err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, errors.New("file is too short to be AAC")
-		}
-		return nil, err
+		return nil, cutOff(err, errors.New("file is too short to be AAC"))
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return nil, err

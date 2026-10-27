@@ -1,6 +1,10 @@
 package media
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"io"
+)
 
 // maxMetadataReadBytes is the per-format upper bound on bytes the metadata
 // extractors will pull into memory from any single file. Each format reads
@@ -22,6 +26,22 @@ const maxMetadataReadBytes = 16 * 1024 * 1024
 // could otherwise keep one callback busy past Navidrome's 30 s limit. Real
 // files use at most a few dozen; more is reported as unreadable.
 const maxContainerEntries = 4096
+
+// isShortRead reports whether err means the file ended before a read was
+// complete.
+func isShortRead(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+// cutOff returns short when err is a short read and err otherwise. A file
+// that ends inside its container or tag region is cut off, so the extractors
+// report it with a clear error: the file is unreadable, never untagged.
+func cutOff(err, short error) error {
+	if isShortRead(err) {
+		return short
+	}
+	return err
+}
 
 // errTooManyEntries is the error for a walk that reaches maxContainerEntries.
 var errTooManyEntries = fmt.Errorf("file has more than %d container entries", maxContainerEntries)
