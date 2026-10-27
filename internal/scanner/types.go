@@ -85,12 +85,6 @@ const (
 	FileUnreadable                       // I/O error, unsupported extension, or corrupt tag
 )
 
-const (
-	tagFound       = TagFound
-	tagAbsent      = TagAbsent
-	fileUnreadable = FileUnreadable
-)
-
 // DefaultTagOrder is the ratingTagOrder of a user who does not set one. A
 // change to it changes those users' pair fingerprint, so their next sweep
 // reads every file once.
@@ -176,6 +170,7 @@ func runSyncStepUntil(cfg PluginConfig, payload string, deadline time.Time) erro
 	next, done := runSyncChunk(cfg, cur, deadline)
 	if done {
 		kvadapter.ClearSweepActive()
+		deleteStaleThresholds(cfg)
 		logInfo("nd-rating-sync: sync complete")
 		return nil
 	}
@@ -192,6 +187,24 @@ func runSyncStepUntil(cfg PluginConfig, payload string, deadline time.Time) erro
 		"nd-rating-sync: time budget reached – rescheduled continuation in %ds (lib=%d user=%d offset=%d)",
 		delay, next.Lib, next.User, next.Offset))
 	return nil
+}
+
+// deleteStaleThresholds removes the incremental thresholds of (library,
+// user) pairs that were removed from the config, once a sweep completes.
+func deleteStaleThresholds(cfg PluginConfig) {
+	keep := map[string]bool{}
+	for _, lib := range cfg.Libraries {
+		for _, u := range lib.Users {
+			keep[kvadapter.KVKeyLastSynced(lib.LibraryID, u.Username)] = true
+		}
+	}
+	deleted, err := kvadapter.DeleteStaleLastSynced(keep)
+	switch {
+	case err != nil:
+		logWarn(fmt.Sprintf("nd-rating-sync: removing the sync state of users and libraries no longer configured failed: %q", err.Error()))
+	case deleted > 0:
+		logInfo(fmt.Sprintf("nd-rating-sync: removed the sync state of %d user/library pairs no longer configured", deleted))
+	}
 }
 
 // startOrResumeSweep decides where a callback without a continuation payload

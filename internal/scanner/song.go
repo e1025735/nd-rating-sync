@@ -56,7 +56,8 @@ func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.
 		tally.skippedUnreadable++
 		return
 	case TagAbsent:
-		if !u.ClearRatingIfUntagged {
+		// Nothing to clear when Navidrome has no rating either.
+		if !u.ClearRatingIfUntagged || s.UserRating == 0 {
 			logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, no tag song=%q", s.ID))
 			tally.skippedNoTag++
 			return
@@ -80,6 +81,14 @@ func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.
 		return
 	}
 
+	// The rating from the song listing is at most one page old; writing the
+	// same value again would only cost a host call and a database write.
+	if stars == s.UserRating {
+		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, same rating song=%q", s.ID))
+		logDebug(fmt.Sprintf("nd-rating-sync: skipping %q – Navidrome already has %d stars", s.Title, stars))
+		tally.skippedSameRating++
+		return
+	}
 	if cfg.DryRun {
 		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, dry run would rate song=%q", s.ID))
 		logInfo(fmt.Sprintf("nd-rating-sync: [DRY RUN] would rate %q → %d stars", s.Title, stars))

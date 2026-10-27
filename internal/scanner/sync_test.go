@@ -751,3 +751,99 @@ func TestProcessPairChunk_FileReadLoggingStopsAfterTheCrashPage(t *testing.T) {
 	next, _ = processPairChunk(lib, user, PluginConfig{}, SyncCursor{LogReadsUntil: 1}, time.Time{}, past, libraryMount{})
 	assert.Equal(t, 0, next.LogReadsUntil, "past the crash page: normal again")
 }
+
+// ─── Access check ─────────────────────────────────────────────────────────────
+
+// A user the plugin may not access is skipped at once, before any listing,
+// instead of failing the listing three times 30 s apart.
+func TestRunSyncChunk_UnknownUserIsSkippedWithoutRetries(t *testing.T) {
+	resetSubsonicMock(t)
+	resetLibraryMock(t)
+	resetUsersMock(t)
+	allowSweepRecordWrites()
+	host.UsersMock.ExpectedCalls = nil
+	host.UsersMock.On("GetUsers").Return([]host.User{{UserName: "Alice"}}, nil)
+	host.LibraryMock.ExpectedCalls = nil
+	host.LibraryMock.On("GetAllLibraries").Return([]host.Library{{ID: 1}}, nil)
+	mockGetLibrary(1, t.TempDir())
+	host.SubsonicAPIMock.On("Call",
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
+	).Return(subsonicOK(nil), nil)
+
+	cfg := PluginConfig{Libraries: []LibraryConfig{{
+		LibraryID: "1",
+		Users: []UserConfig{
+			{Username: "alcie", RatingTagOrder: DefaultTagOrder}, // typo
+			{Username: "alice", RatingTagOrder: DefaultTagOrder}, // case differs from "Alice"
+		},
+	}}}
+
+	next, done := runSyncChunk(cfg, SyncCursor{}, time.Now().Add(time.Hour))
+	assert.True(t, done)
+	assert.Equal(t, 0, next.Retry)
+	host.SubsonicAPIMock.AssertNotCalled(t, "Call",
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alcie&musicFolderId=1`)
+	host.SubsonicAPIMock.AssertExpectations(t)
+	host.UsersMock.AssertNumberOfCalls(t, "GetUsers", 1)
+}
+
+// A library the plugin may not access is skipped before any listing.
+func TestRunSyncChunk_InaccessibleLibraryIsSkipped(t *testing.T) {
+	resetSubsonicMock(t)
+	resetLibraryMock(t)
+	resetUsersMock(t)
+	allowSweepRecordWrites()
+	host.UsersMock.ExpectedCalls = nil
+	host.UsersMock.On("GetUsers").Return([]host.User{{UserName: "alice"}}, nil)
+	host.LibraryMock.ExpectedCalls = nil
+	host.LibraryMock.On("GetAllLibraries").Return([]host.Library{{ID: 1}}, nil)
+
+	cfg := PluginConfig{Libraries: []LibraryConfig{{
+		LibraryID: "7",
+		Users:     []UserConfig{{Username: "alice", RatingTagOrder: DefaultTagOrder}},
+	}}}
+
+	_, done := runSyncChunk(cfg, SyncCursor{}, time.Now().Add(time.Hour))
+	assert.True(t, done)
+	host.SubsonicAPIMock.AssertNotCalled(t, "Call", mock.Anything)
+	host.LibraryMock.AssertNotCalled(t, "GetLibrary", mock.Anything)
+}
+
+// When the host cannot list users or libraries, nothing is skipped.
+func TestAccessCheck_FailsOpen(t *testing.T) {
+	resetLibraryMock(t)
+	resetUsersMock(t)
+	host.LibraryMock.ExpectedCalls = nil
+	allowAccessLookupsToFail()
+
+	a := &accessCheck{}
+	assert.Empty(t, a.problem("1", "anyone"))
+}
+
+// A completed sweep removes the thresholds of pairs no longer configured.
+func TestRunSyncStepUntil_CompletedSweepDeletesStaleThresholds(t *testing.T) {
+	resetSubsonicMock(t)
+	resetSchedulerMock(t)
+	resetKVStoreMock(t)
+	allowAccessLookupsToFail()
+
+	host.KVStoreMock.On("Get", kvKeySweepActive()).Return([]byte(nil), false, nil)
+	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.Anything).Return(nil)
+	host.KVStoreMock.On("Delete", kvKeySweepActive()).Return(nil)
+	host.KVStoreMock.On("List", "last-synced:").
+		Return([]string{kvKeyLastSynced("1", "alice"), kvKeyLastSynced("1", "removed")}, nil)
+	host.KVStoreMock.On("Delete", kvKeyLastSynced("1", "removed")).Return(nil).Once()
+
+	cfg := PluginConfig{Libraries: []LibraryConfig{{
+		LibraryID: "1",
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: DefaultTagOrder}},
+	}}}
+	mockGetLibrary(1, t.TempDir())
+	host.SubsonicAPIMock.On("Call",
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
+	).Return(subsonicOK(nil), nil)
+
+	require.NoError(t, runSyncStepUntil(cfg, "", time.Now().Add(time.Hour)))
+	host.KVStoreMock.AssertNotCalled(t, "Delete", kvKeyLastSynced("1", "alice"))
+	host.KVStoreMock.AssertExpectations(t)
+}

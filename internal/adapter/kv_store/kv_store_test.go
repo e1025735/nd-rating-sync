@@ -24,6 +24,12 @@ func resetKVStoreMock(t *testing.T) {
 	})
 }
 
+// sweepInProgress is how the plugin decides that another sweep is running.
+func sweepInProgress() bool {
+	r, found := LoadSweepRecord()
+	return found && r.Active()
+}
+
 func TestKVKeyLastSynced_IncludesLibraryAndUser(t *testing.T) {
 	assert.Equal(t, "last-synced:lib1:alice", KVKeyLastSynced("lib1", "alice"))
 	assert.NotEqual(t,
@@ -154,40 +160,40 @@ func TestSweepInProgress_FreshHeartbeatIsActive(t *testing.T) {
 	resetKVStoreMock(t)
 	host.KVStoreMock.On("Get", KVKeySweepActive()).
 		Return([]byte(time.Now().UTC().Format(time.RFC3339Nano)), true, nil)
-	assert.True(t, SweepInProgress(), "a recent heartbeat means a sweep is in progress")
+	assert.True(t, sweepInProgress(), "a recent heartbeat means a sweep is in progress")
 }
 
 func TestSweepInProgress_StaleHeartbeatFailsOpen(t *testing.T) {
 	resetKVStoreMock(t)
 	stale := time.Now().Add(-2 * SweepStaleAfter).UTC().Format(time.RFC3339Nano)
 	host.KVStoreMock.On("Get", KVKeySweepActive()).Return([]byte(stale), true, nil)
-	assert.False(t, SweepInProgress(), "a heartbeat older than SweepStaleAfter is not active")
+	assert.False(t, sweepInProgress(), "a heartbeat older than SweepStaleAfter is not active")
 }
 
 func TestSweepInProgress_FutureHeartbeatFailsOpen(t *testing.T) {
 	resetKVStoreMock(t)
 	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
 	host.KVStoreMock.On("Get", KVKeySweepActive()).Return([]byte(future), true, nil)
-	assert.False(t, SweepInProgress(), "future-dated heartbeat must fail open")
+	assert.False(t, sweepInProgress(), "future-dated heartbeat must fail open")
 }
 
 func TestSweepInProgress_MalformedFailsOpen(t *testing.T) {
 	resetKVStoreMock(t)
 	host.KVStoreMock.On("Get", KVKeySweepActive()).Return([]byte("not a timestamp"), true, nil)
-	assert.False(t, SweepInProgress(), "a malformed heartbeat is treated as not active")
+	assert.False(t, sweepInProgress(), "a malformed heartbeat is treated as not active")
 }
 
 func TestSweepInProgress_MissingFailsOpen(t *testing.T) {
 	resetKVStoreMock(t)
 	host.KVStoreMock.On("Get", KVKeySweepActive()).Return([]byte(nil), false, nil)
-	assert.False(t, SweepInProgress(), "no heartbeat → no sweep in progress")
+	assert.False(t, sweepInProgress(), "no heartbeat → no sweep in progress")
 }
 
 func TestSweepInProgress_KVErrorFailsOpen(t *testing.T) {
 	resetKVStoreMock(t)
 	host.KVStoreMock.On("Get", KVKeySweepActive()).
 		Return([]byte(nil), false, errors.New("kvstore unavailable"))
-	assert.False(t, SweepInProgress(), "KV error must not block a sync")
+	assert.False(t, sweepInProgress(), "KV error must not block a sync")
 }
 
 func TestMarkSweepActive_KVErrorIsSwallowed(t *testing.T) {
@@ -250,4 +256,18 @@ func TestMarkSweepInterrupted_NothingToMark(t *testing.T) {
 
 	MarkSweepInterrupted("")
 	host.KVStoreMock.AssertNotCalled(t, "Set", mock.Anything, mock.Anything)
+}
+
+func TestDeleteStaleLastSynced_KeepsConfiguredPairs(t *testing.T) {
+	resetKVStoreMock(t)
+	keep := KVKeyLastSynced("1", "alice")
+	gone := KVKeyLastSynced("1", "bob")
+	host.KVStoreMock.On("List", "last-synced:").Return([]string{keep, gone}, nil)
+	host.KVStoreMock.On("Delete", gone).Return(nil).Once()
+
+	deleted, err := DeleteStaleLastSynced(map[string]bool{keep: true})
+	require.NoError(t, err)
+	assert.Equal(t, 1, deleted)
+	host.KVStoreMock.AssertNotCalled(t, "Delete", keep)
+	host.KVStoreMock.AssertExpectations(t)
 }

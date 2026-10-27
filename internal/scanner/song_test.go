@@ -95,10 +95,11 @@ func TestProcessSong_ClearsRatingWhenUntaggedAndAllowed(t *testing.T) {
 
 	tally := &syncTally{}
 	song := subsonicSong{
-		ID:     "song-3",
-		Title:  "Needs clearing",
-		Suffix: "mp3",
-		Size:   size,
+		ID:         "song-3",
+		Title:      "Needs clearing",
+		Suffix:     "mp3",
+		Size:       size,
+		UserRating: 3,
 	}
 
 	processSong(
@@ -206,4 +207,75 @@ func TestProcessSong_IncrementalSkipsOldSongWithOldMTime(t *testing.T) {
 
 		assert.Equal(t, 1, tally.skippedUnchanged, "created=%q", created)
 	}
+}
+
+// An untagged song Navidrome has no rating for needs no clearing call.
+func TestProcessSong_UntaggedAndUnratedIsNotCleared(t *testing.T) {
+	resetSubsonicMock(t)
+	path := writeEmptyID3MP3At(t, t.TempDir(), "song.mp3")
+	file := songFile{entry: FileEntry{Path: path, MTime: time.Now()}, found: true}
+
+	tally := &syncTally{}
+	processSong(
+		UserConfig{Username: "alice", ClearRatingIfUntagged: true, RatingTagOrder: DefaultTagOrder},
+		PluginConfig{},
+		subsonicSong{ID: "song-7", Title: "Unrated", Suffix: "mp3"},
+		time.Time{},
+		file,
+		false,
+		tally,
+	)
+
+	assert.Equal(t, 1, tally.skippedNoTag)
+	assert.Equal(t, 0, tally.cleared)
+	host.SubsonicAPIMock.AssertNotCalled(t, "Call", "setRating?id=song-7&rating=0&u=alice")
+}
+
+// A file rating equal to the Navidrome rating is not written again, also in
+// a dry run.
+func TestProcessSong_SameRatingIsNotWrittenAgain(t *testing.T) {
+	resetSubsonicMock(t)
+	path := writeFMPSFileAt(t, t.TempDir(), "song.mp3", "0.6") // 3 stars
+	file := songFile{entry: FileEntry{Path: path, MTime: time.Now()}, found: true}
+	song := subsonicSong{ID: "song-8", Title: "Same", Suffix: "mp3", UserRating: 3}
+
+	for _, dryRun := range []bool{false, true} {
+		tally := &syncTally{}
+		processSong(
+			UserConfig{Username: "alice", RatingTagOrder: []string{"FMPS"}},
+			PluginConfig{DryRun: dryRun},
+			song,
+			time.Time{},
+			file,
+			false,
+			tally,
+		)
+		assert.Equal(t, 1, tally.skippedSameRating, "dryRun=%v", dryRun)
+		assert.Equal(t, 0, tally.rated+tally.wouldRate, "dryRun=%v", dryRun)
+	}
+	host.SubsonicAPIMock.AssertNotCalled(t, "Call", "setRating?id=song-8&rating=3&u=alice")
+}
+
+// A different Navidrome rating is still overwritten when skip_already_rated
+// is off.
+func TestProcessSong_DifferentRatingIsOverwritten(t *testing.T) {
+	resetSubsonicMock(t)
+	path := writeFMPSFileAt(t, t.TempDir(), "song.mp3", "0.6") // 3 stars
+	file := songFile{entry: FileEntry{Path: path, MTime: time.Now()}, found: true}
+	host.SubsonicAPIMock.On("Call", "setRating?id=song-9&rating=3&u=alice").
+		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
+
+	tally := &syncTally{}
+	processSong(
+		UserConfig{Username: "alice", RatingTagOrder: []string{"FMPS"}},
+		PluginConfig{},
+		subsonicSong{ID: "song-9", Title: "Changed", Suffix: "mp3", UserRating: 5},
+		time.Time{},
+		file,
+		false,
+		tally,
+	)
+
+	assert.Equal(t, 1, tally.rated)
+	host.SubsonicAPIMock.AssertExpectations(t)
 }

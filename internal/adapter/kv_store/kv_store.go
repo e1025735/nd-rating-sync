@@ -85,6 +85,29 @@ func LoadLastSynced(libraryID, username, fingerprint string) time.Time {
 	return t
 }
 
+// DeleteStaleLastSynced removes the incremental thresholds of (library, user)
+// pairs that are no longer configured; keep holds the keys of the configured
+// pairs (KVKeyLastSynced). It returns how many keys were deleted. A failed
+// listing or delete only leaves a few small keys behind, so the caller logs
+// it and carries on.
+func DeleteStaleLastSynced(keep map[string]bool) (int, error) {
+	keys, err := host.KVStoreList(LibraryUserLastSyncPrefix + ":")
+	if err != nil {
+		return 0, err
+	}
+	deleted := 0
+	for _, key := range keys {
+		if keep[key] {
+			continue
+		}
+		if err := host.KVStoreDelete(key); err != nil {
+			return deleted, err
+		}
+		deleted++
+	}
+	return deleted, nil
+}
+
 // SaveLastSynced stores t together with the pair's settings fingerprint
 // ("<RFC3339Nano> <fingerprint>"; the timestamp never contains a space).
 func SaveLastSynced(libraryID, username string, t time.Time, fingerprint string) {
@@ -149,12 +172,6 @@ func LoadSweepRecord() (SweepRecord, bool) {
 		return SweepRecord{}, false
 	}
 	return SweepRecord{At: t}, true
-}
-
-// SweepInProgress reports whether another sweep is running right now.
-func SweepInProgress() bool {
-	r, found := LoadSweepRecord()
-	return found && r.Active()
 }
 
 // MarkSweepActive refreshes the heartbeat and records cursor (a marshalled

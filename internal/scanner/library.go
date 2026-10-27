@@ -94,3 +94,52 @@ func resolveMount(cache map[string]libLookup, libraryID string) (libraryMount, e
 	}
 	return libraryMount{id: lib.ID, mountPoint: lib.MountPoint, hostPath: lib.Path}, nil
 }
+
+// accessCheck holds the users and libraries the plugin may access, read from
+// the host at most once per callback. A list the host could not return stays
+// nil and allows everything, so a failed lookup never blocks a sync.
+type accessCheck struct {
+	loaded bool
+	users  map[string]bool // lower-cased login names
+	libs   map[int32]bool
+}
+
+func (a *accessCheck) load() {
+	if a.loaded {
+		return
+	}
+	a.loaded = true
+	if users, err := host.UsersGetUsers(); err == nil {
+		a.users = make(map[string]bool, len(users))
+		for _, u := range users {
+			a.users[strings.ToLower(u.UserName)] = true
+		}
+	} else {
+		logWarn(fmt.Sprintf("nd-rating-sync: cannot list the users granted to the plugin (%q) – usernames are not checked", err.Error()))
+	}
+	if libs, err := host.LibraryGetAllLibraries(); err == nil {
+		a.libs = make(map[int32]bool, len(libs))
+		for _, l := range libs {
+			a.libs[l.ID] = true
+		}
+	} else {
+		logWarn(fmt.Sprintf("nd-rating-sync: cannot list the libraries assigned to the plugin (%q) – library IDs are not checked", err.Error()))
+	}
+}
+
+// problem returns why the plugin cannot sync username in libraryID, or ""
+// when it can (or when that cannot be told). Navidrome logins are
+// case-insensitive, so usernames are compared that way. A non-numeric
+// library ID is left to the mount lookup, which reports it.
+func (a *accessCheck) problem(libraryID, username string) string {
+	a.load()
+	if a.libs != nil {
+		if id, err := strconv.Atoi(strings.TrimSpace(libraryID)); err == nil && !a.libs[int32(id)] {
+			return fmt.Sprintf("library %d does not exist or is not assigned to the plugin (Library Access)", id)
+		}
+	}
+	if a.users != nil && !a.users[strings.ToLower(username)] {
+		return fmt.Sprintf("user %q is not known to Navidrome or not granted under the plugin's User Access tab", username)
+	}
+	return ""
+}

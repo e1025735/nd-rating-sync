@@ -30,6 +30,8 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 	// lookup. Globals do not persist across callbacks, so the cache is
 	// intentionally scoped to one invocation.
 	libCache := map[string]libLookup{}
+	// The users and libraries the plugin may access, read on first use.
+	access := &accessCheck{}
 
 	logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk start lib=%d user=%d offset=%d deadline=%s",
 		cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
@@ -62,6 +64,18 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 				"nd-rating-sync: skipping library=%q user#%d – empty username in config", lib.LibraryID, cur.User))
 			cur.nextPair()
 			continue
+		}
+
+		// Before a pair starts, check the user and library against what the
+		// plugin may access: a typo or a missing grant is reported plainly
+		// and skipped at once, instead of failing the song listing three
+		// times 30 s apart on every sweep.
+		if cur.Offset == 0 && cur.PairStart == "" {
+			if reason := access.problem(lib.LibraryID, u.Username); reason != "" {
+				logWarn(fmt.Sprintf("nd-rating-sync: skipping user=%q library=%q – %s", u.Username, lib.LibraryID, reason))
+				cur.nextPair()
+				continue
+			}
 		}
 
 		// Load the incremental threshold once for this pair; reused by the
@@ -235,21 +249,21 @@ func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur Syn
 
 // syncTally accumulates per-chunk outcome counts for a single summary log line.
 type syncTally struct {
-	rated, cleared, wouldRate, wouldClear        int
-	skippedRated, skippedNoTag, skippedUnchanged int
-	skippedUnreadable, errored                   int
+	rated, cleared, wouldRate, wouldClear         int
+	skippedRated, skippedNoTag, skippedUnchanged  int
+	skippedUnreadable, skippedSameRating, errored int
 }
 
 func (t syncTally) log(username, libraryID string, dryRun bool) {
 	if dryRun {
 		logInfo(fmt.Sprintf(
-			"nd-rating-sync: [DRY RUN] chunk done user=%q library=%q – would_rate=%d would_clear=%d skipped_already_rated=%d skipped_unchanged=%d skipped_no_tag=%d skipped_unreadable=%d",
-			username, libraryID, t.wouldRate, t.wouldClear, t.skippedRated, t.skippedUnchanged, t.skippedNoTag, t.skippedUnreadable))
+			"nd-rating-sync: [DRY RUN] chunk done user=%q library=%q – would_rate=%d would_clear=%d skipped_already_rated=%d skipped_same_rating=%d skipped_unchanged=%d skipped_no_tag=%d skipped_unreadable=%d",
+			username, libraryID, t.wouldRate, t.wouldClear, t.skippedRated, t.skippedSameRating, t.skippedUnchanged, t.skippedNoTag, t.skippedUnreadable))
 		return
 	}
 	logInfo(fmt.Sprintf(
-		"nd-rating-sync: chunk done user=%q library=%q – rated=%d cleared=%d skipped_already_rated=%d skipped_unchanged=%d skipped_no_tag=%d skipped_unreadable=%d errors=%d",
-		username, libraryID, t.rated, t.cleared, t.skippedRated, t.skippedUnchanged, t.skippedNoTag, t.skippedUnreadable, t.errored))
+		"nd-rating-sync: chunk done user=%q library=%q – rated=%d cleared=%d skipped_already_rated=%d skipped_same_rating=%d skipped_unchanged=%d skipped_no_tag=%d skipped_unreadable=%d errors=%d",
+		username, libraryID, t.rated, t.cleared, t.skippedRated, t.skippedSameRating, t.skippedUnchanged, t.skippedNoTag, t.skippedUnreadable, t.errored))
 }
 
 // formatThreshold renders a threshold timestamp for log output, with a
