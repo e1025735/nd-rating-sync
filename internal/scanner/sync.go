@@ -6,6 +6,7 @@ import (
 
 	kvadapter "github.com/e1025735/nd-rating-sync/internal/adapter/kv_store"
 	subsonicadapter "github.com/e1025735/nd-rating-sync/internal/adapter/subsonic"
+	"github.com/e1025735/nd-rating-sync/internal/logging"
 )
 
 const (
@@ -33,7 +34,7 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 	// The users and libraries the plugin may access, read on first use.
 	access := &accessCheck{}
 
-	logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk start lib=%d user=%d offset=%d deadline=%s",
+	logging.Trace(fmt.Sprintf("nd-rating-sync: runSyncChunk start lib=%d user=%d offset=%d deadline=%s",
 		cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
 	for {
 		// Skip exhausted users/libraries. Also tolerates indices that point
@@ -46,21 +47,21 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 			cur.Retry = 0
 		}
 		if cur.Lib >= len(cfg.Libraries) {
-			logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, sweep complete lib=%d user=%d offset=%d deadline=%s",
+			logging.Trace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, sweep complete lib=%d user=%d offset=%d deadline=%s",
 				cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
 			return cur, true // whole sweep complete
 		}
 		// A valid pair is selected. If the budget is gone, resume here.
 		if time.Now().After(deadline) {
-			logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, deadline reached lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
+			logging.Trace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, deadline reached lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
 			return cur, false
 		}
 
 		lib := cfg.Libraries[cur.Lib]
 		u := lib.Users[cur.User]
-		logDebug(fmt.Sprintf("nd-rating-sync: will look for the following ratings: %q", u.RatingTagOrder))
+		logging.Debug(fmt.Sprintf("nd-rating-sync: will look for the following ratings: %q", u.RatingTagOrder))
 		if u.Username == "" {
-			logWarn(fmt.Sprintf(
+			logging.Warn(fmt.Sprintf(
 				"nd-rating-sync: skipping library=%q user#%d – empty username in config", lib.LibraryID, cur.User))
 			cur.nextPair()
 			continue
@@ -72,7 +73,7 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 		// times 30 s apart on every sweep.
 		if cur.Offset == 0 && cur.PairStart == "" {
 			if reason := access.problem(lib.LibraryID, u.Username); reason != "" {
-				logWarn(fmt.Sprintf("nd-rating-sync: skipping user=%q library=%q – %s", u.Username, lib.LibraryID, reason))
+				logging.Warn(fmt.Sprintf("nd-rating-sync: skipping user=%q library=%q – %s", u.Username, lib.LibraryID, reason))
 				cur.nextPair()
 				continue
 			}
@@ -94,7 +95,7 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 		// later scan still re-processes the files that changed in it.
 		if cur.Offset == 0 && cur.PairStart == "" && cfg.IncrementalSync && !threshold.IsZero() {
 			if scanned, ok := cachedLibraryLastScan(libCache, lib.LibraryID); ok && scanned.Before(threshold) {
-				logInfo(fmt.Sprintf(
+				logging.Info(fmt.Sprintf(
 					"nd-rating-sync: skipping user=%q library=%q – library unchanged since last sync (last_scan=%s threshold=%s)",
 					u.Username, lib.LibraryID, scanned.UTC().Format(time.RFC3339), threshold.UTC().Format(time.RFC3339)))
 				cur.nextPair()
@@ -108,7 +109,7 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 		// same baseline.
 		mount, err := resolveMount(libCache, lib.LibraryID)
 		if err != nil {
-			logWarn(fmt.Sprintf(
+			logging.Warn(fmt.Sprintf(
 				"nd-rating-sync: skipping user=%q library=%q – cannot access its files: %q", u.Username, lib.LibraryID, err.Error()))
 			cur.nextPair()
 			continue
@@ -122,13 +123,13 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 		cur = next
 		if !pairDone {
 			if cur.Retry >= maxPairAttempts {
-				logWarn(fmt.Sprintf(
+				logging.Warn(fmt.Sprintf(
 					"nd-rating-sync: skipping user=%q library=%q until the next sweep – listing or locating its songs failed %d times in a row",
 					u.Username, lib.LibraryID, cur.Retry))
 				cur.nextPair()
 				continue
 			}
-			logTrace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, deadline hit in processPairChunk lib=%d user=%d offset=%d retry=%d deadline=%s", cur.Lib, cur.User, cur.Offset, cur.Retry, deadline.Format(time.RFC3339Nano)))
+			logging.Trace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, deadline hit in processPairChunk lib=%d user=%d offset=%d retry=%d deadline=%s", cur.Lib, cur.User, cur.Offset, cur.Retry, deadline.Format(time.RFC3339Nano)))
 			return cur, false // deadline hit (or a page failed) mid-pair
 		}
 
@@ -163,18 +164,18 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 // that offset is logged as a warning first; once the cursor passes it,
 // logging is normal again.
 func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur SyncCursor, threshold time.Time, deadline time.Time, mount libraryMount) (SyncCursor, bool) {
-	logTrace(fmt.Sprintf("nd-rating-sync: processPairChunk start lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: processPairChunk start lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
 	if cfg.DryRun {
-		logInfo(fmt.Sprintf(
+		logging.Info(fmt.Sprintf(
 			"nd-rating-sync: [DRY RUN] user=%q – no ratings will be written", u.Username))
 	}
 	if u.ClearRatingIfUntagged && u.SkipAlreadyRated {
-		logWarn(fmt.Sprintf(
+		logging.Warn(fmt.Sprintf(
 			"nd-rating-sync: user=%q has clear_rating_if_untagged=true but skip_already_rated=true – "+
 				"songs already rated in Navidrome will be skipped before the file is read and their ratings will NOT be cleared",
 			u.Username))
 	}
-	logInfo(fmt.Sprintf(
+	logging.Info(fmt.Sprintf(
 		"nd-rating-sync: syncing user=%q library=%q from offset=%d skip_already_rated=%v clear_rating_if_untagged=%v dry_run=%v tag_order=%q incremental_threshold=%s",
 		u.Username, lib.LibraryID, cur.Offset, u.SkipAlreadyRated, u.ClearRatingIfUntagged, cfg.DryRun, u.RatingTagOrder, formatThreshold(threshold)))
 
@@ -187,7 +188,7 @@ func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur Syn
 		page, more, err := subsonicadapter.FetchSongPage(u.Username, lib.LibraryID, pageOffset, songPageSize)
 		if err != nil {
 			cur.Retry++
-			logWarn(fmt.Sprintf(
+			logging.Warn(fmt.Sprintf(
 				"nd-rating-sync: fetching songs for user=%q library=%q at offset=%d failed (attempt %d of %d): %q",
 				u.Username, lib.LibraryID, pageOffset, cur.Retry, maxPairAttempts, err.Error()))
 			tally.log(u.Username, lib.LibraryID, cfg.DryRun)
@@ -198,7 +199,7 @@ func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur Syn
 		// page came back shorter than expected). Advance or finish.
 		if skip >= len(page) {
 			if !more {
-				logTrace(fmt.Sprintf("nd-rating-sync: processPairChunk stop, no more songs lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
+				logging.Trace(fmt.Sprintf("nd-rating-sync: processPairChunk stop, no more songs lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
 				tally.log(u.Username, lib.LibraryID, cfg.DryRun)
 				return cur, true
 			}
@@ -209,7 +210,7 @@ func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur Syn
 		files, err := locateSongFiles(mount, u, page[skip:])
 		if err != nil {
 			cur.Retry++
-			logWarn(fmt.Sprintf(
+			logging.Warn(fmt.Sprintf(
 				"nd-rating-sync: locating the files of user=%q library=%q at offset=%d failed (attempt %d of %d): %q",
 				u.Username, lib.LibraryID, cur.Offset, cur.Retry, maxPairAttempts, err.Error()))
 			tally.log(u.Username, lib.LibraryID, cfg.DryRun)
@@ -222,7 +223,7 @@ func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur Syn
 			cur.Offset = pageOffset + i + 1
 			cur.Retry = 0
 			if cur.LogReadsUntil > 0 && cur.Offset >= cur.LogReadsUntil {
-				logInfo(fmt.Sprintf(
+				logging.Info(fmt.Sprintf(
 					"nd-rating-sync: user=%q library=%q – the songs up to offset %d were read without a stop; file reads are no longer logged",
 					u.Username, lib.LibraryID, cur.LogReadsUntil))
 				cur.LogReadsUntil = 0
@@ -232,14 +233,14 @@ func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur Syn
 			// rate also reduces the surface area for the host-side clock
 			// panic we have seen in production (see callBudget docs).
 			if (i-skip+1)%deadlineCheckEvery == 0 && time.Now().After(deadline) {
-				logTrace(fmt.Sprintf("nd-rating-sync: processPairChunk stop, deadline reached lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
+				logging.Trace(fmt.Sprintf("nd-rating-sync: processPairChunk stop, deadline reached lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
 				tally.log(u.Username, lib.LibraryID, cfg.DryRun)
 				return cur, false
 			}
 		}
 
 		if !more {
-			logTrace(fmt.Sprintf("nd-rating-sync: processPairChunk done lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
+			logging.Trace(fmt.Sprintf("nd-rating-sync: processPairChunk done lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
 			tally.log(u.Username, lib.LibraryID, cfg.DryRun)
 			return cur, true
 		}
@@ -256,12 +257,12 @@ type syncTally struct {
 
 func (t syncTally) log(username, libraryID string, dryRun bool) {
 	if dryRun {
-		logInfo(fmt.Sprintf(
+		logging.Info(fmt.Sprintf(
 			"nd-rating-sync: [DRY RUN] chunk done user=%q library=%q – would_rate=%d would_clear=%d skipped_already_rated=%d skipped_same_rating=%d skipped_unchanged=%d skipped_no_tag=%d skipped_unreadable=%d",
 			username, libraryID, t.wouldRate, t.wouldClear, t.skippedRated, t.skippedSameRating, t.skippedUnchanged, t.skippedNoTag, t.skippedUnreadable))
 		return
 	}
-	logInfo(fmt.Sprintf(
+	logging.Info(fmt.Sprintf(
 		"nd-rating-sync: chunk done user=%q library=%q – rated=%d cleared=%d skipped_already_rated=%d skipped_same_rating=%d skipped_unchanged=%d skipped_no_tag=%d skipped_unreadable=%d errors=%d",
 		username, libraryID, t.rated, t.cleared, t.skippedRated, t.skippedSameRating, t.skippedUnchanged, t.skippedNoTag, t.skippedUnreadable, t.errored))
 }

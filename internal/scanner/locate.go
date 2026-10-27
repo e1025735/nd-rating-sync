@@ -6,6 +6,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/e1025735/nd-rating-sync/internal/logging"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 	"github.com/navidrome/navidrome/plugins/pdk/go/types"
 )
@@ -41,7 +42,7 @@ func locateSongFiles(mount libraryMount, u UserConfig, songs []subsonicSong) (ma
 		return files, nil
 	}
 
-	logTrace(fmt.Sprintf("nd-rating-sync: locateSongFiles matching %d songs in library=%d", len(refs), mount.id))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: locateSongFiles matching %d songs in library=%d", len(refs), mount.id))
 	// No username: the per-user annotations are not needed, and without one
 	// the lookup is limited only to the libraries the plugin may access.
 	tracks, err := host.MatcherMatchSongs(refs, host.MatchOptions{})

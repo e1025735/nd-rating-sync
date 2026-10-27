@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/e1025735/nd-rating-sync/internal/logging"
 	scanner "github.com/e1025735/nd-rating-sync/internal/scanner"
 )
 
@@ -83,7 +84,7 @@ func loadConfigFrom(get configGetter) pluginConfig {
 		case "true", "1", "yes", "on", "":
 			// keep default true (or explicit true)
 		default:
-			logWarn(fmt.Sprintf(
+			logging.Warn(fmt.Sprintf(
 				"nd-rating-sync: invalid incremental_sync=%q – keeping default %v", v, cfg.IncrementalSync))
 		}
 	}
@@ -104,7 +105,7 @@ func loadConfigFrom(get configGetter) pluginConfig {
 		if err := json.Unmarshal([]byte(v), &rawLibs); err != nil {
 			// %q on err.Error() so a crafted config blob can't smuggle CR/LF
 			// or ANSI escapes through the json.Unmarshal echo into log sinks.
-			logWarn(fmt.Sprintf("nd-rating-sync: failed to parse libraries config: %q", err.Error()))
+			logging.Warn(fmt.Sprintf("nd-rating-sync: failed to parse libraries config: %q", err.Error()))
 		} else {
 			for _, rl := range rawLibs {
 				lc := libraryConfig{LibraryID: rl.LibraryID, LibraryName: rl.LibraryName}
@@ -125,7 +126,7 @@ func loadConfigFrom(get configGetter) pluginConfig {
 		}
 	}
 
-	logDebug(fmt.Sprintf(
+	logging.Debug(fmt.Sprintf(
 		"nd-rating-sync: config – libraries=%d sync_schedule=%q incremental=%v",
 		len(cfg.Libraries), cfg.SyncSchedule, cfg.IncrementalSync))
 	return cfg

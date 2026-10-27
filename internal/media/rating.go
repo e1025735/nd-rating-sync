@@ -5,6 +5,8 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	"github.com/e1025735/nd-rating-sync/internal/logging"
 )
 
 const (
@@ -68,7 +70,7 @@ the field — is an error: the caller reports the file as unreadable, so
 nothing is written and nothing is cleared.
 */
 func fmpsToStars(s string) (int, bool, error) {
-	logTrace(fmt.Sprintf("nd-rating-sync: fmpsToStars start s=%q", s))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: fmpsToStars start s=%q", s))
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, false, nil
@@ -88,10 +90,10 @@ func fmpsToStars(s string) (int, bool, error) {
 	scaled := f * 5
 	stars := int(math.Round(scaled))
 	if stars < 1 || math.Abs(scaled-float64(stars)) > fmpsWholeStarTolerance {
-		logTrace(fmt.Sprintf("nd-rating-sync: fmpsToStars stop, not a whole star s=%q", s))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: fmpsToStars stop, not a whole star s=%q", s))
 		return 0, false, nil
 	}
-	logTrace(fmt.Sprintf("nd-rating-sync: fmpsToStars done s=%q", s))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: fmpsToStars done s=%q", s))
 	return stars, true, nil
 }
 
@@ -115,7 +117,7 @@ func (r *ratings) set(stars int, sources ...string) {
 	for _, s := range sources {
 		r.found[s] = stars
 	}
-	logTrace(fmt.Sprintf("nd-rating-sync: found %d stars for %s in %q", stars, strings.Join(sources, " and "), r.path))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: found %d stars for %s in %q", stars, strings.Join(sources, " and "), r.path))
 }
 
 // parsed records the result of a converter that rejects invalid values: an
@@ -220,25 +222,25 @@ in FLAC / Ogg / Opus) where the value is just the star count as a string.
 Empty, "0", or out-of-range values are reported as unrated.
 */
 func ratingIntToStars(s string) (int, bool) {
-	logTrace(fmt.Sprintf("nd-rating-sync: ratingIntToStars start s=%q", s))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: ratingIntToStars start s=%q", s))
 	s = strings.TrimSpace(s)
 	if s == "" {
-		logTrace(fmt.Sprintf("nd-rating-sync: ratingIntToStars stop, zero s=%q", s))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: ratingIntToStars stop, zero s=%q", s))
 		return 0, false
 	}
 
 	n, err := strconv.Atoi(s)
 	if err != nil {
-		logTrace(fmt.Sprintf("nd-rating-sync: ratingIntToStars stop, error s=%q", s))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: ratingIntToStars stop, error s=%q", s))
 		return 0, false
 	}
 
 	if n < 1 || n > 5 {
-		logTrace(fmt.Sprintf("nd-rating-sync: ratingIntToStars stop, out of bounds s=%q", s))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: ratingIntToStars stop, out of bounds s=%q", s))
 		return 0, false
 	}
 
-	logTrace(fmt.Sprintf("nd-rating-sync: ratingIntToStars done s=%q", s))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: ratingIntToStars done s=%q", s))
 	return n, true
 }
 
@@ -249,25 +251,25 @@ FLAC / Ogg / Opus, and the RATE / rate freeform atom in M4A.
 Empty, half-star (10, 30 … 90) or out-of-range values are reported as unrated.
 */
 func ratingMusicBeeToStars(s string) (int, bool) {
-	logTrace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars start s=%q", s))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars start s=%q", s))
 	s = strings.TrimSpace(s)
 	if s == "" {
-		logTrace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars stop, zero s=%q", s))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars stop, zero s=%q", s))
 		return 0, false
 	}
 
 	n, err := strconv.Atoi(s)
 	if err != nil {
-		logTrace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars stop, error s=%q", s))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars stop, error s=%q", s))
 		return 0, false
 	}
 
 	if n < 0 || n > musicBee5Star {
-		logTrace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars stop, out of bounds s=%q", s))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars stop, out of bounds s=%q", s))
 		return 0, false
 	}
 
-	logTrace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars done s=%q", s))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars done s=%q", s))
 	// Compared as a number, so "060" or "+60" read like "60".
 	switch n {
 	case musicBee1Star:

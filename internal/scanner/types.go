@@ -6,6 +6,7 @@ import (
 	"time"
 
 	kvadapter "github.com/e1025735/nd-rating-sync/internal/adapter/kv_store"
+	"github.com/e1025735/nd-rating-sync/internal/logging"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 )
 
@@ -121,7 +122,7 @@ func parseCursor(payload string) (SyncCursor, bool) {
 	}
 	var c SyncCursor
 	if err := json.Unmarshal([]byte(payload), &c); err != nil {
-		logWarn(fmt.Sprintf(
+		logging.Warn(fmt.Sprintf(
 			"nd-rating-sync: malformed continuation payload (%q) – restarting sync from the beginning", err.Error()))
 		return SyncCursor{}, false
 	}
@@ -134,7 +135,7 @@ func parseCursor(payload string) (SyncCursor, bool) {
 func (c SyncCursor) marshal() string {
 	b, err := json.Marshal(c)
 	if err != nil {
-		logWarn(fmt.Sprintf("nd-rating-sync: failed to marshal continuation cursor: %q", err.Error()))
+		logging.Warn(fmt.Sprintf("nd-rating-sync: failed to marshal continuation cursor: %q", err.Error()))
 		return ""
 	}
 	return string(b)
@@ -161,7 +162,7 @@ func runSyncStepUntil(cfg PluginConfig, payload string, deadline time.Time) erro
 		var busy bool
 		cur, busy = startOrResumeSweep(cfg)
 		if busy {
-			logInfo("nd-rating-sync: a sweep is already in progress – skipping this run")
+			logging.Info("nd-rating-sync: a sweep is already in progress – skipping this run")
 			return nil
 		}
 	}
@@ -171,7 +172,7 @@ func runSyncStepUntil(cfg PluginConfig, payload string, deadline time.Time) erro
 	if done {
 		kvadapter.ClearSweepActive()
 		deleteStaleThresholds(cfg)
-		logInfo("nd-rating-sync: sync complete")
+		logging.Info("nd-rating-sync: sync complete")
 		return nil
 	}
 	delay := int32(0)
@@ -183,7 +184,7 @@ func runSyncStepUntil(cfg PluginConfig, payload string, deadline time.Time) erro
 		kvadapter.MarkSweepInterrupted(next.marshal())
 		return fmt.Errorf("failed to reschedule sync continuation: %w", err)
 	}
-	logInfo(fmt.Sprintf(
+	logging.Info(fmt.Sprintf(
 		"nd-rating-sync: time budget reached – rescheduled continuation in %ds (lib=%d user=%d offset=%d)",
 		delay, next.Lib, next.User, next.Offset))
 	return nil
@@ -201,9 +202,9 @@ func deleteStaleThresholds(cfg PluginConfig) {
 	deleted, err := kvadapter.DeleteStaleLastSynced(keep)
 	switch {
 	case err != nil:
-		logWarn(fmt.Sprintf("nd-rating-sync: removing the sync state of users and libraries no longer configured failed: %q", err.Error()))
+		logging.Warn(fmt.Sprintf("nd-rating-sync: removing the sync state of users and libraries no longer configured failed: %q", err.Error()))
 	case deleted > 0:
-		logInfo(fmt.Sprintf("nd-rating-sync: removed the sync state of %d user/library pairs no longer configured", deleted))
+		logging.Info(fmt.Sprintf("nd-rating-sync: removed the sync state of %d user/library pairs no longer configured", deleted))
 	}
 }
 
@@ -239,11 +240,11 @@ func startOrResumeSweep(cfg PluginConfig) (cur SyncCursor, busy bool) {
 	cur.LogReadsUntil = 0
 	where := describeCursor(cfg, cur)
 	if rec.Interrupted {
-		logInfo(fmt.Sprintf("nd-rating-sync: resuming the interrupted sync at %s", where))
+		logging.Info(fmt.Sprintf("nd-rating-sync: resuming the interrupted sync at %s", where))
 		return cur, false
 	}
 	cur.LogReadsUntil = pageEnd(cur.Offset)
-	logWarn(fmt.Sprintf(
+	logging.Warn(fmt.Sprintf(
 		"nd-rating-sync: the previous sync stopped unexpectedly at %s (the plugin crashed or exceeded Navidrome's 30 s limit) – resuming there and logging every file read up to song offset %d; if the plugin stops again, the last \"reading\" warning before the stop names the file that causes it",
 		where, cur.LogReadsUntil))
 	return cur, false

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/e1025735/nd-rating-sync/internal/logging"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 )
 
@@ -61,17 +62,17 @@ func cachedLibraryLastScan(cache map[string]libLookup, libraryID string) (time.T
 }
 
 func lastScanOf(libraryID string, get func(string) (*host.Library, error)) (time.Time, bool) {
-	logTrace(fmt.Sprintf("nd-rating-sync: libraryLastScan start lib=%q", libraryID))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: libraryLastScan start lib=%q", libraryID))
 	lib, err := get(libraryID)
 	if err != nil {
-		logDebug(fmt.Sprintf("nd-rating-sync: last scan of library %q unknown (%q) – gate open (will page)", libraryID, err.Error()))
+		logging.Debug(fmt.Sprintf("nd-rating-sync: last scan of library %q unknown (%q) – gate open (will page)", libraryID, err.Error()))
 		return time.Time{}, false
 	}
 	if lib.LastScanAt == 0 {
-		logTrace(fmt.Sprintf("nd-rating-sync: libraryLastScan stop, never scanned lib=%q", libraryID))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: libraryLastScan stop, never scanned lib=%q", libraryID))
 		return time.Time{}, false
 	}
-	logTrace(fmt.Sprintf("nd-rating-sync: libraryLastScan done lib=%q last_scan_at=%d", libraryID, lib.LastScanAt))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: libraryLastScan done lib=%q last_scan_at=%d", libraryID, lib.LastScanAt))
 	return time.Unix(lib.LastScanAt, 0), true
 }
 
@@ -115,7 +116,7 @@ func (a *accessCheck) load() {
 			a.users[strings.ToLower(u.UserName)] = true
 		}
 	} else {
-		logWarn(fmt.Sprintf("nd-rating-sync: cannot list the users granted to the plugin (%q) – usernames are not checked", err.Error()))
+		logging.Warn(fmt.Sprintf("nd-rating-sync: cannot list the users granted to the plugin (%q) – usernames are not checked", err.Error()))
 	}
 	if libs, err := host.LibraryGetAllLibraries(); err == nil {
 		a.libs = make(map[int32]bool, len(libs))
@@ -123,7 +124,7 @@ func (a *accessCheck) load() {
 			a.libs[l.ID] = true
 		}
 	} else {
-		logWarn(fmt.Sprintf("nd-rating-sync: cannot list the libraries assigned to the plugin (%q) – library IDs are not checked", err.Error()))
+		logging.Warn(fmt.Sprintf("nd-rating-sync: cannot list the libraries assigned to the plugin (%q) – library IDs are not checked", err.Error()))
 	}
 }
 

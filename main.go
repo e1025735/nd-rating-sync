@@ -13,6 +13,7 @@ import (
 	"fmt"
 
 	kvadapter "github.com/e1025735/nd-rating-sync/internal/adapter/kv_store"
+	"github.com/e1025735/nd-rating-sync/internal/logging"
 	scanner "github.com/e1025735/nd-rating-sync/internal/scanner"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 	"github.com/navidrome/navidrome/plugins/pdk/go/lifecycle"
@@ -41,7 +42,7 @@ const (
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
 
 func (ratingPlugin) OnInit() error {
-	logInfo("nd-rating-sync: initialising")
+	logging.Info("nd-rating-sync: initialising")
 	// A reload/restart kills any in-flight continuation chain. Mark it as
 	// interrupted rather than deleting it: the immediate-on-load sweep is not
 	// suppressed by a heartbeat from just before the restart, and it resumes
@@ -59,9 +60,9 @@ func purgeLegacyFileIndex() {
 	deleted, err := kvadapter.PurgeLegacyFileIndex()
 	switch {
 	case err != nil:
-		logWarn(fmt.Sprintf("nd-rating-sync: removing the old file index from the KV store failed: %q", err.Error()))
+		logging.Warn(fmt.Sprintf("nd-rating-sync: removing the old file index from the KV store failed: %q", err.Error()))
 	case deleted > 0:
-		logInfo(fmt.Sprintf("nd-rating-sync: removed %d entries of the old file index from the KV store", deleted))
+		logging.Info(fmt.Sprintf("nd-rating-sync: removed %d entries of the old file index from the KV store", deleted))
 	}
 }
 
@@ -73,7 +74,7 @@ func registerSchedules(cfg pluginConfig) error {
 	if _, err := host.SchedulerScheduleRecurring(cronExpr, "", scheduleID); err != nil {
 		return fmt.Errorf("failed to register recurring scan: %w", err)
 	}
-	logInfo(fmt.Sprintf("nd-rating-sync: scheduled recurring scan with cron %q", cronExpr))
+	logging.Info(fmt.Sprintf("nd-rating-sync: scheduled recurring scan with cron %q", cronExpr))
 
 	if _, err := host.SchedulerScheduleOneTime(0, "", scheduleIDImmediate); err != nil {
 		return fmt.Errorf("failed to queue immediate scan: %w", err)
@@ -85,6 +86,6 @@ func registerSchedules(cfg pluginConfig) error {
 // ─── Scheduler callback ───────────────────────────────────────────────────────
 
 func (ratingPlugin) OnCallback(req scheduler.SchedulerCallbackRequest) error {
-	logInfo(fmt.Sprintf("nd-rating-sync: running scheduled rating sync (scheduleId=%q)", req.ScheduleID))
+	logging.Info(fmt.Sprintf("nd-rating-sync: running scheduled rating sync (scheduleId=%q)", req.ScheduleID))
 	return scanner.RunSyncStep(loadConfig(), req.Payload)
 }

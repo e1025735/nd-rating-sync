@@ -5,6 +5,7 @@ import (
 	"time"
 
 	subsonicadapter "github.com/e1025735/nd-rating-sync/internal/adapter/subsonic"
+	"github.com/e1025735/nd-rating-sync/internal/logging"
 )
 
 type subsonicSong = subsonicadapter.SubsonicSong
@@ -15,18 +16,18 @@ type subsonicSong = subsonicadapter.SubsonicSong
 // line before the next stop names the file that crashes the plugin (the
 // plugin cannot log once it has died).
 func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.Time, file songFile, logRead bool, tally *syncTally) {
-	logTrace(fmt.Sprintf("nd-rating-sync: processSong start song=%q", s.ID))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: processSong start song=%q", s.ID))
 	if u.SkipAlreadyRated && s.UserRating > 0 {
-		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, already rated song=%q", s.ID))
-		logDebug(fmt.Sprintf(
+		logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, already rated song=%q", s.ID))
+		logging.Debug(fmt.Sprintf(
 			"nd-rating-sync: skipping %q – already rated (%d stars in Navidrome)", s.Title, s.UserRating))
 		tally.skippedRated++
 		return
 	}
 
 	if !file.found {
-		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, file not located song=%q", s.ID))
-		logWarn(fmt.Sprintf(
+		logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, file not located song=%q", s.ID))
+		logging.Warn(fmt.Sprintf(
 			"nd-rating-sync: cannot locate the file of %q (id=%q): %s – skipping",
 			s.Title, s.ID, file.reason))
 		tally.skippedUnreadable++
@@ -38,8 +39,8 @@ func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.
 	// a new, unrated song – so a song added since the last sweep is processed
 	// even when the file itself looks unchanged.
 	if !threshold.IsZero() && entry.MTime.Before(threshold) && !songAddedSince(s, threshold) {
-		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, no change song=%q", s.ID))
-		logDebug(fmt.Sprintf(
+		logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, no change song=%q", s.ID))
+		logging.Debug(fmt.Sprintf(
 			"nd-rating-sync: skipping %q – unchanged since last scan (mtime=%s)",
 			s.Title, entry.MTime.Format(time.RFC3339)))
 		tally.skippedUnchanged++
@@ -47,36 +48,36 @@ func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.
 	}
 
 	if logRead {
-		logWarn(fmt.Sprintf("nd-rating-sync: reading %q (song %q, id=%q) after an unexpected stop", entry.Path, s.Title, s.ID))
+		logging.Warn(fmt.Sprintf("nd-rating-sync: reading %q (song %q, id=%q) after an unexpected stop", entry.Path, s.Title, s.ID))
 	}
 	stars, result := extractStarsFromFile(entry.Path, s.Suffix, u.RatingTagOrder)
 	switch result {
 	case FileUnreadable:
-		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, file unreadable song=%q", s.ID))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, file unreadable song=%q", s.ID))
 		tally.skippedUnreadable++
 		return
 	case TagAbsent:
 		// Nothing to clear when Navidrome has no rating either.
 		if !u.ClearRatingIfUntagged || s.UserRating == 0 {
-			logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, no tag song=%q", s.ID))
+			logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, no tag song=%q", s.ID))
 			tally.skippedNoTag++
 			return
 		}
 		if cfg.DryRun {
-			logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, dry run would clear song=%q", s.ID))
-			logInfo(fmt.Sprintf("nd-rating-sync: [DRY RUN] would clear rating for %q (no tag found)", s.Title))
+			logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, dry run would clear song=%q", s.ID))
+			logging.Info(fmt.Sprintf("nd-rating-sync: [DRY RUN] would clear rating for %q (no tag found)", s.Title))
 			tally.wouldClear++
 			return
 		}
 		if err := subsonicadapter.SetRating(u.Username, s.ID, 0); err != nil {
-			logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, rating failed song=%q", s.ID))
-			logWarn(fmt.Sprintf(
+			logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, rating failed song=%q", s.ID))
+			logging.Warn(fmt.Sprintf(
 				"nd-rating-sync: setRating(0) failed for %q (id=%q): %q", s.Title, s.ID, err.Error()))
 			tally.errored++
 			return
 		}
-		logTrace(fmt.Sprintf("nd-rating-sync: processSong done, cleared song=%q", s.ID))
-		logDebug(fmt.Sprintf("nd-rating-sync: cleared rating for %q (no tag found)", s.Title))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: processSong done, cleared song=%q", s.ID))
+		logging.Debug(fmt.Sprintf("nd-rating-sync: cleared rating for %q (no tag found)", s.Title))
 		tally.cleared++
 		return
 	}
@@ -84,26 +85,26 @@ func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.
 	// The rating from the song listing is at most one page old; writing the
 	// same value again would only cost a host call and a database write.
 	if stars == s.UserRating {
-		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, same rating song=%q", s.ID))
-		logDebug(fmt.Sprintf("nd-rating-sync: skipping %q – Navidrome already has %d stars", s.Title, stars))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, same rating song=%q", s.ID))
+		logging.Debug(fmt.Sprintf("nd-rating-sync: skipping %q – Navidrome already has %d stars", s.Title, stars))
 		tally.skippedSameRating++
 		return
 	}
 	if cfg.DryRun {
-		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, dry run would rate song=%q", s.ID))
-		logInfo(fmt.Sprintf("nd-rating-sync: [DRY RUN] would rate %q → %d stars", s.Title, stars))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, dry run would rate song=%q", s.ID))
+		logging.Info(fmt.Sprintf("nd-rating-sync: [DRY RUN] would rate %q → %d stars", s.Title, stars))
 		tally.wouldRate++
 		return
 	}
 	if err := subsonicadapter.SetRating(u.Username, s.ID, stars); err != nil {
-		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, rating failed song=%q", s.ID))
-		logWarn(fmt.Sprintf(
+		logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, rating failed song=%q", s.ID))
+		logging.Warn(fmt.Sprintf(
 			"nd-rating-sync: setRating failed for %q (id=%q): %q", s.Title, s.ID, err.Error()))
 		tally.errored++
 		return
 	}
-	logTrace(fmt.Sprintf("nd-rating-sync: setRating done song=%q", s.ID))
-	logDebug(fmt.Sprintf("nd-rating-sync: rated %q → %d stars", s.Title, stars))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: setRating done song=%q", s.ID))
+	logging.Debug(fmt.Sprintf("nd-rating-sync: rated %q → %d stars", s.Title, stars))
 	tally.rated++
 }
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/e1025735/nd-rating-sync/internal/logging"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 )
 
@@ -62,7 +63,7 @@ func LoadLastSynced(libraryID, username, fingerprint string) time.Time {
 	key := KVKeyLastSynced(libraryID, username)
 	raw, found, err := host.KVStoreGet(key)
 	if err != nil {
-		kvLogWarn(fmt.Sprintf(
+		logging.Warn(fmt.Sprintf(
 			"nd-rating-sync: KVStoreGet(%q) failed: %q – falling back to full scan", key, err.Error()))
 		return time.Time{}
 	}
@@ -70,15 +71,15 @@ func LoadLastSynced(libraryID, username, fingerprint string) time.Time {
 		return time.Time{}
 	}
 	stamp, stored, hasFingerprint := strings.Cut(string(raw), " ")
-	kvLogTrace(fmt.Sprintf("nd-rating-sync: LoadLastSynced key=%q stamp=%q stored_fingerprint=%q want_fingerprint=%q", key, stamp, stored, fingerprint))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: LoadLastSynced key=%q stamp=%q stored_fingerprint=%q want_fingerprint=%q", key, stamp, stored, fingerprint))
 	if hasFingerprint && stored != fingerprint {
-		kvLogInfo(fmt.Sprintf(
+		logging.Info(fmt.Sprintf(
 			"nd-rating-sync: settings for %q changed since the last sync – running a full scan", key))
 		return time.Time{}
 	}
 	t, err := time.Parse(time.RFC3339Nano, stamp)
 	if err != nil {
-		kvLogWarn(fmt.Sprintf(
+		logging.Warn(fmt.Sprintf(
 			"nd-rating-sync: stored last-synced for %q is malformed (%q) – falling back to full scan", key, raw))
 		return time.Time{}
 	}
@@ -114,7 +115,7 @@ func SaveLastSynced(libraryID, username string, t time.Time, fingerprint string)
 	key := KVKeyLastSynced(libraryID, username)
 	value := []byte(t.UTC().Format(time.RFC3339Nano) + " " + fingerprint)
 	if err := host.KVStoreSet(key, value); err != nil {
-		kvLogWarn(fmt.Sprintf(
+		logging.Warn(fmt.Sprintf(
 			"nd-rating-sync: KVStoreSet(%q) failed: %q – the next sweep of this pair reads every file again", key, err.Error()))
 	}
 }
@@ -153,7 +154,7 @@ func (r SweepRecord) Active() bool {
 func LoadSweepRecord() (SweepRecord, bool) {
 	raw, found, err := host.KVStoreGet(KVKeySweepActive())
 	if err != nil {
-		kvLogWarn(fmt.Sprintf(
+		logging.Warn(fmt.Sprintf(
 			"nd-rating-sync: KVStoreGet(%q) failed: %q – assuming no sweep active", KVKeySweepActive(), err.Error()))
 		return SweepRecord{}, false
 	}
@@ -209,13 +210,13 @@ func saveSweepRecord(r SweepRecord) {
 		err = host.KVStoreSet(KVKeySweepActive(), value)
 	}
 	if err != nil {
-		kvLogWarn(fmt.Sprintf(
+		logging.Warn(fmt.Sprintf(
 			"nd-rating-sync: KVStoreSet(%q) failed: %q – overlapping sweeps are not prevented and a crashed sweep restarts from the beginning until it works again", KVKeySweepActive(), err.Error()))
 	}
 }
 
 func ClearSweepActive() {
 	if err := host.KVStoreDelete(KVKeySweepActive()); err != nil {
-		kvLogDebug(fmt.Sprintf("nd-rating-sync: KVStoreDelete(%q) failed: %q", KVKeySweepActive(), err.Error()))
+		logging.Debug(fmt.Sprintf("nd-rating-sync: KVStoreDelete(%q) failed: %q", KVKeySweepActive(), err.Error()))
 	}
 }
