@@ -51,7 +51,6 @@ func TestLocateTrack_FindsFileInsideMount(t *testing.T) {
 	f := locateTrack(m, "s1", trackAt("s1", 1, "Artist/01.mp3"))
 	require.True(t, f.found, f.reason)
 	assert.Equal(t, full, f.entry.Path)
-	assert.Equal(t, int64(5), f.entry.Size)
 	assert.True(t, when.Equal(f.entry.MTime), "mtime comes from the file itself")
 }
 

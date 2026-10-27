@@ -30,8 +30,6 @@ type jsonLibraryConfig struct {
 	Users       []jsonUserConfig `json:"users"`
 }
 
-var defaultTagOrder = scanner.DefaultTagOrder
-
 // parseTristateConfig parses a PDK string value into a tristate bool pointer.
 // "true"/"1"/"yes"/"on" → &true; "false"/"0"/"no"/"off" → &false; anything else → nil (not set).
 func parseTristateConfig(v string) *bool {
@@ -117,7 +115,7 @@ func loadConfigFrom(get configGetter) pluginConfig {
 						RatingTagOrder:        ru.RatingTagOrder,
 					}
 					if len(uc.RatingTagOrder) == 0 {
-						uc.RatingTagOrder = defaultTagOrder
+						uc.RatingTagOrder = scanner.DefaultTagOrder
 					}
 					lc.Users = append(lc.Users, uc)
 				}

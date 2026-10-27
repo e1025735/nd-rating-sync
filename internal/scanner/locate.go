@@ -82,7 +82,7 @@ func locateTrack(mount libraryMount, songID string, t *types.Track) songFile {
 	if err != nil {
 		return songFile{reason: fmt.Sprintf("cannot stat %q: %q", full, err.Error())}
 	}
-	return songFile{entry: FileEntry{Path: full, Size: info.Size(), MTime: info.ModTime()}, found: true}
+	return songFile{entry: FileEntry{Path: full, MTime: info.ModTime()}, found: true}
 }
 
 // relativeTrackPath turns a track path from the matcher into a clean,

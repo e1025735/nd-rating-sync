@@ -34,13 +34,13 @@ type SearchResult3 struct {
 	Song []SubsonicSong `json:"song"`
 }
 
+// SubsonicSong is one song of a search3 page. Its path field is left out on
+// purpose: Navidrome reports a made-up path, so the file is found through
+// the matcher instead.
 type SubsonicSong struct {
 	ID         string `json:"id"`
 	Title      string `json:"title"`
-	Artist     string `json:"artist"`
-	Path       string `json:"path"`       // Navidrome's reported path — synthesized/fake by default, NOT used to open the file
 	Suffix     string `json:"suffix"`     // file extension without the dot, e.g. "mp3"
-	Size       int64  `json:"size"`       // file size in bytes — used to locate the real file under the library mount
 	UserRating int    `json:"userRating"` // 0 = unrated, 1–5 = stars
 	Created    string `json:"created"`    // when Navidrome added the song (RFC3339) — kept as a string so an odd format can't fail the whole page
 }

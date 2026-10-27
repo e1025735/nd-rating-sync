@@ -60,8 +60,8 @@ func TestOnInit_MarksSweepInterrupted(t *testing.T) {
 	resetKVStoreMock(t)
 
 	running := `{"at":"2026-06-01T12:00:00Z","cursor":{"lib":0,"user":1,"off":700,"start":"2026-06-01T11:00:00Z"}}`
-	host.KVStoreMock.On("Get", kvadapter.KVKeySweepActive()).Return([]byte(running), true, nil)
-	host.KVStoreMock.On("Set", kvadapter.KVKeySweepActive(), mock.MatchedBy(func(v []byte) bool {
+	host.KVStoreMock.On("Get", kvadapter.SweepActiveKey).Return([]byte(running), true, nil)
+	host.KVStoreMock.On("Set", kvadapter.SweepActiveKey, mock.MatchedBy(func(v []byte) bool {
 		return strings.Contains(string(v), `"interrupted":true`) && strings.Contains(string(v), `"off":700`)
 	})).Return(nil).Once()
 	for _, prefix := range []string{"bucket", "libraryState", "config"} {

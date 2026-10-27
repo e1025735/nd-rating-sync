@@ -44,7 +44,7 @@ func TestSyncPair_UnreadableFileWithClear_DoesNotClearRating(t *testing.T) {
 	mockGetLibrary(1, t.TempDir())
 	mockMatch([]string{"song-1"}, nil)
 
-	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Size: 4242}}
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3"}}
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK(songs), nil)
@@ -75,10 +75,10 @@ func TestSyncPair_IncrementalFirstRun_ProcessesAllAndSavesThreshold(t *testing.T
 	allowSweepRecordWrites()
 
 	mount := t.TempDir()
-	path := writeFMPSFileAt(t, mount, "song.mp3", "0.6")
+	writeFMPSFileAt(t, mount, "song.mp3", "0.6")
 	mockGetLibrary(1, mount)
 	mockMatch([]string{"song-1"}, trackAt("song-1", 1, "song.mp3"))
-	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Size: fileSize(t, path)}}
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3"}}
 
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
@@ -119,7 +119,7 @@ func TestSyncPair_IncrementalSkipsUnchangedFile(t *testing.T) {
 	fileTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	require.NoError(t, os.Chtimes(path, fileTime, fileTime))
 
-	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Size: fileSize(t, path)}}
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3"}}
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK(songs), nil)
@@ -156,7 +156,7 @@ func TestSyncPair_IncrementalProcessesNewerFile(t *testing.T) {
 	fileTime := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	require.NoError(t, os.Chtimes(path, fileTime, fileTime))
 
-	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Size: fileSize(t, path)}}
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3"}}
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK(songs), nil)
@@ -193,7 +193,7 @@ func TestSyncPair_IncrementalDisabled_BypassesKV(t *testing.T) {
 	// File mtime far in the past — would be skipped if incremental were on.
 	require.NoError(t, os.Chtimes(path, time.Unix(0, 0), time.Unix(0, 0)))
 
-	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Size: fileSize(t, path)}}
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3"}}
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK(songs), nil)
@@ -216,10 +216,9 @@ func TestSyncPair_IncrementalDisabled_BypassesKV(t *testing.T) {
 
 // TestProcessPairChunk_StopsAtDeadlineMidPair proves the time budget yields
 // within a bounded number of songs after the deadline passes, and returns an
-// advanced cursor so the next call resumes where this one stopped. Yield
-// granularity is deadlineCheckEvery: we tolerate processing up to that many
-// songs past the deadline before yielding, so the test feeds 2× that many
-// already-rated songs.
+// advanced cursor so the next call resumes where this one stopped: the
+// deadline is checked after every song, so with it already past exactly one
+// of the two songs is processed.
 //
 // Calls processPairChunk directly with an empty mount: every song is skipped
 // on SkipAlreadyRated, so no file is ever located.
@@ -227,7 +226,7 @@ func TestProcessPairChunk_StopsAtDeadlineMidPair(t *testing.T) {
 	resetSubsonicMock(t)
 	allowSweepRecordWrites()
 
-	songs := make([]subsonicSong, 2*deadlineCheckEvery)
+	songs := make([]subsonicSong, 2)
 	for i := range songs {
 		songs[i] = subsonicSong{ID: fmt.Sprintf("%d", i+1), Title: "S", UserRating: 5}
 	}
@@ -239,11 +238,10 @@ func TestProcessPairChunk_StopsAtDeadlineMidPair(t *testing.T) {
 	user := UserConfig{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: DefaultTagOrder}
 
 	deadline := time.Now().Add(-time.Second) // already past
-	next, pairDone := processPairChunk(lib, user, PluginConfig{}, SyncCursor{}, time.Time{}, deadline, libraryMount{})
+	next, pairDone := processPairChunk(pairRun{lib: lib, user: user}, SyncCursor{}, deadline)
 
 	assert.False(t, pairDone, "deadline hit mid-pair → pair not done")
-	assert.Equal(t, deadlineCheckEvery, next.Offset,
-		"yields exactly at the deadline-check boundary (deadlineCheckEvery songs)")
+	assert.Equal(t, 1, next.Offset, "yields after the first song")
 	host.SubsonicAPIMock.AssertExpectations(t)
 }
 
@@ -296,7 +294,7 @@ func TestRunSyncChunk_ReadsFileLocatedByMatcher(t *testing.T) {
 	mockGetLibrary(1, mount)
 	mockMatch([]string{"song-1"}, trackAt("song-1", 1, "Artist/Album/01 - Song.mp3"))
 
-	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3", Size: fileSize(t, path)}}
+	songs := []subsonicSong{{ID: "song-1", Title: "Test", Suffix: "mp3"}}
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK(songs), nil)
@@ -726,8 +724,8 @@ func TestProcessPairChunk_StoresPositionAtEveryPage(t *testing.T) {
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
 	).Return(subsonicOK([]subsonicSong{{ID: "a1", UserRating: 5}}), nil)
 
-	_, done := processPairChunk(LibraryConfig{LibraryID: "1"}, UserConfig{Username: "alice", SkipAlreadyRated: true},
-		PluginConfig{}, SyncCursor{}, time.Time{}, time.Now().Add(time.Hour), libraryMount{})
+	_, done := processPairChunk(pairRun{lib: LibraryConfig{LibraryID: "1"}, user: UserConfig{Username: "alice", SkipAlreadyRated: true}},
+		SyncCursor{}, time.Now().Add(time.Hour))
 	assert.True(t, done)
 	host.KVStoreMock.AssertExpectations(t)
 }
@@ -745,10 +743,10 @@ func TestProcessPairChunk_FileReadLoggingStopsAfterTheCrashPage(t *testing.T) {
 	lib, user := LibraryConfig{LibraryID: "1"}, UserConfig{Username: "alice", SkipAlreadyRated: true}
 	past := time.Now().Add(-time.Second) // yields after one song
 
-	next, _ := processPairChunk(lib, user, PluginConfig{}, SyncCursor{LogReadsUntil: 500}, time.Time{}, past, libraryMount{})
+	next, _ := processPairChunk(pairRun{lib: lib, user: user}, SyncCursor{LogReadsUntil: 500}, past)
 	assert.Equal(t, 500, next.LogReadsUntil, "still on the crash page")
 
-	next, _ = processPairChunk(lib, user, PluginConfig{}, SyncCursor{LogReadsUntil: 1}, time.Time{}, past, libraryMount{})
+	next, _ = processPairChunk(pairRun{lib: lib, user: user}, SyncCursor{LogReadsUntil: 1}, past)
 	assert.Equal(t, 0, next.LogReadsUntil, "past the crash page: normal again")
 }
 
@@ -816,8 +814,7 @@ func TestAccessCheck_FailsOpen(t *testing.T) {
 	host.LibraryMock.ExpectedCalls = nil
 	allowAccessLookupsToFail()
 
-	a := &accessCheck{}
-	assert.Empty(t, a.problem("1", "anyone"))
+	assert.Empty(t, newHostLookups().problem("1", "anyone"))
 }
 
 // A completed sweep removes the thresholds of pairs no longer configured.

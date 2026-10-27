@@ -32,9 +32,9 @@ type PluginConfig struct {
 	Libraries                    []LibraryConfig
 }
 
+// FileEntry is a song's file inside the library mount.
 type FileEntry struct {
 	Path  string
-	Size  int64
 	MTime time.Time
 }
 
@@ -66,11 +66,12 @@ type SyncCursor struct {
 // nextPair moves the cursor to the next user of the current library and
 // clears everything that belongs to the pair it leaves.
 func (c *SyncCursor) nextPair() {
-	c.User++
-	c.Offset = 0
-	c.PairStart = ""
-	c.Retry = 0
-	c.LogReadsUntil = 0
+	*c = SyncCursor{Lib: c.Lib, User: c.User + 1}
+}
+
+// nextLibrary moves the cursor to the first user of the next library.
+func (c *SyncCursor) nextLibrary() {
+	*c = SyncCursor{Lib: c.Lib + 1}
 }
 
 // pageEnd is the offset right after the song page that holds offset.

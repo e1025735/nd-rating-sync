@@ -65,7 +65,6 @@ func TestProcessSong_UnlocatedFileCountsUnreadable(t *testing.T) {
 		ID:     "song-2",
 		Title:  "Missing file",
 		Suffix: "mp3",
-		Size:   123,
 	}
 
 	processSong(
@@ -87,8 +86,7 @@ func TestProcessSong_ClearsRatingWhenUntaggedAndAllowed(t *testing.T) {
 
 	dir := t.TempDir()
 	path := writeEmptyID3MP3At(t, dir, "song.mp3")
-	size := fileSize(t, path)
-	file := songFile{entry: FileEntry{Path: path, Size: size, MTime: time.Now()}, found: true}
+	file := songFile{entry: FileEntry{Path: path, MTime: time.Now()}, found: true}
 
 	host.SubsonicAPIMock.On("Call", "setRating?id=song-3&rating=0&u=alice").
 		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
@@ -98,7 +96,6 @@ func TestProcessSong_ClearsRatingWhenUntaggedAndAllowed(t *testing.T) {
 		ID:         "song-3",
 		Title:      "Needs clearing",
 		Suffix:     "mp3",
-		Size:       size,
 		UserRating: 3,
 	}
 
@@ -125,15 +122,13 @@ func TestProcessSong_DryRunWouldRateTaggedFile(t *testing.T) {
 
 	dir := t.TempDir()
 	path := writeFMPSFileAt(t, dir, "song.mp3", "0.6")
-	size := fileSize(t, path)
-	file := songFile{entry: FileEntry{Path: path, Size: size, MTime: time.Now()}, found: true}
+	file := songFile{entry: FileEntry{Path: path, MTime: time.Now()}, found: true}
 
 	tally := &syncTally{}
 	song := subsonicSong{
 		ID:     "song-4",
 		Title:  "Would rate",
 		Suffix: "mp3",
-		Size:   size,
 	}
 
 	processSong(
@@ -157,16 +152,14 @@ func TestProcessSong_IncrementalProcessesNewlyAddedSongWithOldMTime(t *testing.T
 
 	dir := t.TempDir()
 	path := writeFMPSFileAt(t, dir, "renamed.mp3", "0.6")
-	size := fileSize(t, path)
 	threshold := time.Now().Add(-time.Hour)
-	file := songFile{entry: FileEntry{Path: path, Size: size, MTime: threshold.Add(-24 * time.Hour)}, found: true}
+	file := songFile{entry: FileEntry{Path: path, MTime: threshold.Add(-24 * time.Hour)}, found: true}
 
 	tally := &syncTally{}
 	song := subsonicSong{
 		ID:      "song-5",
 		Title:   "Renamed",
 		Suffix:  "mp3",
-		Size:    size,
 		Created: threshold.Add(time.Minute).UTC().Format(time.RFC3339Nano),
 	}
 
@@ -189,11 +182,11 @@ func TestProcessSong_IncrementalSkipsOldSongWithOldMTime(t *testing.T) {
 
 	threshold := time.Now().Add(-time.Hour)
 	old := threshold.Add(-24 * time.Hour)
-	file := songFile{entry: FileEntry{Path: "/nonexistent.mp3", Size: 42, MTime: old}, found: true}
+	file := songFile{entry: FileEntry{Path: "/nonexistent.mp3", MTime: old}, found: true}
 
 	for _, created := range []string{"", "not-a-date", old.UTC().Format(time.RFC3339Nano)} {
 		tally := &syncTally{}
-		song := subsonicSong{ID: "song-6", Title: "Old", Suffix: "mp3", Size: 42, Created: created}
+		song := subsonicSong{ID: "song-6", Title: "Old", Suffix: "mp3", Created: created}
 
 		processSong(
 			UserConfig{Username: "alice", RatingTagOrder: DefaultTagOrder},

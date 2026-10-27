@@ -120,9 +120,8 @@ func SaveLastSynced(libraryID, username string, t time.Time, fingerprint string)
 	}
 }
 
-func KVKeySweepActive() string {
-	return "sweep-active"
-}
+// SweepActiveKey is the KV key of the sweep record (see SweepRecord).
+const SweepActiveKey = "sweep-active"
 
 // SweepRecord is the value of the sweep-active key: the heartbeat of a
 // running sweep plus where it was last known to be.
@@ -152,10 +151,10 @@ func (r SweepRecord) Active() bool {
 // no record, an unreadable one — reports false, so a sync is never blocked by
 // it. A plain timestamp written by older versions is a record without cursor.
 func LoadSweepRecord() (SweepRecord, bool) {
-	raw, found, err := host.KVStoreGet(KVKeySweepActive())
+	raw, found, err := host.KVStoreGet(SweepActiveKey)
 	if err != nil {
 		logging.Warn(fmt.Sprintf(
-			"nd-rating-sync: KVStoreGet(%q) failed: %q – assuming no sweep active", KVKeySweepActive(), err.Error()))
+			"nd-rating-sync: KVStoreGet(%q) failed: %q – assuming no sweep active", SweepActiveKey, err.Error()))
 		return SweepRecord{}, false
 	}
 	if !found || len(raw) == 0 {
@@ -207,16 +206,16 @@ func rawCursor(cursor string) json.RawMessage {
 func saveSweepRecord(r SweepRecord) {
 	value, err := json.Marshal(r)
 	if err == nil {
-		err = host.KVStoreSet(KVKeySweepActive(), value)
+		err = host.KVStoreSet(SweepActiveKey, value)
 	}
 	if err != nil {
 		logging.Warn(fmt.Sprintf(
-			"nd-rating-sync: KVStoreSet(%q) failed: %q – overlapping sweeps are not prevented and a crashed sweep restarts from the beginning until it works again", KVKeySweepActive(), err.Error()))
+			"nd-rating-sync: KVStoreSet(%q) failed: %q – overlapping sweeps are not prevented and a crashed sweep restarts from the beginning until it works again", SweepActiveKey, err.Error()))
 	}
 }
 
 func ClearSweepActive() {
-	if err := host.KVStoreDelete(KVKeySweepActive()); err != nil {
-		logging.Debug(fmt.Sprintf("nd-rating-sync: KVStoreDelete(%q) failed: %q", KVKeySweepActive(), err.Error()))
+	if err := host.KVStoreDelete(SweepActiveKey); err != nil {
+		logging.Debug(fmt.Sprintf("nd-rating-sync: KVStoreDelete(%q) failed: %q", SweepActiveKey, err.Error()))
 	}
 }

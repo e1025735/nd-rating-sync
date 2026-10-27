@@ -2,8 +2,8 @@
 // from each music file and writes it back into Navidrome via the Subsonic
 // setRating API. Supported containers: MP3, FLAC, Ogg-Vorbis, Opus, WAV,
 // DSF, M4A/AAC, and WMA. Supported rating sources (ratingTagOrder): WMP,
-// iTunes, MediaMonkey, foobar2000 and MusicBee — see CLAUDE.md, "Supported
-// tag formats", for the tag each one writes in each container.
+// iTunes, MediaMonkey, foobar2000, MusicBee and FMPS — see CLAUDE.md,
+// "Supported tag formats", for the tag each one writes in each container.
 //
 // Build: tinygo build -o plugin.wasm -target wasip1 -buildmode=c-shared .
 // Package: zip -j nd-rating-sync.ndp manifest.json plugin.wasm

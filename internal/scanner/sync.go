@@ -9,10 +9,17 @@ import (
 	"github.com/e1025735/nd-rating-sync/internal/logging"
 )
 
-const (
-	songPageSize       = subsonicadapter.SongPageSize
-	deadlineCheckEvery = 1
-)
+const songPageSize = subsonicadapter.SongPageSize
+
+// pairRun is the (library, user) pair processPairChunk works on, with what
+// runSyncChunk resolved for it.
+type pairRun struct {
+	lib       LibraryConfig
+	user      UserConfig
+	cfg       PluginConfig
+	mount     libraryMount
+	threshold time.Time // incremental threshold; zero reads every file
+}
 
 // runSyncChunk processes as many songs as fit before deadline, starting from
 // cur, and returns the position to resume at plus whether the whole sweep is
@@ -27,12 +34,7 @@ const (
 // after maxPairAttempts failed attempts – so a chain of continuations always
 // terminates.
 func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCursor, bool) {
-	// LibraryGetLibrary results, shared by the LastScanAt gate and the mount
-	// lookup. Globals do not persist across callbacks, so the cache is
-	// intentionally scoped to one invocation.
-	libCache := map[string]libLookup{}
-	// The users and libraries the plugin may access, read on first use.
-	access := &accessCheck{}
+	lookups := newHostLookups()
 
 	logging.Trace(fmt.Sprintf("nd-rating-sync: runSyncChunk start lib=%d user=%d offset=%d deadline=%s",
 		cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
@@ -40,11 +42,7 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 		// Skip exhausted users/libraries. Also tolerates indices that point
 		// past the end after a config change between continuations.
 		for cur.Lib < len(cfg.Libraries) && cur.User >= len(cfg.Libraries[cur.Lib].Users) {
-			cur.Lib++
-			cur.User = 0
-			cur.Offset = 0
-			cur.PairStart = ""
-			cur.Retry = 0
+			cur.nextLibrary()
 		}
 		if cur.Lib >= len(cfg.Libraries) {
 			logging.Trace(fmt.Sprintf("nd-rating-sync: runSyncChunk stop, sweep complete lib=%d user=%d offset=%d deadline=%s",
@@ -72,7 +70,7 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 		// and skipped at once, instead of failing the song listing three
 		// times 30 s apart on every sweep.
 		if cur.Offset == 0 && cur.PairStart == "" {
-			if reason := access.problem(lib.LibraryID, u.Username); reason != "" {
+			if reason := lookups.problem(lib.LibraryID, u.Username); reason != "" {
 				logging.Warn(fmt.Sprintf("nd-rating-sync: skipping user=%q library=%q – %s", u.Username, lib.LibraryID, reason))
 				cur.nextPair()
 				continue
@@ -94,7 +92,7 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 		// nothing was processed, so it stays pinned to the last real sweep and a
 		// later scan still re-processes the files that changed in it.
 		if cur.Offset == 0 && cur.PairStart == "" && cfg.IncrementalSync && !threshold.IsZero() {
-			if scanned, ok := cachedLibraryLastScan(libCache, lib.LibraryID); ok && scanned.Before(threshold) {
+			if scanned, ok := lookups.lastScan(lib.LibraryID); ok && scanned.Before(threshold) {
 				logging.Info(fmt.Sprintf(
 					"nd-rating-sync: skipping user=%q library=%q – library unchanged since last sync (last_scan=%s threshold=%s)",
 					u.Username, lib.LibraryID, scanned.UTC().Format(time.RFC3339), threshold.UTC().Format(time.RFC3339)))
@@ -107,7 +105,7 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 		// library the plugin cannot read is skipped WITHOUT saving the
 		// threshold – nothing was processed, so the next run retries from the
 		// same baseline.
-		mount, err := resolveMount(libCache, lib.LibraryID)
+		mount, err := lookups.mount(lib.LibraryID)
 		if err != nil {
 			logging.Warn(fmt.Sprintf(
 				"nd-rating-sync: skipping user=%q library=%q – cannot access its files: %q", u.Username, lib.LibraryID, err.Error()))
@@ -119,7 +117,7 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 			cur.PairStart = time.Now().UTC().Format(time.RFC3339Nano)
 		}
 
-		next, pairDone := processPairChunk(lib, u, cfg, cur, threshold, deadline, mount)
+		next, pairDone := processPairChunk(pairRun{lib: lib, user: u, cfg: cfg, mount: mount, threshold: threshold}, cur, deadline)
 		cur = next
 		if !pairDone {
 			if cur.Retry >= maxPairAttempts {
@@ -144,8 +142,7 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 	}
 }
 
-// processPairChunk processes songs for a single (library, user) pair starting
-// at cur.Offset until the deadline elapses or the pair's songs are exhausted.
+// processPairChunk processes songs for the pair p starting at cur.Offset until the deadline elapses or the pair's songs are exhausted.
 // It returns the advanced cursor and whether the pair is complete. The deadline
 // is checked after each processed song, so at least one song is handled per
 // call (provided the deadline had not already passed on entry, which
@@ -163,7 +160,8 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 // startOrResumeSweep). While cur.LogReadsUntil is set, every file read up to
 // that offset is logged as a warning first; once the cursor passes it,
 // logging is normal again.
-func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur SyncCursor, threshold time.Time, deadline time.Time, mount libraryMount) (SyncCursor, bool) {
+func processPairChunk(p pairRun, cur SyncCursor, deadline time.Time) (SyncCursor, bool) {
+	lib, u, cfg := p.lib, p.user, p.cfg
 	logging.Trace(fmt.Sprintf("nd-rating-sync: processPairChunk start lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
 	if cfg.DryRun {
 		logging.Info(fmt.Sprintf(
@@ -177,9 +175,10 @@ func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur Syn
 	}
 	logging.Info(fmt.Sprintf(
 		"nd-rating-sync: syncing user=%q library=%q from offset=%d skip_already_rated=%v clear_rating_if_untagged=%v dry_run=%v tag_order=%q incremental_threshold=%s",
-		u.Username, lib.LibraryID, cur.Offset, u.SkipAlreadyRated, u.ClearRatingIfUntagged, cfg.DryRun, u.RatingTagOrder, formatThreshold(threshold)))
+		u.Username, lib.LibraryID, cur.Offset, u.SkipAlreadyRated, u.ClearRatingIfUntagged, cfg.DryRun, u.RatingTagOrder, formatThreshold(p.threshold)))
 
 	var tally syncTally
+	defer func() { tally.log(u.Username, lib.LibraryID, cfg.DryRun) }()
 	for {
 		pageOffset := (cur.Offset / songPageSize) * songPageSize
 		skip := cur.Offset - pageOffset
@@ -191,7 +190,6 @@ func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur Syn
 			logging.Warn(fmt.Sprintf(
 				"nd-rating-sync: fetching songs for user=%q library=%q at offset=%d failed (attempt %d of %d): %q",
 				u.Username, lib.LibraryID, pageOffset, cur.Retry, maxPairAttempts, err.Error()))
-			tally.log(u.Username, lib.LibraryID, cfg.DryRun)
 			return cur, false
 		}
 
@@ -200,26 +198,24 @@ func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur Syn
 		if skip >= len(page) {
 			if !more {
 				logging.Trace(fmt.Sprintf("nd-rating-sync: processPairChunk stop, no more songs lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
-				tally.log(u.Username, lib.LibraryID, cfg.DryRun)
 				return cur, true
 			}
 			cur.Offset = pageOffset + songPageSize
 			continue
 		}
 
-		files, err := locateSongFiles(mount, u, page[skip:])
+		files, err := locateSongFiles(p.mount, u, page[skip:])
 		if err != nil {
 			cur.Retry++
 			logging.Warn(fmt.Sprintf(
 				"nd-rating-sync: locating the files of user=%q library=%q at offset=%d failed (attempt %d of %d): %q",
 				u.Username, lib.LibraryID, cur.Offset, cur.Retry, maxPairAttempts, err.Error()))
-			tally.log(u.Username, lib.LibraryID, cfg.DryRun)
 			return cur, false
 		}
 
 		for i := skip; i < len(page); i++ {
 			logRead := pageOffset+i < cur.LogReadsUntil
-			processSong(u, cfg, page[i], threshold, files[page[i].ID], logRead, &tally)
+			processSong(u, cfg, page[i], p.threshold, files[page[i].ID], logRead, &tally)
 			cur.Offset = pageOffset + i + 1
 			cur.Retry = 0
 			if cur.LogReadsUntil > 0 && cur.Offset >= cur.LogReadsUntil {
@@ -228,20 +224,16 @@ func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur Syn
 					u.Username, lib.LibraryID, cur.LogReadsUntil))
 				cur.LogReadsUntil = 0
 			}
-			// Check the deadline only every deadlineCheckEvery songs so the
-			// hot loop does not hammer the WASI clock import. Reducing the
-			// rate also reduces the surface area for the host-side clock
-			// panic we have seen in production (see callBudget docs).
-			if (i-skip+1)%deadlineCheckEvery == 0 && time.Now().After(deadline) {
+			// Checked after every song: one slow song must not carry the
+			// callback far past the budget (see callBudget).
+			if time.Now().After(deadline) {
 				logging.Trace(fmt.Sprintf("nd-rating-sync: processPairChunk stop, deadline reached lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
-				tally.log(u.Username, lib.LibraryID, cfg.DryRun)
 				return cur, false
 			}
 		}
 
 		if !more {
 			logging.Trace(fmt.Sprintf("nd-rating-sync: processPairChunk done lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
-			tally.log(u.Username, lib.LibraryID, cfg.DryRun)
 			return cur, true
 		}
 		// Page was full; cur.Offset is already at the next page boundary.

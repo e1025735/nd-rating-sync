@@ -41,9 +41,15 @@ func TestSyncCursorMarshal(t *testing.T) {
 }
 
 func TestSyncCursorNextPair_ClearsPairFields(t *testing.T) {
-	cur := SyncCursor{Lib: 1, User: 2, Offset: 7, PairStart: "2026-06-02T18:00:00Z", Retry: 2}
+	cur := SyncCursor{Lib: 1, User: 2, Offset: 7, PairStart: "2026-06-02T18:00:00Z", Retry: 2, LogReadsUntil: 500}
 	cur.nextPair()
 	assert.Equal(t, SyncCursor{Lib: 1, User: 3}, cur)
+}
+
+func TestSyncCursorNextLibrary_ClearsPairFields(t *testing.T) {
+	cur := SyncCursor{Lib: 1, User: 2, Offset: 7, PairStart: "2026-06-02T18:00:00Z", Retry: 2, LogReadsUntil: 500}
+	cur.nextLibrary()
+	assert.Equal(t, SyncCursor{Lib: 2}, cur)
 }
 
 // Changing what a sweep writes must change the fingerprint stored with the

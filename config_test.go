@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	scanner "github.com/e1025735/nd-rating-sync/internal/scanner"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -139,7 +140,7 @@ func TestLoadConfig_TagOrderDefaultWhenEmpty(t *testing.T) {
 	}
 	raw, _ := json.Marshal(libs)
 	cfg := loadConfigFrom(mapGetter(map[string]string{"libraries": string(raw)}))
-	assert.Equal(t, defaultTagOrder, cfg.Libraries[0].Users[0].RatingTagOrder)
+	assert.Equal(t, scanner.DefaultTagOrder, cfg.Libraries[0].Users[0].RatingTagOrder)
 }
 
 func TestLoadConfig_InvalidLibrariesJSONKeepsEmptySlice(t *testing.T) {

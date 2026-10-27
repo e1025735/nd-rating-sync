@@ -158,7 +158,7 @@ func TestLoadLastSynced_FingerprintMismatchFallsBackToZero(t *testing.T) {
 
 func TestSweepInProgress_FreshHeartbeatIsActive(t *testing.T) {
 	resetKVStoreMock(t)
-	host.KVStoreMock.On("Get", KVKeySweepActive()).
+	host.KVStoreMock.On("Get", SweepActiveKey).
 		Return([]byte(time.Now().UTC().Format(time.RFC3339Nano)), true, nil)
 	assert.True(t, sweepInProgress(), "a recent heartbeat means a sweep is in progress")
 }
@@ -166,39 +166,39 @@ func TestSweepInProgress_FreshHeartbeatIsActive(t *testing.T) {
 func TestSweepInProgress_StaleHeartbeatFailsOpen(t *testing.T) {
 	resetKVStoreMock(t)
 	stale := time.Now().Add(-2 * SweepStaleAfter).UTC().Format(time.RFC3339Nano)
-	host.KVStoreMock.On("Get", KVKeySweepActive()).Return([]byte(stale), true, nil)
+	host.KVStoreMock.On("Get", SweepActiveKey).Return([]byte(stale), true, nil)
 	assert.False(t, sweepInProgress(), "a heartbeat older than SweepStaleAfter is not active")
 }
 
 func TestSweepInProgress_FutureHeartbeatFailsOpen(t *testing.T) {
 	resetKVStoreMock(t)
 	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
-	host.KVStoreMock.On("Get", KVKeySweepActive()).Return([]byte(future), true, nil)
+	host.KVStoreMock.On("Get", SweepActiveKey).Return([]byte(future), true, nil)
 	assert.False(t, sweepInProgress(), "future-dated heartbeat must fail open")
 }
 
 func TestSweepInProgress_MalformedFailsOpen(t *testing.T) {
 	resetKVStoreMock(t)
-	host.KVStoreMock.On("Get", KVKeySweepActive()).Return([]byte("not a timestamp"), true, nil)
+	host.KVStoreMock.On("Get", SweepActiveKey).Return([]byte("not a timestamp"), true, nil)
 	assert.False(t, sweepInProgress(), "a malformed heartbeat is treated as not active")
 }
 
 func TestSweepInProgress_MissingFailsOpen(t *testing.T) {
 	resetKVStoreMock(t)
-	host.KVStoreMock.On("Get", KVKeySweepActive()).Return([]byte(nil), false, nil)
+	host.KVStoreMock.On("Get", SweepActiveKey).Return([]byte(nil), false, nil)
 	assert.False(t, sweepInProgress(), "no heartbeat → no sweep in progress")
 }
 
 func TestSweepInProgress_KVErrorFailsOpen(t *testing.T) {
 	resetKVStoreMock(t)
-	host.KVStoreMock.On("Get", KVKeySweepActive()).
+	host.KVStoreMock.On("Get", SweepActiveKey).
 		Return([]byte(nil), false, errors.New("kvstore unavailable"))
 	assert.False(t, sweepInProgress(), "KV error must not block a sync")
 }
 
 func TestMarkSweepActive_KVErrorIsSwallowed(t *testing.T) {
 	resetKVStoreMock(t)
-	host.KVStoreMock.On("Set", KVKeySweepActive(), mock.Anything).
+	host.KVStoreMock.On("Set", SweepActiveKey, mock.Anything).
 		Return(errors.New("storage limit exceeded: would use 1.0 MB of 1.0 MB allowed"))
 
 	MarkSweepActive("")
@@ -206,7 +206,7 @@ func TestMarkSweepActive_KVErrorIsSwallowed(t *testing.T) {
 
 func TestLoadSweepRecord_ReadsCursorAndOldTimestampFormat(t *testing.T) {
 	resetKVStoreMock(t)
-	host.KVStoreMock.On("Get", KVKeySweepActive()).
+	host.KVStoreMock.On("Get", SweepActiveKey).
 		Return([]byte(`{"at":"2026-06-01T12:00:00Z","cursor":{"lib":1,"off":700}}`), true, nil).Once()
 	r, found := LoadSweepRecord()
 	require.True(t, found)
@@ -214,7 +214,7 @@ func TestLoadSweepRecord_ReadsCursorAndOldTimestampFormat(t *testing.T) {
 	assert.False(t, r.Interrupted)
 
 	// Versions <= 0.23 stored a bare timestamp: a record without cursor.
-	host.KVStoreMock.On("Get", KVKeySweepActive()).Return([]byte("2026-06-01T12:00:00Z"), true, nil).Once()
+	host.KVStoreMock.On("Get", SweepActiveKey).Return([]byte("2026-06-01T12:00:00Z"), true, nil).Once()
 	r, found = LoadSweepRecord()
 	require.True(t, found)
 	assert.Empty(t, r.Cursor)
@@ -228,7 +228,7 @@ func TestSweepRecord_InterruptedIsNeverActive(t *testing.T) {
 
 func TestMarkSweepActive_StoresCursor(t *testing.T) {
 	resetKVStoreMock(t)
-	host.KVStoreMock.On("Set", KVKeySweepActive(), mock.MatchedBy(func(v []byte) bool {
+	host.KVStoreMock.On("Set", SweepActiveKey, mock.MatchedBy(func(v []byte) bool {
 		var r SweepRecord
 		return json.Unmarshal(v, &r) == nil && string(r.Cursor) == `{"off":3}` && !r.Interrupted && r.Active()
 	})).Return(nil).Once()
@@ -239,9 +239,9 @@ func TestMarkSweepActive_StoresCursor(t *testing.T) {
 
 func TestMarkSweepInterrupted_KeepsStoredCursor(t *testing.T) {
 	resetKVStoreMock(t)
-	host.KVStoreMock.On("Get", KVKeySweepActive()).
+	host.KVStoreMock.On("Get", SweepActiveKey).
 		Return([]byte(`{"at":"2026-06-01T12:00:00Z","cursor":{"off":700}}`), true, nil)
-	host.KVStoreMock.On("Set", KVKeySweepActive(), mock.MatchedBy(func(v []byte) bool {
+	host.KVStoreMock.On("Set", SweepActiveKey, mock.MatchedBy(func(v []byte) bool {
 		var r SweepRecord
 		return json.Unmarshal(v, &r) == nil && string(r.Cursor) == `{"off":700}` && r.Interrupted
 	})).Return(nil).Once()
@@ -252,7 +252,7 @@ func TestMarkSweepInterrupted_KeepsStoredCursor(t *testing.T) {
 
 func TestMarkSweepInterrupted_NothingToMark(t *testing.T) {
 	resetKVStoreMock(t)
-	host.KVStoreMock.On("Get", KVKeySweepActive()).Return([]byte(nil), false, nil)
+	host.KVStoreMock.On("Get", SweepActiveKey).Return([]byte(nil), false, nil)
 
 	MarkSweepInterrupted("")
 	host.KVStoreMock.AssertNotCalled(t, "Set", mock.Anything, mock.Anything)

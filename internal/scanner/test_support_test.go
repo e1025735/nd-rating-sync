@@ -29,7 +29,7 @@ const (
 
 var sweepStaleAfter = kvadapter.SweepStaleAfter
 
-func kvKeySweepActive() string { return kvadapter.KVKeySweepActive() }
+func kvKeySweepActive() string { return kvadapter.SweepActiveKey }
 
 func resetKVStoreMock(t *testing.T) {
 	t.Helper()
@@ -254,7 +254,7 @@ func mockGetLibrary(libID int32, mountPoint string) {
 // sweep record at every page, and a completed sweep look for stale
 // thresholds, without each test spelling it out.
 func allowSweepRecordWrites() {
-	host.KVStoreMock.On("Set", kvadapter.KVKeySweepActive(), mock.Anything).Return(nil).Maybe()
+	host.KVStoreMock.On("Set", kvadapter.SweepActiveKey, mock.Anything).Return(nil).Maybe()
 	host.KVStoreMock.On("List", kvadapter.LibraryUserLastSyncPrefix+":").Return([]string(nil), nil).Maybe()
 	allowAccessLookupsToFail()
 }
