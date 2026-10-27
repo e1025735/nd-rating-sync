@@ -3,12 +3,14 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	kvadapter "github.com/e1025735/nd-rating-sync/internal/adapter/kv_store"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 	"github.com/navidrome/navidrome/plugins/pdk/go/scheduler"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,15 +50,20 @@ func TestRegisterSchedules_RecurringFails(t *testing.T) {
 
 // ─── OnInit ───────────────────────────────────────────────────────────────────
 
-// TestOnInit_ClearsSweepGuard proves OnInit drops any stale in-progress
-// heartbeat (a reload kills the chain it belonged to) before registering the
-// schedules, so the immediate-on-load sweep is never suppressed. It also
-// removes the file index older versions stored in the KV store.
-func TestOnInit_ClearsSweepGuard(t *testing.T) {
+// TestOnInit_MarksSweepInterrupted proves OnInit marks a sweep left over
+// from before the reload as interrupted (a reload kills its chain), so the
+// immediate-on-load sweep is not suppressed and resumes at its position
+// without the crash hunt. It also removes the file index older versions
+// stored in the KV store.
+func TestOnInit_MarksSweepInterrupted(t *testing.T) {
 	resetSchedulerMock(t)
 	resetKVStoreMock(t)
 
-	host.KVStoreMock.On("Delete", kvadapter.KVKeySweepActive()).Return(nil)
+	running := `{"at":"2026-06-01T12:00:00Z","cursor":{"lib":0,"user":1,"off":700,"start":"2026-06-01T11:00:00Z"}}`
+	host.KVStoreMock.On("Get", kvadapter.KVKeySweepActive()).Return([]byte(running), true, nil)
+	host.KVStoreMock.On("Set", kvadapter.KVKeySweepActive(), mock.MatchedBy(func(v []byte) bool {
+		return strings.Contains(string(v), `"interrupted":true`) && strings.Contains(string(v), `"off":700`)
+	})).Return(nil).Once()
 	for _, prefix := range []string{"bucket", "libraryState", "config"} {
 		host.KVStoreMock.On("DeleteByPrefix", prefix).Return(int64(0), nil).Once()
 	}

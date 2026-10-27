@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 // ─── runSyncStep ─────────────────────────────────────────────────────────────
 
 func TestRunSyncStep_NoLibraries(t *testing.T) {
+	allowSweepRecordWrites()
 	err := RunSyncStep(PluginConfig{}, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no libraries configured")
@@ -33,6 +35,7 @@ func TestRunSyncStep_NoLibraries(t *testing.T) {
 func TestSyncPair_UnreadableFileWithClear_DoesNotClearRating(t *testing.T) {
 	resetSubsonicMock(t)
 	resetLibraryMock(t)
+	allowSweepRecordWrites()
 
 	resetMatcherMock(t)
 
@@ -69,6 +72,7 @@ func TestSyncPair_IncrementalFirstRun_ProcessesAllAndSavesThreshold(t *testing.T
 	resetKVStoreMock(t)
 	resetLibraryMock(t)
 	resetMatcherMock(t)
+	allowSweepRecordWrites()
 
 	mount := t.TempDir()
 	path := writeFMPSFileAt(t, mount, "song.mp3", "0.6")
@@ -104,6 +108,7 @@ func TestSyncPair_IncrementalSkipsUnchangedFile(t *testing.T) {
 	resetKVStoreMock(t)
 	resetLibraryMock(t)
 	resetMatcherMock(t)
+	allowSweepRecordWrites()
 
 	mount := t.TempDir()
 	path := writeFMPSFileAt(t, mount, "song.mp3", "0.6")
@@ -142,6 +147,7 @@ func TestSyncPair_IncrementalProcessesNewerFile(t *testing.T) {
 	resetKVStoreMock(t)
 	resetLibraryMock(t)
 	resetMatcherMock(t)
+	allowSweepRecordWrites()
 	mount := t.TempDir()
 	path := writeFMPSFileAt(t, mount, "song.mp3", "0.8") // 4 stars
 	mockGetLibrary(1, mount)
@@ -178,6 +184,7 @@ func TestSyncPair_IncrementalDisabled_BypassesKV(t *testing.T) {
 	resetKVStoreMock(t)
 	resetLibraryMock(t)
 	resetMatcherMock(t)
+	allowSweepRecordWrites()
 
 	mount := t.TempDir()
 	path := writeFMPSFileAt(t, mount, "song.mp3", "0.6")
@@ -200,9 +207,9 @@ func TestSyncPair_IncrementalDisabled_BypassesKV(t *testing.T) {
 
 	runSyncChunk(cfg, SyncCursor{}, time.Now().Add(time.Hour))
 	host.SubsonicAPIMock.AssertExpectations(t)
-	// Confirm KV is never touched when incremental is off.
+	// Confirm no incremental threshold is read or written when incremental is off.
 	host.KVStoreMock.AssertNotCalled(t, "Get", mock.Anything)
-	host.KVStoreMock.AssertNotCalled(t, "Set", mock.Anything, mock.Anything)
+	host.KVStoreMock.AssertNotCalled(t, "Set", kvKeyLastSynced("1", "alice"), mock.Anything)
 }
 
 // ─── Chunked / resumable sync ─────────────────────────────────────────────────
@@ -218,6 +225,7 @@ func TestSyncPair_IncrementalDisabled_BypassesKV(t *testing.T) {
 // on SkipAlreadyRated, so no file is ever located.
 func TestProcessPairChunk_StopsAtDeadlineMidPair(t *testing.T) {
 	resetSubsonicMock(t)
+	allowSweepRecordWrites()
 
 	songs := make([]subsonicSong, 2*deadlineCheckEvery)
 	for i := range songs {
@@ -246,6 +254,7 @@ func TestProcessPairChunk_StopsAtDeadlineMidPair(t *testing.T) {
 func TestRunSyncChunk_AdvancesAcrossPairsToCompletion(t *testing.T) {
 	resetSubsonicMock(t)
 	resetLibraryMock(t)
+	allowSweepRecordWrites()
 	mockGetLibrary(1, t.TempDir())
 
 	host.SubsonicAPIMock.On("Call",
@@ -276,6 +285,7 @@ func TestRunSyncChunk_ReadsFileLocatedByMatcher(t *testing.T) {
 	resetSubsonicMock(t)
 	resetLibraryMock(t)
 	resetMatcherMock(t)
+	allowSweepRecordWrites()
 
 	mount := t.TempDir()
 	album := filepath.Join(mount, "Artist", "Album")
@@ -311,6 +321,7 @@ func TestRunSyncChunk_OnlyUnratedSongsAreLocated(t *testing.T) {
 	resetSubsonicMock(t)
 	resetLibraryMock(t)
 	resetMatcherMock(t)
+	allowSweepRecordWrites()
 
 	mockGetLibrary(1, t.TempDir())
 	mockMatch([]string{"new"}, nil)
@@ -333,6 +344,7 @@ func TestRunSyncChunk_OnlyUnratedSongsAreLocated(t *testing.T) {
 func TestRunSyncChunk_LibraryWithoutMountIsSkipped(t *testing.T) {
 	resetSubsonicMock(t)
 	resetLibraryMock(t)
+	allowSweepRecordWrites()
 	host.LibraryMock.On("GetLibrary", int32(1)).Return(&host.Library{ID: 1, Path: hostLibraryRoot}, nil)
 
 	cfg := PluginConfig{Libraries: []LibraryConfig{{
@@ -352,6 +364,7 @@ func TestRunSyncStepUntil_ReschedulesWhenBudgetExceeded(t *testing.T) {
 	resetSubsonicMock(t)
 	resetSchedulerMock(t)
 	resetKVStoreMock(t)
+	allowSweepRecordWrites()
 
 	cfg := PluginConfig{Libraries: []LibraryConfig{{
 		LibraryID: "lib1",
@@ -376,6 +389,7 @@ func TestRunSyncStepUntil_NoRescheduleWhenComplete(t *testing.T) {
 	resetSchedulerMock(t)
 	resetKVStoreMock(t)
 	resetLibraryMock(t)
+	allowSweepRecordWrites()
 	mockGetLibrary(1, t.TempDir())
 
 	cfg := PluginConfig{Libraries: []LibraryConfig{{
@@ -403,6 +417,7 @@ func TestRunSyncStepUntil_SkipsWhenSweepInProgress(t *testing.T) {
 	resetSubsonicMock(t)
 	resetSchedulerMock(t)
 	resetKVStoreMock(t)
+	allowSweepRecordWrites()
 
 	cfg := PluginConfig{Libraries: []LibraryConfig{{
 		LibraryID: "1",
@@ -422,6 +437,7 @@ func TestRunSyncStepUntil_ProceedsWhenSweepStale(t *testing.T) {
 	resetSubsonicMock(t)
 	resetSchedulerMock(t)
 	resetKVStoreMock(t)
+	allowSweepRecordWrites()
 
 	cfg := PluginConfig{Libraries: []LibraryConfig{{
 		LibraryID: "1",
@@ -444,6 +460,7 @@ func TestRunSyncStepUntil_ContinuationRefreshesGuardNotChecks(t *testing.T) {
 	resetSubsonicMock(t)
 	resetSchedulerMock(t)
 	resetKVStoreMock(t)
+	allowSweepRecordWrites()
 
 	cfg := PluginConfig{Libraries: []LibraryConfig{{
 		LibraryID: "1",
@@ -468,6 +485,7 @@ func TestRunSyncChunk_GateSkipsUnchangedLibrary(t *testing.T) {
 	resetSubsonicMock(t)
 	resetKVStoreMock(t)
 	resetLibraryMock(t)
+	allowSweepRecordWrites()
 
 	threshold := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	lastScan := threshold.Add(-time.Hour) // Navidrome scanned BEFORE our last sweep
@@ -500,6 +518,7 @@ func TestRunSyncChunk_GateProcessesRescannedLibrary(t *testing.T) {
 	resetSubsonicMock(t)
 	resetKVStoreMock(t)
 	resetLibraryMock(t)
+	allowSweepRecordWrites()
 
 	threshold := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	lastScan := threshold.Add(time.Hour) // Navidrome rescanned AFTER our last sweep
@@ -533,6 +552,7 @@ func TestRunSyncChunk_GateProcessesRescannedLibrary(t *testing.T) {
 func TestRunSyncChunk_FetchFailureCountsAttempt(t *testing.T) {
 	resetSubsonicMock(t)
 	resetLibraryMock(t)
+	allowSweepRecordWrites()
 	mockGetLibrary(1, t.TempDir())
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=ghost&musicFolderId=1`,
@@ -554,6 +574,7 @@ func TestRunSyncChunk_FetchFailureCountsAttempt(t *testing.T) {
 func TestRunSyncChunk_FetchFailureSkipsPairAfterMaxAttempts(t *testing.T) {
 	resetSubsonicMock(t)
 	resetLibraryMock(t)
+	allowSweepRecordWrites()
 	mockGetLibrary(1, t.TempDir())
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=ghost&musicFolderId=1`,
@@ -577,6 +598,7 @@ func TestRunSyncStepUntil_RetryIsDelayed(t *testing.T) {
 	resetSchedulerMock(t)
 	resetKVStoreMock(t)
 	resetLibraryMock(t)
+	allowSweepRecordWrites()
 	mockGetLibrary(1, t.TempDir())
 
 	cfg := PluginConfig{Libraries: []LibraryConfig{{
@@ -601,6 +623,7 @@ func TestRunSyncChunk_MatcherFailureIsRetriedThenSkipped(t *testing.T) {
 	resetSubsonicMock(t)
 	resetLibraryMock(t)
 	resetMatcherMock(t)
+	allowSweepRecordWrites()
 	mockGetLibrary(1, t.TempDir())
 	host.SubsonicAPIMock.On("Call",
 		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
@@ -621,4 +644,110 @@ func TestRunSyncChunk_MatcherFailureIsRetriedThenSkipped(t *testing.T) {
 	next, done = runSyncChunk(cfg, SyncCursor{Retry: maxPairAttempts - 1, PairStart: "2026-06-01T00:00:00Z"}, time.Now().Add(time.Hour))
 	assert.True(t, done, "the last attempt skips the pair")
 	assert.Equal(t, 0, next.Retry)
+}
+
+// ─── Resume after a crash or reload ───────────────────────────────────────────
+
+func resumeTestConfig() PluginConfig {
+	return PluginConfig{Libraries: []LibraryConfig{{
+		LibraryID: "1",
+		Users:     []UserConfig{{Username: "alice", SkipAlreadyRated: true, RatingTagOrder: DefaultTagOrder}},
+	}}}
+}
+
+// TestRunSyncStepUntil_ResumesAfterCrashLoggingTheCrashPage proves a fresh
+// run that finds a stale sweep record resumes at its cursor and logs every
+// file read up to the end of that page.
+func TestRunSyncStepUntil_ResumesAfterCrashLoggingTheCrashPage(t *testing.T) {
+	resetSubsonicMock(t)
+	resetSchedulerMock(t)
+	resetKVStoreMock(t)
+
+	stale := time.Now().Add(-2 * sweepStaleAfter).UTC().Format(time.RFC3339Nano)
+	host.KVStoreMock.On("Get", kvKeySweepActive()).
+		Return([]byte(`{"at":"`+stale+`","cursor":{"lib":0,"user":0,"off":700,"start":"2026-06-01T00:00:00Z"}}`), true, nil)
+	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.Anything).Return(nil)
+	host.SchedulerMock.On("ScheduleOneTime", int32(0), `{"lib":0,"user":0,"off":700,"start":"2026-06-01T00:00:00Z","logto":1000}`, "").
+		Return("cont-id", nil)
+
+	require.NoError(t, runSyncStepUntil(resumeTestConfig(), "", time.Now().Add(-time.Second)))
+	host.SchedulerMock.AssertExpectations(t)
+}
+
+// TestRunSyncStepUntil_ResumesAfterReloadWithoutLogging proves a sweep
+// interrupted by a reload resumes at its cursor without the crash hunt.
+func TestRunSyncStepUntil_ResumesAfterReloadWithoutLogging(t *testing.T) {
+	resetSubsonicMock(t)
+	resetSchedulerMock(t)
+	resetKVStoreMock(t)
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	host.KVStoreMock.On("Get", kvKeySweepActive()).
+		Return([]byte(`{"at":"`+now+`","cursor":{"lib":0,"user":0,"off":700,"start":"2026-06-01T00:00:00Z","logto":1000},"interrupted":true}`), true, nil)
+	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.Anything).Return(nil)
+	host.SchedulerMock.On("ScheduleOneTime", int32(0), `{"lib":0,"user":0,"off":700,"start":"2026-06-01T00:00:00Z"}`, "").
+		Return("cont-id", nil)
+
+	require.NoError(t, runSyncStepUntil(resumeTestConfig(), "", time.Now().Add(-time.Second)))
+	host.SchedulerMock.AssertExpectations(t)
+}
+
+// TestRunSyncStepUntil_RefusedContinuationIsMarkedInterrupted proves a chain
+// the host refused to continue is not mistaken for a crash later.
+func TestRunSyncStepUntil_RefusedContinuationIsMarkedInterrupted(t *testing.T) {
+	resetSubsonicMock(t)
+	resetSchedulerMock(t)
+	resetKVStoreMock(t)
+
+	host.KVStoreMock.On("Get", kvKeySweepActive()).Return([]byte(nil), false, nil).Once()
+	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.MatchedBy(func(v []byte) bool {
+		return !strings.Contains(string(v), `"interrupted":true`)
+	})).Return(nil).Once()
+	host.KVStoreMock.On("Get", kvKeySweepActive()).Return([]byte(`{"at":"2026-06-01T00:00:00Z"}`), true, nil).Once()
+	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.MatchedBy(func(v []byte) bool {
+		return strings.Contains(string(v), `"interrupted":true`)
+	})).Return(nil).Once()
+	host.SchedulerMock.On("ScheduleOneTime", int32(0), mock.Anything, "").Return("", fmt.Errorf("scheduler full"))
+
+	require.Error(t, runSyncStepUntil(resumeTestConfig(), "", time.Now().Add(-time.Second)))
+	host.KVStoreMock.AssertExpectations(t)
+}
+
+// TestProcessPairChunk_StoresPositionAtEveryPage proves the sweep record is
+// refreshed with the cursor at the start of a page, so a crash on that page
+// resumes there.
+func TestProcessPairChunk_StoresPositionAtEveryPage(t *testing.T) {
+	resetSubsonicMock(t)
+	resetKVStoreMock(t)
+	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.MatchedBy(func(v []byte) bool {
+		return strings.Contains(string(v), `"off":0`)
+	})).Return(nil).Once()
+	host.SubsonicAPIMock.On("Call",
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
+	).Return(subsonicOK([]subsonicSong{{ID: "a1", UserRating: 5}}), nil)
+
+	_, done := processPairChunk(LibraryConfig{LibraryID: "1"}, UserConfig{Username: "alice", SkipAlreadyRated: true},
+		PluginConfig{}, SyncCursor{}, time.Time{}, time.Now().Add(time.Hour), libraryMount{})
+	assert.True(t, done)
+	host.KVStoreMock.AssertExpectations(t)
+}
+
+// TestProcessPairChunk_FileReadLoggingStopsAfterTheCrashPage proves the
+// logging of every file read ends once the cursor passes the crash page.
+func TestProcessPairChunk_FileReadLoggingStopsAfterTheCrashPage(t *testing.T) {
+	resetSubsonicMock(t)
+	resetKVStoreMock(t)
+	allowSweepRecordWrites()
+	songs := []subsonicSong{{ID: "a1", UserRating: 5}, {ID: "a2", UserRating: 5}}
+	host.SubsonicAPIMock.On("Call",
+		`search3?query=%22%22&songCount=500&songOffset=0&albumCount=0&artistCount=0&u=alice&musicFolderId=1`,
+	).Return(subsonicOK(songs), nil)
+	lib, user := LibraryConfig{LibraryID: "1"}, UserConfig{Username: "alice", SkipAlreadyRated: true}
+	past := time.Now().Add(-time.Second) // yields after one song
+
+	next, _ := processPairChunk(lib, user, PluginConfig{}, SyncCursor{LogReadsUntil: 500}, time.Time{}, past, libraryMount{})
+	assert.Equal(t, 500, next.LogReadsUntil, "still on the crash page")
+
+	next, _ = processPairChunk(lib, user, PluginConfig{}, SyncCursor{LogReadsUntil: 1}, time.Time{}, past, libraryMount{})
+	assert.Equal(t, 0, next.LogReadsUntil, "past the crash page: normal again")
 }

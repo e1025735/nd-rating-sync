@@ -10,8 +10,11 @@ import (
 type subsonicSong = subsonicadapter.SubsonicSong
 
 // processSong syncs one song. file is where locateSongFiles found the song's
-// file; it is not consulted for a song skipped as already rated.
-func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.Time, file songFile, tally *syncTally) {
+// file; it is not consulted for a song skipped as already rated. logRead
+// logs the file as a warning before it is read: after a crash, the last such
+// line before the next stop names the file that crashes the plugin (the
+// plugin cannot log once it has died).
+func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.Time, file songFile, logRead bool, tally *syncTally) {
 	logTrace(fmt.Sprintf("nd-rating-sync: processSong start song=%q", s.ID))
 	if u.SkipAlreadyRated && s.UserRating > 0 {
 		logTrace(fmt.Sprintf("nd-rating-sync: processSong stop, already rated song=%q", s.ID))
@@ -43,6 +46,9 @@ func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.
 		return
 	}
 
+	if logRead {
+		logWarn(fmt.Sprintf("nd-rating-sync: reading %q (song %q, id=%q) after an unexpected stop", entry.Path, s.Title, s.ID))
+	}
 	stars, result := extractStarsFromFile(entry.Path, s.Suffix, u.RatingTagOrder)
 	switch result {
 	case FileUnreadable:

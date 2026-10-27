@@ -3,6 +3,7 @@ package adapter
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -99,29 +100,100 @@ func KVKeySweepActive() string {
 	return "sweep-active"
 }
 
-func SweepInProgress() bool {
+// SweepRecord is the value of the sweep-active key: the heartbeat of a
+// running sweep plus where it was last known to be.
+//
+// The record is refreshed at the start of every callback and of every song
+// page, and deleted when a sweep completes. A record that is still there
+// after SweepStaleAfter therefore means the chain stopped mid-sweep — a
+// callback that crashed (panic, out of memory, the host's 30 s limit) or a
+// reload. Cursor lets the next sweep resume there; Interrupted marks a stop
+// that was not a crash (a reload, a continuation the host refused), after
+// which the sweep resumes without hunting for a file that crashed it.
+type SweepRecord struct {
+	At          time.Time       `json:"at"`
+	Cursor      json.RawMessage `json:"cursor,omitempty"`
+	Interrupted bool            `json:"interrupted,omitempty"`
+}
+
+// Active reports whether a sweep is still running: a heartbeat younger than
+// SweepStaleAfter that was not interrupted. A future-dated heartbeat (the
+// clock stepped back) counts as stale.
+func (r SweepRecord) Active() bool {
+	age := time.Since(r.At)
+	return !r.Interrupted && age >= 0 && age < SweepStaleAfter
+}
+
+// LoadSweepRecord returns the stored sweep record. Any failure — a KV error,
+// no record, an unreadable one — reports false, so a sync is never blocked by
+// it. A plain timestamp written by older versions is a record without cursor.
+func LoadSweepRecord() (SweepRecord, bool) {
 	raw, found, err := host.KVStoreGet(KVKeySweepActive())
 	if err != nil {
 		kvLogWarn(fmt.Sprintf(
 			"nd-rating-sync: KVStoreGet(%q) failed: %q – assuming no sweep active", KVKeySweepActive(), err.Error()))
-		return false
+		return SweepRecord{}, false
 	}
 	if !found || len(raw) == 0 {
-		return false
+		return SweepRecord{}, false
+	}
+	var r SweepRecord
+	if raw[0] == '{' {
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return SweepRecord{}, false
+		}
+		return r, true
 	}
 	t, err := time.Parse(time.RFC3339Nano, string(raw))
 	if err != nil {
-		return false
+		return SweepRecord{}, false
 	}
-	age := time.Since(t)
-	return age >= 0 && age < SweepStaleAfter
+	return SweepRecord{At: t}, true
 }
 
-func MarkSweepActive() {
-	value := []byte(time.Now().UTC().Format(time.RFC3339Nano))
-	if err := host.KVStoreSet(KVKeySweepActive(), value); err != nil {
+// SweepInProgress reports whether another sweep is running right now.
+func SweepInProgress() bool {
+	r, found := LoadSweepRecord()
+	return found && r.Active()
+}
+
+// MarkSweepActive refreshes the heartbeat and records cursor (a marshalled
+// scanner cursor) as the position the sweep has reached.
+func MarkSweepActive(cursor string) {
+	saveSweepRecord(SweepRecord{At: time.Now().UTC(), Cursor: rawCursor(cursor)})
+}
+
+// MarkSweepInterrupted records that the running sweep stopped without a crash,
+// so the next sweep resumes at its position without the crash hunt. An empty
+// cursor keeps the stored position; nothing is written when no sweep is
+// recorded.
+func MarkSweepInterrupted(cursor string) {
+	r, found := LoadSweepRecord()
+	if !found && cursor == "" {
+		return
+	}
+	if cursor != "" {
+		r.Cursor = rawCursor(cursor)
+	}
+	r.Interrupted = true
+	saveSweepRecord(r)
+}
+
+func rawCursor(cursor string) json.RawMessage {
+	if cursor == "" || !json.Valid([]byte(cursor)) {
+		return nil
+	}
+	return json.RawMessage(cursor)
+}
+
+func saveSweepRecord(r SweepRecord) {
+	value, err := json.Marshal(r)
+	if err == nil {
+		err = host.KVStoreSet(KVKeySweepActive(), value)
+	}
+	if err != nil {
 		kvLogWarn(fmt.Sprintf(
-			"nd-rating-sync: KVStoreSet(%q) failed: %q – overlapping sweeps are not prevented until it works again", KVKeySweepActive(), err.Error()))
+			"nd-rating-sync: KVStoreSet(%q) failed: %q – overlapping sweeps are not prevented and a crashed sweep restarts from the beginning until it works again", KVKeySweepActive(), err.Error()))
 	}
 }
 

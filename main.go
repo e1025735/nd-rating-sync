@@ -42,10 +42,12 @@ const (
 
 func (ratingPlugin) OnInit() error {
 	logInfo("nd-rating-sync: initialising")
-	// A reload/restart kills any in-flight continuation chain, so clear the
-	// in-progress guard up front — a heartbeat left over from just before the
-	// restart must not suppress the immediate-on-load sweep until it goes stale.
-	kvadapter.ClearSweepActive()
+	// A reload/restart kills any in-flight continuation chain. Mark it as
+	// interrupted rather than deleting it: the immediate-on-load sweep is not
+	// suppressed by a heartbeat from just before the restart, and it resumes
+	// at the stored position instead of starting over (a reload is not a
+	// crash, so without logging every file read).
+	kvadapter.MarkSweepInterrupted("")
 	purgeLegacyFileIndex()
 	return registerSchedules(loadConfig())
 }

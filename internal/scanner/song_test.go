@@ -48,6 +48,7 @@ func TestProcessSong_SkipsAlreadyRated(t *testing.T) {
 		song,
 		time.Time{},
 		songFile{},
+		false,
 		tally,
 	)
 
@@ -73,6 +74,7 @@ func TestProcessSong_UnlocatedFileCountsUnreadable(t *testing.T) {
 		song,
 		time.Time{},
 		songFile{reason: "Navidrome returned no track for this song ID"},
+		false,
 		tally,
 	)
 
@@ -109,6 +111,7 @@ func TestProcessSong_ClearsRatingWhenUntaggedAndAllowed(t *testing.T) {
 		song,
 		time.Time{},
 		file,
+		false,
 		tally,
 	)
 
@@ -138,6 +141,7 @@ func TestProcessSong_DryRunWouldRateTaggedFile(t *testing.T) {
 		song,
 		time.Time{},
 		file,
+		false,
 		tally,
 	)
 
@@ -171,6 +175,7 @@ func TestProcessSong_IncrementalProcessesNewlyAddedSongWithOldMTime(t *testing.T
 		song,
 		threshold,
 		file,
+		false,
 		tally,
 	)
 
@@ -195,6 +200,7 @@ func TestProcessSong_IncrementalSkipsOldSongWithOldMTime(t *testing.T) {
 			song,
 			threshold,
 			file,
+			false,
 			tally,
 		)
 

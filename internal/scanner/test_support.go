@@ -270,6 +270,12 @@ func mockGetLibrary(libID int32, mountPoint string) {
 		Return(&host.Library{ID: libID, MountPoint: mountPoint, Path: hostLibraryRoot}, nil)
 }
 
+// allowSweepRecordWrites lets processPairChunk store its position in the
+// sweep record at every page without each test spelling it out.
+func allowSweepRecordWrites() {
+	host.KVStoreMock.On("Set", kvadapter.KVKeySweepActive(), mock.Anything).Return(nil).Maybe()
+}
+
 func resetMatcherMock(t *testing.T) {
 	t.Helper()
 	host.MatcherMock.ExpectedCalls = nil

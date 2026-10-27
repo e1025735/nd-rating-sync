@@ -142,6 +142,12 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 // cur.Retry, so the continuation retries the same offset after a delay and
 // runSyncChunk gives up on the pair after maxPairAttempts. Every processed
 // song resets cur.Retry.
+//
+// The position is stored in the sweep record at the start of every page, so
+// a callback that crashes on a page is resumed at that page's start (see
+// startOrResumeSweep). While cur.LogReadsUntil is set, every file read up to
+// that offset is logged as a warning first; once the cursor passes it,
+// logging is normal again.
 func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur SyncCursor, threshold time.Time, deadline time.Time, mount libraryMount) (SyncCursor, bool) {
 	logTrace(fmt.Sprintf("nd-rating-sync: processPairChunk start lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
 	if cfg.DryRun {
@@ -162,6 +168,7 @@ func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur Syn
 	for {
 		pageOffset := (cur.Offset / songPageSize) * songPageSize
 		skip := cur.Offset - pageOffset
+		kvadapter.MarkSweepActive(cur.marshal())
 
 		page, more, err := subsonicadapter.FetchSongPage(u.Username, lib.LibraryID, pageOffset, songPageSize)
 		if err != nil {
@@ -196,9 +203,16 @@ func processPairChunk(lib LibraryConfig, u UserConfig, cfg PluginConfig, cur Syn
 		}
 
 		for i := skip; i < len(page); i++ {
-			processSong(u, cfg, page[i], threshold, files[page[i].ID], &tally)
+			logRead := pageOffset+i < cur.LogReadsUntil
+			processSong(u, cfg, page[i], threshold, files[page[i].ID], logRead, &tally)
 			cur.Offset = pageOffset + i + 1
 			cur.Retry = 0
+			if cur.LogReadsUntil > 0 && cur.Offset >= cur.LogReadsUntil {
+				logInfo(fmt.Sprintf(
+					"nd-rating-sync: user=%q library=%q – the songs up to offset %d were read without a stop; file reads are no longer logged",
+					u.Username, lib.LibraryID, cur.LogReadsUntil))
+				cur.LogReadsUntil = 0
+			}
 			// Check the deadline only every deadlineCheckEvery songs so the
 			// hot loop does not hammer the WASI clock import. Reducing the
 			// rate also reduces the surface area for the host-side clock

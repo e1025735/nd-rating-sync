@@ -3,6 +3,7 @@
 package adapter
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -194,5 +195,59 @@ func TestMarkSweepActive_KVErrorIsSwallowed(t *testing.T) {
 	host.KVStoreMock.On("Set", KVKeySweepActive(), mock.Anything).
 		Return(errors.New("storage limit exceeded: would use 1.0 MB of 1.0 MB allowed"))
 
-	MarkSweepActive()
+	MarkSweepActive("")
+}
+
+func TestLoadSweepRecord_ReadsCursorAndOldTimestampFormat(t *testing.T) {
+	resetKVStoreMock(t)
+	host.KVStoreMock.On("Get", KVKeySweepActive()).
+		Return([]byte(`{"at":"2026-06-01T12:00:00Z","cursor":{"lib":1,"off":700}}`), true, nil).Once()
+	r, found := LoadSweepRecord()
+	require.True(t, found)
+	assert.JSONEq(t, `{"lib":1,"off":700}`, string(r.Cursor))
+	assert.False(t, r.Interrupted)
+
+	// Versions <= 0.23 stored a bare timestamp: a record without cursor.
+	host.KVStoreMock.On("Get", KVKeySweepActive()).Return([]byte("2026-06-01T12:00:00Z"), true, nil).Once()
+	r, found = LoadSweepRecord()
+	require.True(t, found)
+	assert.Empty(t, r.Cursor)
+	assert.Equal(t, 2026, r.At.Year())
+}
+
+func TestSweepRecord_InterruptedIsNeverActive(t *testing.T) {
+	assert.True(t, SweepRecord{At: time.Now()}.Active())
+	assert.False(t, SweepRecord{At: time.Now(), Interrupted: true}.Active())
+}
+
+func TestMarkSweepActive_StoresCursor(t *testing.T) {
+	resetKVStoreMock(t)
+	host.KVStoreMock.On("Set", KVKeySweepActive(), mock.MatchedBy(func(v []byte) bool {
+		var r SweepRecord
+		return json.Unmarshal(v, &r) == nil && string(r.Cursor) == `{"off":3}` && !r.Interrupted && r.Active()
+	})).Return(nil).Once()
+
+	MarkSweepActive(`{"off":3}`)
+	host.KVStoreMock.AssertExpectations(t)
+}
+
+func TestMarkSweepInterrupted_KeepsStoredCursor(t *testing.T) {
+	resetKVStoreMock(t)
+	host.KVStoreMock.On("Get", KVKeySweepActive()).
+		Return([]byte(`{"at":"2026-06-01T12:00:00Z","cursor":{"off":700}}`), true, nil)
+	host.KVStoreMock.On("Set", KVKeySweepActive(), mock.MatchedBy(func(v []byte) bool {
+		var r SweepRecord
+		return json.Unmarshal(v, &r) == nil && string(r.Cursor) == `{"off":700}` && r.Interrupted
+	})).Return(nil).Once()
+
+	MarkSweepInterrupted("")
+	host.KVStoreMock.AssertExpectations(t)
+}
+
+func TestMarkSweepInterrupted_NothingToMark(t *testing.T) {
+	resetKVStoreMock(t)
+	host.KVStoreMock.On("Get", KVKeySweepActive()).Return([]byte(nil), false, nil)
+
+	MarkSweepInterrupted("")
+	host.KVStoreMock.AssertNotCalled(t, "Set", mock.Anything, mock.Anything)
 }

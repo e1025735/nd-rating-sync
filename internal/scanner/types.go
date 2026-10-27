@@ -55,6 +55,11 @@ type SyncCursor struct {
 	// Retry counts attempts at the current pair that failed without
 	// progress (see maxPairAttempts). Non-zero delays the continuation.
 	Retry int `json:"retry,omitempty"`
+	// LogReadsUntil is set after a crash: up to this song offset (the end of
+	// the page the crash happened on) every file is logged as a warning
+	// before it is read, so a file that crashes the plugin again is the last
+	// one in the log. 0 = normal logging.
+	LogReadsUntil int `json:"logto,omitempty"`
 }
 
 // nextPair moves the cursor to the next user of the current library and
@@ -64,6 +69,12 @@ func (c *SyncCursor) nextPair() {
 	c.Offset = 0
 	c.PairStart = ""
 	c.Retry = 0
+	c.LogReadsUntil = 0
+}
+
+// pageEnd is the offset right after the song page that holds offset.
+func pageEnd(offset int) int {
+	return (offset/songPageSize + 1) * songPageSize
 }
 
 type FileReadResult int
@@ -152,11 +163,15 @@ func runSyncStepUntil(cfg PluginConfig, payload string, deadline time.Time) erro
 		return fmt.Errorf("no libraries configured – add at least one library with users in the plugin settings")
 	}
 	cur, resumed := parseCursor(payload)
-	if !resumed && kvadapter.SweepInProgress() {
-		logInfo("nd-rating-sync: a sweep is already in progress – skipping this run")
-		return nil
+	if !resumed {
+		var busy bool
+		cur, busy = startOrResumeSweep(cfg)
+		if busy {
+			logInfo("nd-rating-sync: a sweep is already in progress – skipping this run")
+			return nil
+		}
 	}
-	kvadapter.MarkSweepActive()
+	kvadapter.MarkSweepActive(cur.marshal())
 
 	next, done := runSyncChunk(cfg, cur, deadline)
 	if done {
@@ -169,12 +184,65 @@ func runSyncStepUntil(cfg PluginConfig, payload string, deadline time.Time) erro
 		delay = retryDelaySeconds
 	}
 	if _, err := host.SchedulerScheduleOneTime(delay, next.marshal(), ""); err != nil {
+		// Not a crash: the next sweep resumes here without the crash hunt.
+		kvadapter.MarkSweepInterrupted(next.marshal())
 		return fmt.Errorf("failed to reschedule sync continuation: %w", err)
 	}
 	logInfo(fmt.Sprintf(
 		"nd-rating-sync: time budget reached – rescheduled continuation in %ds (lib=%d user=%d offset=%d)",
 		delay, next.Lib, next.User, next.Offset))
 	return nil
+}
+
+// startOrResumeSweep decides where a callback without a continuation payload
+// (the cron or the run after a load) starts. busy reports that another sweep
+// is still running.
+//
+// The sweep record (see kvadapter.SweepRecord) is deleted when a sweep
+// completes, so a record that is still there means the last sweep stopped
+// mid-way, and the sweep resumes at its cursor instead of starting over:
+//   - after a reload or a refused continuation (Interrupted), as if nothing
+//     happened;
+//   - otherwise the callback crashed: the plugin cannot log anything once it
+//     is dead, so the sweep resumes at the start of the page it was on and
+//     logs every file read on that page as a warning before reading it. If a
+//     file crashes the plugin again, it is the last file in the log; the
+//     next page is read normally again.
+func startOrResumeSweep(cfg PluginConfig) (cur SyncCursor, busy bool) {
+	rec, found := kvadapter.LoadSweepRecord()
+	if !found {
+		return SyncCursor{}, false
+	}
+	if rec.Active() {
+		return SyncCursor{}, true
+	}
+	if len(rec.Cursor) == 0 {
+		return SyncCursor{}, false
+	}
+	cur, ok := parseCursor(string(rec.Cursor))
+	if !ok {
+		return SyncCursor{}, false
+	}
+	cur.LogReadsUntil = 0
+	where := describeCursor(cfg, cur)
+	if rec.Interrupted {
+		logInfo(fmt.Sprintf("nd-rating-sync: resuming the interrupted sync at %s", where))
+		return cur, false
+	}
+	cur.LogReadsUntil = pageEnd(cur.Offset)
+	logWarn(fmt.Sprintf(
+		"nd-rating-sync: the previous sync stopped unexpectedly at %s (the plugin crashed or exceeded Navidrome's 30 s limit) – resuming there and logging every file read up to song offset %d; if the plugin stops again, the last \"reading\" warning before the stop names the file that causes it",
+		where, cur.LogReadsUntil))
+	return cur, false
+}
+
+// describeCursor names the position of cur for a log line.
+func describeCursor(cfg PluginConfig, cur SyncCursor) string {
+	if cur.Lib < len(cfg.Libraries) && cur.User < len(cfg.Libraries[cur.Lib].Users) {
+		lib := cfg.Libraries[cur.Lib]
+		return fmt.Sprintf("user=%q library=%q song offset %d", lib.Users[cur.User].Username, lib.LibraryID, cur.Offset)
+	}
+	return fmt.Sprintf("library #%d user #%d song offset %d", cur.Lib, cur.User, cur.Offset)
 }
 
 // pairFingerprint identifies the settings of one (library, user) pair that
