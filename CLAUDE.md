@@ -97,6 +97,8 @@ Config is a hierarchical JSON Schema (not a flat key-value list):
   - Each library: `libraryId`, `libraryName`, `users[]`
   - Each user: `username`, `skip_already_rated` / `clear_rating_if_untagged` (both tristate `*bool`); resolved via `resolveTristate(user, admin, fallback)` (fallbacks: skip `true`, clear `false`), `ratingTagOrder`
 
+`CONFIG_EXAMPLES.md` documents, per setting combination, what happens to a song (the outcome tables follow `processSong`), plus example setups in admin-page terms. Keep it in sync when the per-song pipeline or a setting changes.
+
 ### Config-change invalidation
 
 **Incremental thresholds** are never purged by a config change. Each `last-synced` value carries a fingerprint of its own pair's `ratingTagOrder`, `skip_already_rated` and `clear_rating_if_untagged` (`pairFingerprint`); a threshold saved with other settings reads as "none", so that pair's next sweep reads every file once. Values written by older versions have no fingerprint and are accepted as they are.

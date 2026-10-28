@@ -85,7 +85,7 @@ Each library entry requires a numeric `libraryId`.
 }
 ```
 
-A bigger, annotated example is in [`config.example.json`](config.example.json).
+[`CONFIG_EXAMPLES.md`](CONFIG_EXAMPLES.md) shows what each setting does to a song, walks through typical setups and explains the dry-run log.
 
 ### Top-level admin settings
 

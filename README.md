@@ -55,7 +55,7 @@ For detailed rating value mappings, see [`DETAILS.md`](DETAILS.md).
 
 ## Full setup instructions
 
-See [`HOW_TO_SETUP.md`](HOW_TO_SETUP.md) for detailed installation and configuration information.
+See [`HOW_TO_SETUP.md`](HOW_TO_SETUP.md) for detailed installation and configuration information, and [`CONFIG_EXAMPLES.md`](CONFIG_EXAMPLES.md) for example setups and what each setting does to a song.
 
 ## Detailed behavior and rating mapping
 
