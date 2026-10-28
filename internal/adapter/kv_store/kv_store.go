@@ -9,38 +9,23 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dustin/go-humanize"
+	"github.com/e1025735/nd-rating-sync/internal/logging"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 )
 
+const LibraryUserLastSyncPrefix = "last-synced"
+
+// Key prefixes of the persistent file index that versions before the switch
+// to the Navidrome matcher kept in the KV store (index buckets, build state
+// and the config hash that guarded them). Nothing writes them any more;
+// PurgeLegacyFileIndex removes what an older version left behind.
 const (
-	KVKeyConfigHash           = "config-hash"
-	ConfigPrefix              = "config"
-	BucketPrefix              = "bucket"
-	LibraryStatePrefix        = "libraryState"
-	LibraryUserLastSyncPrefix = "last-synced"
+	legacyBucketPrefix       = "bucket"
+	legacyLibraryStatePrefix = "libraryState"
+	legacyConfigPrefix       = "config"
 )
 
 const SweepStaleAfter = 2 * time.Minute
-
-// ScanState is the progress of a persistent file-index build for one library.
-// PendingDirs is a FIFO queue; the head directory is the one being read, and
-// ResumeAfter is the name of the last entry of it already indexed (ReadDir
-// returns entries sorted by name, so a build cut off by the deadline resumes
-// right after it). A directory is popped only once all its entries are done.
-type ScanState struct {
-	Complete    bool
-	PendingDirs []string
-	ResumeAfter string `json:",omitempty"`
-	LastScanAt  int64
-}
-
-// FileRecord is one file in a persistent index bucket. Mtime is in whole
-// seconds; see the scanner's matchFileInBucketCache for how it is compared.
-type FileRecord struct {
-	Path  string
-	Mtime int64
-}
 
 // ConfigHashFor returns a stable SHA256 hash for a given config payload.
 func ConfigHashFor(raw []byte) string {
@@ -48,60 +33,11 @@ func ConfigHashFor(raw []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// EnsureConfigCacheIsCurrent compares the hash of cfg — only the settings
-// the persistent file index depends on, see scanner.FileCacheConfig — with
-// the stored one and purges the file-index state when it changed. Incremental
-// thresholds are not purged here: each one carries a fingerprint of its own
-// pair's settings (see SaveLastSynced).
-func EnsureConfigCacheIsCurrent(cfg any) {
-	currentHash := ConfigHashFor(mustJSONBytes(cfg))
-	if currentHash == "" {
-		return
-	}
-
-	raw, found, err := host.KVStoreGet(KVKeyConfigHash)
-	if err != nil {
-		kvLogWarn(fmt.Sprintf(
-			"nd-rating-sync: KVStoreGet(%q) failed: %q – config cache check could not run",
-			KVKeyConfigHash, err.Error()))
-		return
-	}
-	if found && len(raw) > 0 && string(raw) == currentHash {
-		return
-	}
-
-	kvLogTrace(fmt.Sprintf("nd-rating-sync: file-index config hash changed stored=%q current=%q", raw, currentHash))
-	deleted, err := PurgeStaleKVEntries()
-	if err != nil {
-		kvLogWarn(fmt.Sprintf(
-			"nd-rating-sync: config change detected, but stale plugin KV purge failed for %q: %q — please clear the plugin-owned KV state manually",
-			ConfigPrefix, err.Error()))
-	} else if deleted > 0 {
-		kvLogInfo(fmt.Sprintf(
-			"nd-rating-sync: config change detected; purged %d stale plugin KV entries",
-			deleted))
-	}
-	if err := host.KVStoreSet(KVKeyConfigHash, []byte(currentHash)); err != nil {
-		kvLogWarn(fmt.Sprintf(
-			"nd-rating-sync: KVStoreSet(%q) failed: %q – new config hash could not be stored",
-			KVKeyConfigHash, err.Error()))
-		return
-	}
-}
-
-func mustJSONBytes(cfg any) []byte {
-	if cfg == nil {
-		return nil
-	}
-	raw, err := json.Marshal(cfg)
-	if err != nil {
-		return nil
-	}
-	return raw
-}
-
-func PurgeStaleKVEntries() (int64, error) {
-	prefixes := []string{BucketPrefix, LibraryStatePrefix, ConfigPrefix}
+// PurgeLegacyFileIndex deletes the persistent file index an older version of
+// the plugin may have stored, so its space is freed. It is cheap when there
+// is nothing to delete and is run on every plugin load.
+func PurgeLegacyFileIndex() (int64, error) {
+	prefixes := []string{legacyBucketPrefix, legacyLibraryStatePrefix, legacyConfigPrefix}
 	var deleted int64
 	for _, prefix := range prefixes {
 		count, err := host.KVStoreDeleteByPrefix(prefix)
@@ -127,7 +63,7 @@ func LoadLastSynced(libraryID, username, fingerprint string) time.Time {
 	key := KVKeyLastSynced(libraryID, username)
 	raw, found, err := host.KVStoreGet(key)
 	if err != nil {
-		kvLogWarn(fmt.Sprintf(
+		logging.Warn(fmt.Sprintf(
 			"nd-rating-sync: KVStoreGet(%q) failed: %q – falling back to full scan", key, err.Error()))
 		return time.Time{}
 	}
@@ -135,19 +71,42 @@ func LoadLastSynced(libraryID, username, fingerprint string) time.Time {
 		return time.Time{}
 	}
 	stamp, stored, hasFingerprint := strings.Cut(string(raw), " ")
-	kvLogTrace(fmt.Sprintf("nd-rating-sync: LoadLastSynced key=%q stamp=%q stored_fingerprint=%q want_fingerprint=%q", key, stamp, stored, fingerprint))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: LoadLastSynced key=%q stamp=%q stored_fingerprint=%q want_fingerprint=%q", key, stamp, stored, fingerprint))
 	if hasFingerprint && stored != fingerprint {
-		kvLogInfo(fmt.Sprintf(
+		logging.Info(fmt.Sprintf(
 			"nd-rating-sync: settings for %q changed since the last sync – running a full scan", key))
 		return time.Time{}
 	}
 	t, err := time.Parse(time.RFC3339Nano, stamp)
 	if err != nil {
-		kvLogWarn(fmt.Sprintf(
+		logging.Warn(fmt.Sprintf(
 			"nd-rating-sync: stored last-synced for %q is malformed (%q) – falling back to full scan", key, raw))
 		return time.Time{}
 	}
 	return t
+}
+
+// DeleteStaleLastSynced removes the incremental thresholds of (library, user)
+// pairs that are no longer configured; keep holds the keys of the configured
+// pairs (KVKeyLastSynced). It returns how many keys were deleted. A failed
+// listing or delete only leaves a few small keys behind, so the caller logs
+// it and carries on.
+func DeleteStaleLastSynced(keep map[string]bool) (int, error) {
+	keys, err := host.KVStoreList(LibraryUserLastSyncPrefix + ":")
+	if err != nil {
+		return 0, err
+	}
+	deleted := 0
+	for _, key := range keys {
+		if keep[key] {
+			continue
+		}
+		if err := host.KVStoreDelete(key); err != nil {
+			return deleted, err
+		}
+		deleted++
+	}
+	return deleted, nil
 }
 
 // SaveLastSynced stores t together with the pair's settings fingerprint
@@ -156,119 +115,107 @@ func SaveLastSynced(libraryID, username string, t time.Time, fingerprint string)
 	key := KVKeyLastSynced(libraryID, username)
 	value := []byte(t.UTC().Format(time.RFC3339Nano) + " " + fingerprint)
 	if err := host.KVStoreSet(key, value); err != nil {
-		kvLogWarn(fmt.Sprintf("nd-rating-sync: KVStoreSet(%q) failed: %q", key, err.Error()))
+		logging.Warn(fmt.Sprintf(
+			"nd-rating-sync: KVStoreSet(%q) failed: %q – the next sweep of this pair reads every file again", key, err.Error()))
 	}
 }
 
-func KVKeySweepActive() string {
-	return "sweep-active"
+// SweepActiveKey is the KV key of the sweep record (see SweepRecord).
+const SweepActiveKey = "sweep-active"
+
+// SweepRecord is the value of the sweep-active key: the heartbeat of a
+// running sweep plus where it was last known to be.
+//
+// The record is refreshed at the start of every callback and of every song
+// page, and deleted when a sweep completes. A record that is still there
+// after SweepStaleAfter therefore means the chain stopped mid-sweep — a
+// callback that crashed (panic, out of memory, the host's 30 s limit) or a
+// reload. Cursor lets the next sweep resume there; Interrupted marks a stop
+// that was not a crash (a reload, a continuation the host refused), after
+// which the sweep resumes without hunting for a file that crashed it.
+type SweepRecord struct {
+	At          time.Time       `json:"at"`
+	Cursor      json.RawMessage `json:"cursor,omitempty"`
+	Interrupted bool            `json:"interrupted,omitempty"`
 }
 
-func SweepInProgress() bool {
-	raw, found, err := host.KVStoreGet(KVKeySweepActive())
+// Active reports whether a sweep is still running: a heartbeat younger than
+// SweepStaleAfter that was not interrupted. A future-dated heartbeat (the
+// clock stepped back) counts as stale.
+func (r SweepRecord) Active() bool {
+	age := time.Since(r.At)
+	return !r.Interrupted && age >= 0 && age < SweepStaleAfter
+}
+
+// LoadSweepRecord returns the stored sweep record. Any failure — a KV error,
+// no record, an unreadable one — reports false, so a sync is never blocked by
+// it. A plain timestamp written by older versions is a record without cursor.
+func LoadSweepRecord() (SweepRecord, bool) {
+	raw, found, err := host.KVStoreGet(SweepActiveKey)
 	if err != nil {
-		kvLogWarn(fmt.Sprintf(
-			"nd-rating-sync: KVStoreGet(%q) failed: %q – assuming no sweep active", KVKeySweepActive(), err.Error()))
-		return false
+		logging.Warn(fmt.Sprintf(
+			"nd-rating-sync: KVStoreGet(%q) failed: %q – assuming no sweep active", SweepActiveKey, err.Error()))
+		return SweepRecord{}, false
 	}
 	if !found || len(raw) == 0 {
-		return false
+		return SweepRecord{}, false
+	}
+	var r SweepRecord
+	if raw[0] == '{' {
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return SweepRecord{}, false
+		}
+		return r, true
 	}
 	t, err := time.Parse(time.RFC3339Nano, string(raw))
 	if err != nil {
-		return false
+		return SweepRecord{}, false
 	}
-	age := time.Since(t)
-	return age >= 0 && age < SweepStaleAfter
+	return SweepRecord{At: t}, true
 }
 
-func MarkSweepActive() {
-	value := []byte(time.Now().UTC().Format(time.RFC3339Nano))
-	if err := host.KVStoreSet(KVKeySweepActive(), value); err != nil {
-		kvLogWarn(fmt.Sprintf("nd-rating-sync: KVStoreSet(%q) failed: %q", KVKeySweepActive(), err.Error()))
+// MarkSweepActive refreshes the heartbeat and records cursor (a marshalled
+// scanner cursor) as the position the sweep has reached.
+func MarkSweepActive(cursor string) {
+	saveSweepRecord(SweepRecord{At: time.Now().UTC(), Cursor: rawCursor(cursor)})
+}
+
+// MarkSweepInterrupted records that the running sweep stopped without a crash,
+// so the next sweep resumes at its position without the crash hunt. An empty
+// cursor keeps the stored position; nothing is written when no sweep is
+// recorded.
+func MarkSweepInterrupted(cursor string) {
+	r, found := LoadSweepRecord()
+	if !found && cursor == "" {
+		return
+	}
+	if cursor != "" {
+		r.Cursor = rawCursor(cursor)
+	}
+	r.Interrupted = true
+	saveSweepRecord(r)
+}
+
+func rawCursor(cursor string) json.RawMessage {
+	if cursor == "" || !json.Valid([]byte(cursor)) {
+		return nil
+	}
+	return json.RawMessage(cursor)
+}
+
+func saveSweepRecord(r SweepRecord) {
+	value, err := json.Marshal(r)
+	if err == nil {
+		err = host.KVStoreSet(SweepActiveKey, value)
+	}
+	if err != nil {
+		logging.Warn(fmt.Sprintf(
+			"nd-rating-sync: KVStoreSet(%q) failed: %q – overlapping sweeps are not prevented and a crashed sweep restarts from the beginning until it works again", SweepActiveKey, err.Error()))
 	}
 }
 
 func ClearSweepActive() {
-	if err := host.KVStoreDelete(KVKeySweepActive()); err != nil {
-		kvLogDebug(fmt.Sprintf("nd-rating-sync: KVStoreDelete(%q) failed: %q", KVKeySweepActive(), err.Error()))
+	if err := host.KVStoreDelete(SweepActiveKey); err != nil {
+		logging.Debug(fmt.Sprintf("nd-rating-sync: KVStoreDelete(%q) failed: %q", SweepActiveKey, err.Error()))
 	}
-}
-
-func BucketKey(libraryID string, size int64, ext string) string {
-	return fmt.Sprintf("%s:%s:%d:%s", BucketPrefix, libraryID, size, strings.ToLower(ext))
-}
-
-// DeleteLibraryBuckets removes every index bucket of one library. A new index
-// build starts with it, so records of moved or deleted files cannot survive
-// into the new index and make a song's match ambiguous.
-func DeleteLibraryBuckets(libraryID string) (int64, error) {
-	return host.KVStoreDeleteByPrefix(BucketPrefix + ":" + libraryID + ":")
-}
-
-func LoadBucket(libraryID string, size int64, ext string) ([]FileRecord, error) {
-	key := BucketKey(libraryID, size, ext)
-	data, found, err := host.KVStoreGet(key)
-	if err != nil {
-		return nil, err
-	}
-	if !found || len(data) == 0 {
-		return nil, nil
-	}
-	var records []FileRecord
-	err = json.Unmarshal(data, &records)
-	return records, err
-}
-
-func SaveBucket(libraryID string, size int64, ext string, records []FileRecord) error {
-	key := BucketKey(libraryID, size, ext)
-	data, err := json.Marshal(records)
-	if err != nil {
-		return err
-	}
-	return host.KVStoreSet(key, data)
-}
-
-func LibraryScanStateKey(libraryID string) string {
-	return fmt.Sprintf("%s:%s", LibraryStatePrefix, libraryID)
-}
-
-func LoadLibraryScanState(libraryID string) (ScanState, error) {
-	key := LibraryScanStateKey(libraryID)
-	data, found, err := host.KVStoreGet(key)
-	if err != nil {
-		return ScanState{}, err
-	}
-	if !found || len(data) == 0 {
-		return ScanState{}, nil
-	}
-	var scanState ScanState
-	err = json.Unmarshal(data, &scanState)
-	return scanState, err
-}
-
-func SaveLibraryScanState(libraryID string, state *ScanState) error {
-	key := LibraryScanStateKey(libraryID)
-	data, err := json.Marshal(state)
-	if err != nil {
-		return err
-	}
-	return host.KVStoreSet(key, data)
-}
-
-func GetPercentageKVStorageUsage(kvStorageSize string) (float64, error) {
-	bytes, err := humanize.ParseBytes(kvStorageSize)
-	if err != nil {
-		return 0, err
-	}
-
-	if bytes == 0 {
-		return 0, fmt.Errorf("KV storage size %q is zero", kvStorageSize)
-	}
-	kvStorageUsed, err := host.KVStoreGetStorageUsed()
-	if err != nil {
-		return 0, err
-	}
-
-	return float64(kvStorageUsed) / float64(bytes) * 100, nil
 }

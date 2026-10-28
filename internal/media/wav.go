@@ -9,16 +9,10 @@ import (
 	"strings"
 )
 
-// parseWAVRating finds the ID3v2 chunk inside a RIFF/WAVE container and
-// delegates to parseID3v2Rating. Both "id3 " and "ID3 " fourCCs are accepted
-// (different tag editors write different cases).
-func parseWAVRating(data []byte, path string, tagOrder []string) (int, bool) {
-	stars, ok, _ := ratingFromWAV(data, path, tagOrder)
-	return stars, ok
-}
-
-// ratingFromWAV is parseWAVRating with the error of the embedded ID3v2 tag
-// kept, so a corrupt tag is reported as unreadable rather than untagged.
+// ratingFromWAV finds the ID3v2 chunk inside a RIFF/WAVE container and
+// delegates to ratingFromID3v2. Both "id3 " and "ID3 " fourCCs are accepted
+// (different tag editors write different cases). A corrupt tag is an error,
+// so the file is unreadable rather than untagged.
 func ratingFromWAV(data []byte, path string, tagOrder []string) (int, bool, error) {
 	if len(data) < 12 || string(data[:4]) != "RIFF" || string(data[8:12]) != "WAVE" {
 		return 0, false, nil
@@ -26,12 +20,14 @@ func ratingFromWAV(data []byte, path string, tagOrder []string) (int, bool, erro
 	pos := 12
 	for pos+8 <= len(data) {
 		fourCC := strings.ToLower(string(data[pos : pos+4]))
-		chunkSize := int(binary.LittleEndian.Uint32(data[pos+4 : pos+8]))
+		chunkSize := uint64(binary.LittleEndian.Uint32(data[pos+4 : pos+8]))
 		pos += 8
-		end := pos + chunkSize
-		if end > len(data) {
+		// Compared as uint64 before narrowing: as a 32-bit int a size of
+		// 2 GiB or more turns negative and would pass the bounds check.
+		if chunkSize > uint64(len(data)-pos) {
 			break
 		}
+		end := pos + int(chunkSize)
 		if fourCC == "id3 " {
 			return ratingFromID3v2(data[pos:end], path, tagOrder)
 		}
@@ -47,42 +43,48 @@ func ratingFromWAV(data []byte, path string, tagOrder []string) (int, bool, erro
 // extractWAVMetadata walks the RIFF chunk list at the start of a WAV file,
 // Seeks past audio (`data`/`fmt `/etc.) chunks without reading their bodies,
 // and returns a synthesised RIFF/WAVE container holding only the `id3 ` /
-// `ID3 ` chunk when present. The existing parseWAVRating walks this synth
+// `ID3 ` chunk when present. ratingFromWAV walks this synth
 // identically to a real file.
 //
-// When no ID3 chunk is found the result is a valid empty RIFF/WAVE (parser
-// reports tagAbsent). When the magic is missing or the file is truncated,
-// returns (nil, nil) so the dispatch path also reports tagAbsent — matching
-// the prior behaviour for malformed WAVs.
+// Only a chunk list walked to the end of the file without an ID3 chunk is
+// untagged (a valid empty RIFF/WAVE synth). A file without the RIFF/WAVE
+// magic (including RF64), cut off inside its header, or with a chunk that
+// claims to run past the end of the file (a truncated file, or a streamed
+// WAV whose data size was never filled in) is an error: an ID3 chunk behind
+// such a chunk could not be found, so the file is unreadable, never untagged.
 func extractWAVMetadata(f *os.File) ([]byte, error) {
 	var hdr [12]byte
 	if _, err := io.ReadFull(f, hdr[:]); err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, nil
-		}
-		return nil, err
+		return nil, cutOff(err, errors.New("file ends inside the RIFF header"))
 	}
 	if string(hdr[:4]) != "RIFF" || string(hdr[8:12]) != "WAVE" {
-		return nil, nil
+		return nil, errors.New("not a RIFF/WAVE file")
 	}
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	fileSize := info.Size()
 
-	for {
+	pos := int64(len(hdr))
+	for chunks := 0; ; chunks++ {
+		if chunks >= maxContainerEntries {
+			return nil, errTooManyEntries
+		}
 		var chHdr [8]byte
 		if _, err := io.ReadFull(f, chHdr[:]); err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			if isShortRead(err) {
+				// Every chunk was walked to the end of the file; fewer than
+				// 8 trailing bytes cannot hold another chunk either.
 				return wavSynthEmpty(hdr[:]), nil
 			}
 			return nil, err
 		}
 		fourCC := strings.ToLower(string(chHdr[:4]))
 		chunkSize := int64(binary.LittleEndian.Uint32(chHdr[4:8]))
-		if chunkSize < 0 {
-			return wavSynthEmpty(hdr[:]), nil
-		}
-		// RIFF body length is padded to an even boundary on disk.
-		paddedSize := chunkSize
-		if chunkSize%2 != 0 {
-			paddedSize++
+		body := pos + int64(len(chHdr))
+		if chunkSize > fileSize-body {
+			return nil, fmt.Errorf("WAV chunk %q claims %d bytes but only %d follow it", string(chHdr[:4]), chunkSize, fileSize-body)
 		}
 
 		if fourCC == "id3 " {
@@ -102,16 +104,18 @@ func extractWAVMetadata(f *os.File) ([]byte, error) {
 			return out, nil
 		}
 
-		// Skip non-id3 chunk body without reading it.
-		if _, err := f.Seek(paddedSize, io.SeekCurrent); err != nil {
-			// Likely an unseekable stream or truncation — return what we have.
-			return wavSynthEmpty(hdr[:]), nil
+		// Skip the chunk body (padded to an even length on disk) without
+		// reading it. A missing pad byte after the last chunk is harmless:
+		// the next header read simply hits the end of the file.
+		pos = body + chunkSize + chunkSize%2
+		if _, err := f.Seek(pos, io.SeekStart); err != nil {
+			return nil, err
 		}
 	}
 }
 
 // wavSynthEmpty returns the bare RIFF/WAVE preamble with the original
-// 12-byte header but no chunks. parseWAVRating walks zero chunks and
+// 12-byte header but no chunks. ratingFromWAV walks zero chunks and
 // reports tagAbsent.
 func wavSynthEmpty(hdr []byte) []byte {
 	out := make([]byte, 12)

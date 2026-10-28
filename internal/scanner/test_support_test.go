@@ -6,13 +6,14 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/bogem/id3v2/v2"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
+	"github.com/navidrome/navidrome/plugins/pdk/go/types"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
@@ -20,10 +21,15 @@ import (
 	subsonicadapter "github.com/e1025735/nd-rating-sync/internal/adapter/subsonic"
 )
 
-var kvKeyConfigHash = kvadapter.KVKeyConfigHash
+const (
+	tagFound       = TagFound
+	tagAbsent      = TagAbsent
+	fileUnreadable = FileUnreadable
+)
+
 var sweepStaleAfter = kvadapter.SweepStaleAfter
 
-func kvKeySweepActive() string { return kvadapter.KVKeySweepActive() }
+func kvKeySweepActive() string { return kvadapter.SweepActiveKey }
 
 func resetKVStoreMock(t *testing.T) {
 	t.Helper()
@@ -35,28 +41,8 @@ func resetKVStoreMock(t *testing.T) {
 	})
 }
 
-func mustJSONBytes(v any) []byte {
-	b, err := json.Marshal(v)
-	if err != nil {
-		panic(fmt.Sprintf("marshal failed: %v", err))
-	}
-	return b
-}
-
-func configHashFor(cfg PluginConfig) string {
-	return kvadapter.ConfigHashFor(mustJSONBytes(FileCacheConfig(cfg)))
-}
-
 func kvKeyLastSynced(libraryID, username string) string {
 	return kvadapter.KVKeyLastSynced(libraryID, username)
-}
-
-func bucketKey(libraryID string, size int64, ext string) string {
-	return kvadapter.BucketKey(libraryID, size, ext)
-}
-
-func libraryScanStateKey(libraryID string) string {
-	return kvadapter.LibraryScanStateKey(libraryID)
 }
 
 func subsonicOK(songs []subsonicSong) string {
@@ -232,25 +218,6 @@ func resetLibraryMock(t *testing.T) {
 	})
 }
 
-func resetKVStoreMockNoDefault(t *testing.T) {
-	t.Helper()
-	host.KVStoreMock.ExpectedCalls = nil
-	host.KVStoreMock.Calls = nil
-	t.Cleanup(func() {
-		host.KVStoreMock.ExpectedCalls = nil
-		host.KVStoreMock.Calls = nil
-	})
-}
-
-func init() {
-	_ = kvadapter.KVKeyConfigHash
-	_ = mock.Anything
-}
-
-func makeOggSinglePageWithTime(t *testing.T, packets ...[]byte) []byte {
-	return makeOggSinglePage(t, packets...)
-}
-
 func writeFMPSFileAt(t *testing.T, dir, name, value string) string {
 	t.Helper()
 	tag := id3v2.NewEmptyTag()
@@ -273,7 +240,69 @@ func fileSize(t *testing.T, path string) int64 {
 	return fi.Size()
 }
 
+// hostLibraryRoot is the library root on the (simulated) Navidrome host. The
+// matcher reports track paths relative to it; tests read the files through
+// a temp-dir mount instead.
+const hostLibraryRoot = "/music"
+
 func mockGetLibrary(libID int32, mountPoint string) {
 	host.LibraryMock.On("GetLibrary", libID).
-		Return(&host.Library{ID: libID, MountPoint: mountPoint, Path: mountPoint}, nil)
+		Return(&host.Library{ID: libID, MountPoint: mountPoint, Path: hostLibraryRoot}, nil)
+}
+
+// allowSweepRecordWrites lets processPairChunk store its position in the
+// sweep record at every page, and a completed sweep look for stale
+// thresholds, without each test spelling it out.
+func allowSweepRecordWrites() {
+	host.KVStoreMock.On("Set", kvadapter.SweepActiveKey, mock.Anything).Return(nil).Maybe()
+	host.KVStoreMock.On("List", kvadapter.LibraryUserLastSyncPrefix+":").Return([]string(nil), nil).Maybe()
+	allowAccessLookupsToFail()
+}
+
+// allowAccessLookupsToFail makes the user and library access lookups fail,
+// which the access check treats as "allow everything", so tests that are
+// not about it need no access setup.
+func allowAccessLookupsToFail() {
+	host.UsersMock.On("GetUsers").Return([]host.User(nil), errors.New("not mocked")).Maybe()
+	host.LibraryMock.On("GetAllLibraries").Return([]host.Library(nil), errors.New("not mocked")).Maybe()
+}
+
+func resetUsersMock(t *testing.T) {
+	t.Helper()
+	host.UsersMock.ExpectedCalls = nil
+	host.UsersMock.Calls = nil
+	t.Cleanup(func() {
+		host.UsersMock.ExpectedCalls = nil
+		host.UsersMock.Calls = nil
+	})
+}
+
+func resetMatcherMock(t *testing.T) {
+	t.Helper()
+	host.MatcherMock.ExpectedCalls = nil
+	host.MatcherMock.Calls = nil
+	t.Cleanup(func() {
+		host.MatcherMock.ExpectedCalls = nil
+		host.MatcherMock.Calls = nil
+	})
+}
+
+// songRefs is the matcher request for the given song IDs.
+func songRefs(ids ...string) []types.SongRef {
+	refs := make([]types.SongRef, len(ids))
+	for i, id := range ids {
+		refs[i] = types.SongRef{ID: id}
+	}
+	return refs
+}
+
+// mockMatch makes the matcher resolve the given song IDs, in order, to the
+// given tracks.
+func mockMatch(ids []string, tracks ...*types.Track) {
+	host.MatcherMock.On("MatchSongs", songRefs(ids...), host.MatchOptions{}).Return(tracks, nil)
+}
+
+// trackAt is a matcher result for a file at rel inside library libID.
+func trackAt(id string, libID int32, rel string) *types.Track {
+	return &types.Track{ID: id, LibraryID: libID, Path: rel}
 }

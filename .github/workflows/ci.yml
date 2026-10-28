@@ -18,5 +18,11 @@ jobs:
       - name: Test
         run: go test ./...
 
+      # TinyGo's wasip1 target is assumed to have a 32-bit int (see CLAUDE.md):
+      # running the tests as a 32-bit build catches size arithmetic that only
+      # overflows there, which the 64-bit run and the fuzz seeds cannot.
+      - name: Test (32-bit int)
+        run: GOARCH=386 go test ./...
+
       - name: Vet
         run: go vet ./...

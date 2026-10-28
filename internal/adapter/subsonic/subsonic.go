@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 
+	"github.com/e1025735/nd-rating-sync/internal/logging"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 )
 
@@ -33,13 +34,13 @@ type SearchResult3 struct {
 	Song []SubsonicSong `json:"song"`
 }
 
+// SubsonicSong is one song of a search3 page. Its path field is left out on
+// purpose: Navidrome reports a made-up path, so the file is found through
+// the matcher instead.
 type SubsonicSong struct {
 	ID         string `json:"id"`
 	Title      string `json:"title"`
-	Artist     string `json:"artist"`
-	Path       string `json:"path"`       // Navidrome's reported path — synthesized/fake by default, NOT used to open the file
 	Suffix     string `json:"suffix"`     // file extension without the dot, e.g. "mp3"
-	Size       int64  `json:"size"`       // file size in bytes — used to locate the real file under the library mount
 	UserRating int    `json:"userRating"` // 0 = unrated, 1–5 = stars
 	Created    string `json:"created"`    // when Navidrome added the song (RFC3339) — kept as a string so an odd format can't fail the whole page
 }
@@ -51,7 +52,7 @@ type SubsonicSong struct {
 // well-defined stopping condition even if the server mishandles songOffset
 // (preventing an unbounded paging loop).
 func FetchSongPage(username, libraryID string, offset, pageSize int) (songs []SubsonicSong, more bool, err error) {
-	subsonicLogTrace(fmt.Sprintf("nd-rating-sync: fetchSongPage start username=%q, lib=%q, offset=%d, pageSize=%d", username, libraryID, offset, pageSize))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: fetchSongPage start username=%q, lib=%q, offset=%d, pageSize=%d", username, libraryID, offset, pageSize))
 	uri := fmt.Sprintf(
 		"search3?query=%%22%%22&songCount=%d&songOffset=%d&albumCount=0&artistCount=0&u=%s",
 		pageSize, offset, url.QueryEscape(username))
@@ -59,7 +60,7 @@ func FetchSongPage(username, libraryID string, offset, pageSize int) (songs []Su
 		uri += "&musicFolderId=" + url.QueryEscape(libraryID)
 	}
 
-	subsonicLogDebug(fmt.Sprintf(
+	logging.Debug(fmt.Sprintf(
 		"nd-rating-sync: fetching songs – user=%q library=%q offset=%d page_size=%d",
 		username, libraryID, offset, pageSize))
 
@@ -83,8 +84,8 @@ func FetchSongPage(username, libraryID string, offset, pageSize int) (songs []Su
 		return nil, false, nil
 	}
 	page := wrapper.Response.SearchResult3.Song
-	subsonicLogTrace(fmt.Sprintf("nd-rating-sync: fetchSongPage done username=%q, lib=%q, offset=%d, pageSize=%d", username, libraryID, offset, pageSize))
-	subsonicLogDebug(fmt.Sprintf(
+	logging.Trace(fmt.Sprintf("nd-rating-sync: fetchSongPage done username=%q, lib=%q, offset=%d, pageSize=%d", username, libraryID, offset, pageSize))
+	logging.Debug(fmt.Sprintf(
 		"nd-rating-sync: page offset=%d returned %d songs", offset, len(page)))
 	return page, len(page) == pageSize, nil
 }
@@ -94,28 +95,28 @@ func FetchSongPage(username, libraryID string, offset, pageSize int) (songs []Su
 // so both values are query-escaped: an unescaped "&", "+", "%" or "#" would
 // otherwise change or break the request.
 func SetRating(username, songID string, stars int) error {
-	subsonicLogTrace(fmt.Sprintf("nd-rating-sync: setRating start song=%q, username=%q", songID, username))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: setRating start song=%q, username=%q", songID, username))
 	uri := fmt.Sprintf("setRating?id=%s&rating=%d&u=%s", url.QueryEscape(songID), stars, url.QueryEscape(username))
 	raw, err := host.SubsonicAPICall(uri)
 	if err != nil {
-		subsonicLogTrace(fmt.Sprintf("nd-rating-sync: setRating stop, subsonic call error song=%q, username=%q", songID, username))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: setRating stop, subsonic call error song=%q, username=%q", songID, username))
 		return err
 	}
 
 	var wrapper SubsonicWrapper
 	if err := json.Unmarshal([]byte(raw), &wrapper); err != nil {
-		subsonicLogTrace(fmt.Sprintf("nd-rating-sync: setRating stop, unmarshal error song=%q, username=%q", songID, username))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: setRating stop, unmarshal error song=%q, username=%q", songID, username))
 		return fmt.Errorf("unmarshal setRating response: %w", err)
 	}
 	if wrapper.Response.Status != "ok" {
 		if wrapper.Response.Error != nil {
-			subsonicLogTrace(fmt.Sprintf("nd-rating-sync: setRating stop, API error song=%q, username=%q", songID, username))
+			logging.Trace(fmt.Sprintf("nd-rating-sync: setRating stop, API error song=%q, username=%q", songID, username))
 			return fmt.Errorf("API error %d: %q",
 				wrapper.Response.Error.Code, wrapper.Response.Error.Message)
 		}
-		subsonicLogTrace(fmt.Sprintf("nd-rating-sync: setRating stop non ok status song=%q, username=%q", songID, username))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: setRating stop non ok status song=%q, username=%q", songID, username))
 		return errors.New("setRating returned non-ok status")
 	}
-	subsonicLogTrace(fmt.Sprintf("nd-rating-sync: setRating done song=%q, username=%q", songID, username))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: setRating done song=%q, username=%q", songID, username))
 	return nil
 }

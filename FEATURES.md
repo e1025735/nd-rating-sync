@@ -21,7 +21,7 @@ its own; this plugin bridges file tags and the UI.
 
 After a successful scan, the timestamp is persisted per `(library, user)` in Navidrome's KV store. Subsequent runs skip any song whose file mtime predates that timestamp, so recurring scans are nearly instant after the first pass.
 
-- Skip is decided by the matched file's modification time (captured while indexing the library mount) vs the stored threshold — file mtime is the right signal because tag editors update it the moment the user saves a rating, regardless of whether Navidrome's own library scan has caught up.
+- Skip is decided by the located file's modification time (read from the file in the library mount) vs the stored threshold — file mtime is the right signal because tag editors update it the moment the user saves a rating, regardless of whether Navidrome's own library scan has caught up.
 - Songs Navidrome added since the last scan are always read, even when the file's mtime is older. Renaming or moving a file keeps its mtime, but Navidrome imports it as a new, unrated song.
 - KV failures are non-fatal: missing/corrupt state falls back to a full scan; failed writes mean the next run does redundant work, never incorrect work.
 - The stored timestamp carries a fingerprint of the user's `ratingTagOrder`, `skip_already_rated` and `clear_rating_if_untagged`; changing any of them makes that user's next run a full pass automatically. Other config changes keep the timestamp.
@@ -50,7 +50,8 @@ Incremental sync skips the per-*file* work, but a naive sweep still pages the en
 | Opus | Vorbis comments (`OpusTags`) | `.opus` |
 | WAV | ID3v2 chunk inside RIFF container | `.wav` |
 | DSD Stream File | ID3v2 block (offset stored in DSD header) | `.dsf` |
-| M4A / AAC | MP4 freeform (`----`) atoms | `.m4a`, `.aac`, `.mp4` |
+| M4A / MP4 | MP4 freeform (`----`) atoms | `.m4a`, `.mp4` |
+| AAC | ADTS stream: leading ID3v2 tag (as MP3); an MP4 file named `.aac`: as M4A. ADTS without ID3v2 is unreadable (its APEv2 tag is not read) | `.aac` |
 | WMA | ASF Extended Content Description Object | `.wma` |
 
 ## Supported tag formats
@@ -60,10 +61,11 @@ Incremental sync skips the per-*file* work, but a naive sweep still pages the en
 | Key | MP3 / WAV / DSF (ID3v2) | FLAC / Ogg / Opus (Vorbis) | M4A / AAC (MP4 atom) | WMA (ASF) | Scale / notes |
 |-----|-------------------------|----------------------------|----------------------|-----------|---------------|
 | `WMP` | POPM ("windows media player") | — | — | `WM/SharedUserRating` DWORD | MP3: non-linear 1/64/128/196/255 → 1–5 stars. WMA: 0–99 scale (WMP writes 1/25/50/75/99) → 1–5 stars |
-| `iTunes` | POPM ("itunes" / "com.apple.itunes") | — | `rating` freeform (lowercase) | — | Linear 0–100 in steps of 20 → 1–5 stars |
+| `iTunes` | POPM ("itunes" / "com.apple.itunes") | — | `rating` freeform (lowercase) | — | Linear 0–100 in steps of 20 → 1–5 stars. iTunes-style tags written by other tools. iTunes and Apple Music keep ratings in their library, not in the file, so a rating set in iTunes is never in the file |
 | `MediaMonkey` | POPM ("no@email"), else TXXX `FMPS_Rating` | `RATING` (0–100), else `FMPS_RATING` | `rate` freeform, else `FMPS_Rating` freeform | `FMPS_Rating` Unicode string | POPM: 1/64/128/196/255 → 1–5 stars; `RATING`/`rate`: 20–100 in steps of 20; FMPS: 0.2/0.4/…/1.0. Half stars are unrated |
-| `foobar2000` | TXXX `RATING` | `RATING` | `RATING` freeform (uppercase) | — | Integer 1–5 (0 / empty / out-of-range = unrated) |
-| `MusicBee` | POPM ("musicbee") | `RATING` | `RATE` freeform | `WM/SharedUserRating` DWORD | MusicBee-style `0/20/40/60/80/100` values → 1–5 stars (half-star values are treated as unrated, since Navidrome has no half stars); WMA uses the same 0–99 scale as `WMP` |
+| `foobar2000` | TXXX `RATING`, else POPM ("windows media player", which foobar2000 writes to MP3) | `RATING` | `RATING` freeform (uppercase) | — | Integer 1–5 (0 / empty = no rating; out of range = left alone); the POPM fallback uses the `WMP` scale |
+| `MusicBee` | POPM ("musicbee") | `RATING` | `RATE` freeform | `WM/SharedUserRating` DWORD | MusicBee-style `0/20/40/60/80/100` values → 1–5 stars (half-star values are left alone, since Navidrome has no half stars); WMA uses the same 0–99 scale as `WMP` |
+| `FMPS` | TXXX `FMPS_Rating` | `FMPS_RATING` | `FMPS_Rating` freeform | `FMPS_Rating` Unicode string | freedesktop FMPS (Strawberry, Clementine, Amarok, …): 0.2/0.4/…/1.0 → 1–5 stars; half stars are left alone |
 
 ---
 
@@ -77,13 +79,17 @@ disk. So the plugin never opens it.
 - Requires the manifest `library` permission with **`filesystem: true`**, plus the
   library assigned to the plugin in the Navidrome UI. Navidrome then read-only-mounts
   each library inside the sandbox and exposes the mount via `LibraryGetLibrary`.
-- The plugin walks the mount and indexes every supported audio file by **(exact
-  byte size, extension)**, then matches each Subsonic song to its file using the
-  `size` Navidrome reports — no reliance on real paths.
-- A song whose size matches no file, or matches more than one (an ambiguous
-  size+extension collision), is treated as **unreadable** and skipped — never as
-  "untagged" — so `clear_rating_if_untagged` can never wipe a rating for a file
-  the plugin could not positively identify.
+- For each page of songs the plugin asks Navidrome's **matcher** service
+  (`MatcherMatchSongs`, Navidrome 0.63.0+, manifest permission `matcher`) to
+  look the songs up by ID. With filesystem access granted, each result carries
+  the path Navidrome stored for the file, relative to the library root; joined
+  to the mount it is the file the plugin opens. There is no directory walk and
+  no file index.
+- A song the matcher returns no track for, whose file Navidrome marks as
+  missing, whose path lies outside the library, or whose file cannot be found
+  in the mount is treated as **unreadable** and skipped — never as "untagged" —
+  so `clear_rating_if_untagged` can never wipe a rating for a file the plugin
+  could not positively identify. The warning names the reason.
 - Read-only: the plugin never writes to the music files.
 
 ---
@@ -92,20 +98,22 @@ disk. So the plugin never opens it.
 
 - **Tag priority order** — `ratingTagOrder` list; first tag *found in the file* wins
 - **Skip already-rated** — songs with an existing Navidrome rating are left untouched (default on; can be disabled to allow overwrites)
-- **Clear rating if untagged** — when enabled, songs whose file contains no recognised rating tag have their Navidrome rating removed (set to 0); requires `skip_already_rated=false` to also affect previously-rated songs. Files the plugin cannot read (I/O error, permission denied, unsupported extension, unparseable container) are **never** cleared — they're counted under `skipped_unreadable` so a transient read failure cannot wipe a user's rating.
+- **Clear rating if untagged** — a file read to a clean end without a rating (or with a rating of 0) is rated 0 stars; when enabled, its song's Navidrome rating is set to 0 too. Requires `skip_already_rated=false` to also affect previously-rated songs. A file rated with a half star or an out-of-range value is rated, so it is left alone and counted under `skipped_not_whole_star`. Files the plugin cannot read (I/O error, permission denied, unsupported extension, unparseable container) are **never** cleared — they're counted under `skipped_unreadable` so a transient read failure cannot wipe a user's rating.
 
 ---
 
 ## Robustness
 
-- **Format-aware partial reads** — for every supported container (MP3, FLAC, Ogg/Opus, WAV, DSF, MP4, WMA) the plugin reads ONLY the bytes the format spec puts the metadata in (header + tag chunk / atom / block), using `Seek` to jump past audio samples — never loading the audio body into memory. Per-format read is bounded by the media-layer guard `maxMetadataReadBytes` (16 MiB) defined in `internal/media/constants.go`, so even a multi-GiB FLAC or MP4 costs a few hundred KiB of I/O instead of the full file size. This is the dominant per-song speedup over the old "read up to 64 MiB" approach for large libraries.
+- **Format-aware partial reads** — for every supported container (MP3, FLAC, Ogg/Opus, WAV, DSF, MP4, WMA) the plugin reads ONLY the bytes the format spec puts the metadata in (header + tag chunk / atom / block), using `Seek` to jump past audio samples — never loading the audio body into memory. Per-format read is bounded by the media-layer guard `maxMetadataReadBytes` (16 MiB) defined in `internal/media/constants.go`, so even a multi-GiB FLAC or MP4 costs a few hundred KiB of I/O instead of the full file size.
 - **No file-size cap** — files of any on-disk size are processable. The 16 MiB cap is on what each extractor will pull into RAM from the metadata region, not on file size. Hostile/misreported files (e.g. `/dev/zero` masquerading as audio) are bounded by the same per-extractor cap.
 - **Panic-free parsers** — TinyGo cannot recover panics on WebAssembly (a panic ends the plugin call), so the container parsers are written to never panic on any input: every length is bounds-checked, untrusted sizes are compared as `uint64`, and the parsers are fuzzed. The `recover()` around parsing only helps native test builds.
-- **Corrupt tags never clear a rating** — a tag that is cut off, has a broken size field, exceeds the 16 MiB cap or cannot be parsed (e.g. ID3v2.2) is reported as unreadable, not as "no tag", so `clear_rating_if_untagged` leaves the rating alone.
+- **Only a clean read can clear a rating** — a file counts as "no tag" only when its container was read to a clean end without a rating tag. A file that is not what its extension says (wrong magic, RF64 WAV, ADTS `.aac`, Ogg-FLAC/Speex), a size field that does not fit the file (cut-off file, streamed WAV, broken MP4 atom or ASF object), a DSF tag offset past the end, a tag that is cut off, exceeds the 16 MiB cap or cannot be parsed (e.g. ID3v2.2) is reported as unreadable, so `clear_rating_if_untagged` leaves the rating alone. An ID3v2 tag in front of a FLAC stream is skipped, as libFLAC does.
 - **32-bit-safe chunk arithmetic** — RIFF (WAV) and ASF (WMA) chunk-size fields are evaluated in `uint64` before narrowing to `int`, so a sign-wrap on TinyGo wasip1 (32-bit `int`) cannot rewind the cursor and produce an infinite loop in the chunk walker.
-- **Vorbis comment cap** — the FLAC / Ogg / Opus comment-block parser clamps the declared entry count to 1024 so a crafted file with `count = 2^32` cannot exhaust CPU/GC before the byte budget runs out.
+- **ID3v2 features the tag library lacks** — an extended header (v2.3/v2.4) is cut out before parsing, so the rating behind it is read; a `POPM` or `TXXX` frame that is compressed, encrypted, grouped or has a data-length indicator makes the file unreadable instead of being misread as untagged.
+- **Invalid rating values never become a rating** — an `FMPS_Rating` that is not a number or lies outside 0.0–1.0 (e.g. `4` or `80`) makes the file unreadable instead of becoming 5 stars; the warning names the value. A valid rating from an earlier source in `ratingTagOrder` still wins.
+- **Bounded container walks** — a corrupt comment count in a FLAC Vorbis comment block fails on the bytes actually present, Ogg/Opus comment headers are walked for at most 10,000 entries, and every extractor visits at most 4,096 container entries (FLAC blocks, WAV chunks, MP4 atoms, ASF objects). A crafted file can therefore not keep a callback busy past Navidrome's 30 s limit.
 - **KV key escaping** — `last-synced` keys URL-escape both `libraryID` and `username`, so a `:` inside either component cannot collide with a different `(library, user)` tuple.
-- **Log-line hygiene** — every user-controlled string (paths, song IDs, library IDs, usernames, file extensions, server and OS error messages) is rendered with `%q` so embedded `\r\n` or ANSI escapes cannot inject log lines into downstream aggregators. All packages (sync engine, media parsers, KV and Subsonic adapters) log through `pdk.Log`, including trace-level detail for debugging.
+- **Log-line hygiene** — every user-controlled string (paths, song IDs, library IDs, usernames, file extensions, server and OS error messages) is rendered with `%q` so embedded `\r\n` or ANSI escapes cannot inject log lines into downstream aggregators. All packages log through `internal/logging`, which drops lines below Navidrome's plugin log level before they reach the host, so trace and debug detail costs no host memory when it is switched off.
 - **Escaped API parameters** — `setRating` query-escapes the song ID and username; Navidrome allows any character in a username and the host parses the request URI, so an unescaped `&`, `+` or `%` would change the call.
 - **No raw OS errors in open/read warnings** — failures to open or read a music file log only the path; the underlying `os` error string (which would distinguish "permission denied" from "no such file or directory") is gated to debug-level only, so plugin warnings cannot be used to probe arbitrary paths' existence via planted symlinks.
 
@@ -125,8 +133,6 @@ disk. So the plugin never opens it.
 | `sync_schedule` | `0 * * * *` | Cron expression for recurring sync (hourly default; idle runs are cheap via the change-detection gate, so a frequent schedule is fine) |
 | `incremental_sync` | `true` | Skip files whose mtime predates the last successful scan (songs Navidrome added since then are always read; a change of a user's tag order or skip/clear flags forces one full pass for that user); set false to force a full rescan every run |
 | `dry_run` | `false` | Run the full scan pipeline without writing any ratings; logs `[DRY RUN] would_rate / would_clear` instead of calling `setRating`; does not advance the incremental-sync threshold |
-| `cache_libraries_filesystem_tree` | `false` | Persist a per-library file-index bucket cache in KV for very large or slow library mounts. Use only when repeated filesystem walks are too expensive. The cache is rebuilt after each Navidrome library scan. |
-| `kv_storage_max_size` | `1MB` | Must equal `permissions.kvstore.maxSize` in `manifest.json`; used to report KV usage (warning at 90 %) |
 | `default_skip_already_rated` | *(none → true)* | Admin default for users whose `skip_already_rated` is Inherit |
 | `default_clear_rating_if_untagged` | *(none → false)* | Admin default for users whose `clear_rating_if_untagged` is Inherit |
 
@@ -135,10 +141,10 @@ disk. So the plugin never opens it.
 ## Subsonic API usage
 
 - Paginates `search3` (500 songs/page) lazily — fetches only the page the current chunk needs, so a resumed sync re-reads at most one page
-- Calls `setRating` once per song where a tag was found (idempotent)
+- Calls `setRating` only when the file's rating differs from the one Navidrome reports in `search3` (`skipped_same_rating` in the chunk summary otherwise), and clears a rating only when Navidrome has one
 - Reads `userRating` from the search response to implement skip-already-rated
-- Reads `size` from the search response to locate each song's file under the library mount (Navidrome does not expose a real file path to plugins)
-- Calls the `LibraryGetLibrary` host function once per library per run to read `LastScanAt` for the change-detection gate — skipping `search3` paging entirely when the library is unchanged
+- Looks up the files of each page with one `MatcherMatchSongs` call (songs skipped as already rated are left out); the Subsonic `path` is a made-up string and is never used
+- Calls the `LibraryGetLibrary` host function once per library per callback, for the mount point and for `LastScanAt` (the change-detection gate) — skipping `search3` paging entirely when the library is unchanged
 
 ---
 
@@ -147,9 +153,10 @@ disk. So the plugin never opens it.
 - Every scheduler callback is bound by Navidrome's hard **30s** plugin-call limit (force-closes the WASM module otherwise — not configurable by the plugin)
 - Each callback processes songs for a **15 s budget** (`callBudget`), then stops
 - If songs remain, the callback serialises a cursor — `(library index, user index, song offset, pair scan-start)` — into the payload of a fresh one-time callback (empty schedule ID → host mints a unique one) and returns; the continuation resumes exactly there
-- **Bounded retries:** a failed song listing, or a library walk that does not finish within a whole budget, is retried after **30 s**; after **3** attempts the `(library, user)` pair is skipped until the next sweep (its threshold is not saved). A lasting failure such as an unknown username can therefore never keep a continuation chain running forever
+- **Bounded retries:** a failed song listing, or a failed matcher lookup of a page, is retried after **30 s**; after **3** attempts the `(library, user)` pair is skipped until the next sweep (its threshold is not saved). A lasting failure such as an unknown username can therefore never keep a continuation chain running forever
 - Continuations are otherwise rescheduled with **zero delay**, which the host runs as `time.AfterFunc(0, …)` — so the next slice fires immediately. A large first import runs as a *continuous, back-to-back* chain of quick callbacks (`… time budget reached – rescheduled continuation …` → `sync complete`), completing in minutes. **Convergence speed is driven by this chain, not by the cron** — the cron interval only governs how often a *fresh* sweep starts
-- **Overlap guard:** a full sweep records a short-lived heartbeat (`sweep-active` KV key) refreshed on every continuation; a freshly-triggered sweep skips if one is already running, so a frequent cron firing mid-import can't start a second concurrent chain. The heartbeat goes stale (≈2 min) so a crashed chain self-heals, and `OnInit` clears it on reload. Best-effort — `setRating` idempotency covers any residual race
+- **Overlap guard:** a full sweep records a short-lived heartbeat with its current position (`sweep-active` KV key) refreshed on every continuation and every song page; a freshly-triggered sweep skips if one is already running, so a frequent cron firing mid-import can't start a second concurrent chain. Best-effort — `setRating` idempotency covers any residual race
+- **Crash recovery:** if a callback dies (crash, out of memory, Navidrome's 30 s limit) or Navidrome restarts, the heartbeat goes stale (≈2 min) or is marked interrupted, and the next run resumes at the stored position instead of starting over. After a crash it also logs every file it reads on the page where the crash happened, as a warning *before* reading it, so a file that crashes the plugin again is the last one in the log. The next page is read normally again
 - Progress lives only in the scheduler payload + KV store — package globals do **not** survive between callbacks (fresh WASM instance per call)
 - The incremental-sync threshold for a `(library, user)` is saved only once that pair is fully processed, so an interrupted/continued sweep never advances the threshold past unprocessed songs
 
@@ -160,6 +167,7 @@ disk. So the plugin never opens it.
 - Does not write tags back to files (read-only access to the filesystem)
 - Does not support container formats beyond MP3, FLAC, Ogg-Vorbis, Opus, WAV, DSF, M4A/AAC, and WMA (AIFF, WavPack, DFF, etc. are skipped with a warning)
 - Does not support tag formats beyond the ones listed in the table above
-- Does not sync half-star ratings (Navidrome has none); half-star tag values are treated as unrated
+- Does not sync half-star ratings (Navidrome has none); a song whose file holds a half star keeps its Navidrome rating
 - Does not import ratings in the other direction (Navidrome → file)
+- Does not share file reads between users: each `(library, user)` pair reads the files it needs on its own, so the first import, runs with `incremental_sync=false` and the re-read after a settings change cost one file read per song **per user**. Unchanged libraries and files are skipped as usual
 - Does not cache the Subsonic `search3` results between callbacks — each chunk fetches the page(s) it needs. A sweep of a *changed* library still enumerates it page by page (incremental sync skips the per-file work within); a sweep of an *unchanged* library is skipped wholesale by the change-detection gate, so it does no paging at all

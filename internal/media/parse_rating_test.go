@@ -86,3 +86,13 @@ func TestParseRating_UnsupportedExtension(t *testing.T) {
 	_, _, err := ParseRating("aiff", nil, "", nil)
 	assert.Error(t, err)
 }
+
+func TestSupported(t *testing.T) {
+	for _, ext := range []string{"mp3", "flac", "ogg", "oga", "opus", "wav", "dsf", "m4a", "aac", "mp4", "wma"} {
+		assert.True(t, Supported(ext), ext)
+	}
+	for _, ext := range []string{"", "txt", "jpg", "nfo", "MP3"} {
+		assert.False(t, Supported(ext), ext)
+	}
+	assert.Len(t, SupportedExtensions(), len(formats))
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/e1025735/nd-rating-sync/internal/logging"
 	scanner "github.com/e1025735/nd-rating-sync/internal/scanner"
 )
 
@@ -28,8 +29,6 @@ type jsonLibraryConfig struct {
 	LibraryName string           `json:"libraryName"`
 	Users       []jsonUserConfig `json:"users"`
 }
-
-var defaultTagOrder = scanner.DefaultTagOrder
 
 // parseTristateConfig parses a PDK string value into a tristate bool pointer.
 // "true"/"1"/"yes"/"on" → &true; "false"/"0"/"no"/"off" → &false; anything else → nil (not set).
@@ -67,9 +66,8 @@ func loadConfig() pluginConfig { return loadConfigFrom(getConfig) }
 
 func loadConfigFrom(get configGetter) pluginConfig {
 	cfg := pluginConfig{
-		SyncSchedule:     "0 * * * *",
-		IncrementalSync:  true,
-		KVStorageMaxSize: "1MB",
+		SyncSchedule:    "0 * * * *",
+		IncrementalSync: true,
 	}
 
 	if v, ok := get("sync_schedule"); ok {
@@ -84,7 +82,7 @@ func loadConfigFrom(get configGetter) pluginConfig {
 		case "true", "1", "yes", "on", "":
 			// keep default true (or explicit true)
 		default:
-			logWarn(fmt.Sprintf(
+			logging.Warn(fmt.Sprintf(
 				"nd-rating-sync: invalid incremental_sync=%q – keeping default %v", v, cfg.IncrementalSync))
 		}
 	}
@@ -94,29 +92,18 @@ func loadConfigFrom(get configGetter) pluginConfig {
 			cfg.DryRun = true
 		}
 	}
-	if v, ok := get("cache_libraries_filesystem_tree"); ok {
-		switch strings.ToLower(strings.TrimSpace(v)) {
-		case "true", "1", "yes", "on":
-			cfg.CacheLibrariesFilesystemTree = true
-		}
-	}
 	if v, ok := get("default_skip_already_rated"); ok {
 		cfg.DefaultSkipAlreadyRated = parseTristateConfig(v)
 	}
 	if v, ok := get("default_clear_rating_if_untagged"); ok {
 		cfg.DefaultClearRatingIfUntagged = parseTristateConfig(v)
 	}
-	if v, ok := get("kv_storage_max_size"); ok {
-		if s := strings.TrimSpace(v); s != "" {
-			cfg.KVStorageMaxSize = s
-		}
-	}
 	if v, ok := get("libraries"); ok && v != "" {
 		var rawLibs []jsonLibraryConfig
 		if err := json.Unmarshal([]byte(v), &rawLibs); err != nil {
 			// %q on err.Error() so a crafted config blob can't smuggle CR/LF
 			// or ANSI escapes through the json.Unmarshal echo into log sinks.
-			logWarn(fmt.Sprintf("nd-rating-sync: failed to parse libraries config: %q", err.Error()))
+			logging.Warn(fmt.Sprintf("nd-rating-sync: failed to parse libraries config: %q", err.Error()))
 		} else {
 			for _, rl := range rawLibs {
 				lc := libraryConfig{LibraryID: rl.LibraryID, LibraryName: rl.LibraryName}
@@ -128,7 +115,7 @@ func loadConfigFrom(get configGetter) pluginConfig {
 						RatingTagOrder:        ru.RatingTagOrder,
 					}
 					if len(uc.RatingTagOrder) == 0 {
-						uc.RatingTagOrder = defaultTagOrder
+						uc.RatingTagOrder = scanner.DefaultTagOrder
 					}
 					lc.Users = append(lc.Users, uc)
 				}
@@ -137,7 +124,7 @@ func loadConfigFrom(get configGetter) pluginConfig {
 		}
 	}
 
-	logDebug(fmt.Sprintf(
+	logging.Debug(fmt.Sprintf(
 		"nd-rating-sync: config – libraries=%d sync_schedule=%q incremental=%v",
 		len(cfg.Libraries), cfg.SyncSchedule, cfg.IncrementalSync))
 	return cfg

@@ -1,10 +1,13 @@
 package media
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
+
+	"github.com/e1025735/nd-rating-sync/internal/logging"
 )
 
 const (
@@ -58,40 +61,169 @@ func popmMediaMonkeyToStars(b byte) int {
 /*
 fmpsToStars reads the FMPS_Rating float (0.0–1.0) and turns it into a 1–5 star value.
 Only whole stars (0.2, 0.4 … 1.0) are accepted: Navidrome has no half stars, so
-half-star values such as 0.1 or 0.9 are reported as unrated instead of being
-rounded to a neighbouring star. Values above 1.0 are clamped to 5 stars.
-*/
-func fmpsToStars(s string) (int, bool) {
-	logTrace(fmt.Sprintf("nd-rating-sync: fmpsToStars start s=%q", s))
-	s = strings.TrimSpace(s)
-	if s == "" || s == "0" || s == "0.0" {
-		logTrace(fmt.Sprintf("nd-rating-sync: fmpsToStars stop, zero s=%q", s))
-		return 0, false
-	}
+half-star values such as 0.1 or 0.9 are reported as unrated (ok=false, no
+error) instead of being rounded to a neighbouring star. An empty value or 0 is
+unrated too.
 
-	var f float64
-	if _, err := fmt.Sscanf(s, "%f", &f); err != nil {
-		logTrace(fmt.Sprintf("nd-rating-sync: fmpsToStars stop, error s=%q", s))
-		return 0, false
+A value that is not a number (the whole trimmed string must parse) or lies
+outside 0.0–1.0 — e.g. a tool that wrote stars ("4") or percent ("80") into
+the field — is an error: the caller reports the file as unreadable, so
+nothing is written and nothing is cleared.
+*/
+func fmpsToStars(s string) (int, bool, error) {
+	logging.Trace(fmt.Sprintf("nd-rating-sync: fmpsToStars start s=%q", s))
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false, nil
 	}
-	// Reject NaN/Inf explicitly: comparisons with NaN are all false, so
-	// `f <= 0` would let it slip through and produce garbage from math.Round.
-	if math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 {
-		logTrace(fmt.Sprintf("nd-rating-sync: fmpsToStars stop, NaN s=%q", s))
-		return 0, false
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, false, fmt.Errorf("FMPS_Rating %q is not a number", s)
 	}
-	if f > 1 {
-		f = 1
+	// NaN fails every comparison, so it is rejected explicitly.
+	if math.IsNaN(f) || f < 0 || f > 1 {
+		return 0, false, fmt.Errorf("FMPS_Rating %q is outside 0.0–1.0", s)
+	}
+	if f == 0 {
+		return 0, false, nil
 	}
 
 	scaled := f * 5
 	stars := int(math.Round(scaled))
 	if stars < 1 || math.Abs(scaled-float64(stars)) > fmpsWholeStarTolerance {
-		logTrace(fmt.Sprintf("nd-rating-sync: fmpsToStars stop, not a whole star s=%q", s))
-		return 0, false
+		logging.Trace(fmt.Sprintf("nd-rating-sync: fmpsToStars stop, not a whole star s=%q", s))
+		return 0, false, nil
 	}
-	logTrace(fmt.Sprintf("nd-rating-sync: fmpsToStars done s=%q", s))
-	return stars, true
+	logging.Trace(fmt.Sprintf("nd-rating-sync: fmpsToStars done s=%q", s))
+	return stars, true, nil
+}
+
+// ErrNotWholeStar reports a file whose rating tag holds a value Navidrome
+// cannot show: a half star or a value outside the source's scale. The file
+// is rated, so its Navidrome rating must be left alone; it is neither
+// written nor cleared.
+var ErrNotWholeStar = errors.New("the rating tag holds a half star or an out-of-range value, which Navidrome cannot show")
+
+// ratings collects the rating every source holds in one file; pick then
+// chooses by tagOrder. Each format's parser fills it while it walks the tags.
+//
+// A source whose value is empty or 0 holds no rating (the file is rated 0
+// stars by it) and records nothing.
+type ratings struct {
+	path     string           // for trace lines only
+	found    map[string]int   // source → stars
+	invalid  map[string]error // source → error of a value that is present but invalid
+	unusable map[string]bool  // source → holds a half star or an out-of-range value
+}
+
+func newRatings(path string) *ratings {
+	return &ratings{path: path, found: map[string]int{}, invalid: map[string]error{}, unusable: map[string]bool{}}
+}
+
+// decoded records the result of a converter that reports 0 for anything
+// that is not a whole-star rating. zero tells whether the raw value itself
+// was empty or 0: then the source holds no rating; otherwise a 0 result
+// means the value is a half star or out of range, and the source is marked
+// unusable.
+func (r *ratings) decoded(stars int, zero bool, sources ...string) {
+	if stars > 0 {
+		r.set(stars, sources...)
+		return
+	}
+	if zero {
+		return
+	}
+	for _, s := range sources {
+		r.unusable[s] = true
+	}
+	logging.Trace(fmt.Sprintf("nd-rating-sync: %s holds a rating that is not a whole star in %q", strings.Join(sources, " and "), r.path))
+}
+
+// isZeroValue reports whether a text rating value is empty or the number 0,
+// i.e. holds no rating.
+func isZeroValue(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return true
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	return err == nil && f == 0
+}
+
+// set records stars for each of sources. 0 (unrated) records nothing.
+func (r *ratings) set(stars int, sources ...string) {
+	if stars <= 0 {
+		return
+	}
+	for _, s := range sources {
+		r.found[s] = stars
+	}
+	logging.Trace(fmt.Sprintf("nd-rating-sync: found %d stars for %s in %q", stars, strings.Join(sources, " and "), r.path))
+}
+
+// parsed records the result of a converter that rejects invalid values: an
+// error marks sources invalid, otherwise the stars are set when ok.
+func (r *ratings) parsed(stars int, ok bool, err error, sources ...string) {
+	if err != nil {
+		for _, s := range sources {
+			r.invalid[s] = err
+		}
+		return
+	}
+	if ok {
+		r.set(stars, sources...)
+	}
+}
+
+// fmps records an FMPS_Rating value. FMPS reads it, and so does MediaMonkey
+// as the fallback behind its own field.
+func (r *ratings) fmps(value string) {
+	stars, _, err := fmpsToStars(value)
+	if err != nil {
+		r.parsed(0, false, err, "FMPS", "MediaMonkey")
+		return
+	}
+	r.decoded(stars, isZeroValue(value), "FMPS", "MediaMonkey")
+}
+
+// has reports whether a rating was recorded for source.
+func (r *ratings) has(source string) bool {
+	_, ok := r.found[source]
+	return ok
+}
+
+// pick returns the rating of the first source in tagOrder (see pickRating).
+func (r *ratings) pick(tagOrder []string) (int, bool, error) {
+	return pickRating(tagOrder, r.found, r.invalid, r.unusable)
+}
+
+// pickRating returns the rating of the first source in tagOrder that the
+// file holds. found maps a source to its stars; invalid maps a source to the
+// error of a value that is present but invalid. Reaching an invalid source
+// before any valid one is an error, so the file is unreadable rather than
+// taking a rating from a later source or counting as untagged.
+//
+// unusable marks sources that hold a half star or an out-of-range value. A
+// later source with a whole-star rating still wins; when none has one, the
+// result is ErrNotWholeStar, so the file is rated but not untagged and its
+// Navidrome rating is never cleared because of it.
+func pickRating(tagOrder []string, found map[string]int, invalid map[string]error, unusable map[string]bool) (int, bool, error) {
+	sawUnusable := false
+	for _, format := range tagOrder {
+		if stars, ok := found[format]; ok {
+			return stars, true, nil
+		}
+		if err := invalid[format]; err != nil {
+			return 0, false, err
+		}
+		if unusable[format] {
+			sawUnusable = true
+		}
+	}
+	if sawUnusable {
+		return 0, false, ErrNotWholeStar
+	}
+	return 0, false, nil
 }
 
 /*
@@ -147,25 +279,25 @@ in FLAC / Ogg / Opus) where the value is just the star count as a string.
 Empty, "0", or out-of-range values are reported as unrated.
 */
 func ratingIntToStars(s string) (int, bool) {
-	logTrace(fmt.Sprintf("nd-rating-sync: ratingIntToStars start s=%q", s))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: ratingIntToStars start s=%q", s))
 	s = strings.TrimSpace(s)
 	if s == "" {
-		logTrace(fmt.Sprintf("nd-rating-sync: ratingIntToStars stop, zero s=%q", s))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: ratingIntToStars stop, zero s=%q", s))
 		return 0, false
 	}
 
 	n, err := strconv.Atoi(s)
 	if err != nil {
-		logTrace(fmt.Sprintf("nd-rating-sync: ratingIntToStars stop, error s=%q", s))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: ratingIntToStars stop, error s=%q", s))
 		return 0, false
 	}
 
 	if n < 1 || n > 5 {
-		logTrace(fmt.Sprintf("nd-rating-sync: ratingIntToStars stop, out of bounds s=%q", s))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: ratingIntToStars stop, out of bounds s=%q", s))
 		return 0, false
 	}
 
-	logTrace(fmt.Sprintf("nd-rating-sync: ratingIntToStars done s=%q", s))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: ratingIntToStars done s=%q", s))
 	return n, true
 }
 
@@ -176,39 +308,64 @@ FLAC / Ogg / Opus, and the RATE / rate freeform atom in M4A.
 Empty, half-star (10, 30 … 90) or out-of-range values are reported as unrated.
 */
 func ratingMusicBeeToStars(s string) (int, bool) {
-	logTrace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars start s=%q", s))
+	logging.Trace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars start s=%q", s))
 	s = strings.TrimSpace(s)
 	if s == "" {
-		logTrace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars stop, zero s=%q", s))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars stop, zero s=%q", s))
 		return 0, false
 	}
 
 	n, err := strconv.Atoi(s)
 	if err != nil {
-		logTrace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars stop, error s=%q", s))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars stop, error s=%q", s))
 		return 0, false
 	}
 
 	if n < 0 || n > musicBee5Star {
-		logTrace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars stop, out of bounds s=%q", s))
+		logging.Trace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars stop, out of bounds s=%q", s))
 		return 0, false
 	}
 
-	logTrace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars done s=%q", s))
-	switch strings.TrimSpace(s) {
-	case strconv.Itoa(musicBee1Star):
+	logging.Trace(fmt.Sprintf("nd-rating-sync: ratingMusicBeeToStars done s=%q", s))
+	// Compared as a number, so "060" or "+60" read like "60".
+	switch n {
+	case musicBee1Star:
 		return 1, true
-	case strconv.Itoa(musicBee2Star):
+	case musicBee2Star:
 		return 2, true
-	case strconv.Itoa(musicBee3Star):
+	case musicBee3Star:
 		return 3, true
-	case strconv.Itoa(musicBee4Star):
+	case musicBee4Star:
 		return 4, true
-	case strconv.Itoa(musicBee5Star):
+	case musicBee5Star:
 		return 5, true
 	default:
 		return 0, false
 	}
+}
+
+/*
+ratingPercentToStars reads the 0–100 value of the iTunes-style MP4 "rating"
+atom with the same ranges as popmITunesToStars (1–20 → 1 star … 81–100 → 5
+stars); empty or 0 is unrated. A value that is not a whole number or lies
+outside 0–100 is an error, so a broken value never becomes a rating.
+*/
+func ratingPercentToStars(s string) (int, bool, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, false, fmt.Errorf("rating %q is not a whole number", s)
+	}
+	if n < 0 || n > 100 {
+		return 0, false, fmt.Errorf("rating %q is outside 0–100", s)
+	}
+	if n == 0 {
+		return 0, false, nil
+	}
+	return popmITunesToStars(byte(n)), true, nil
 }
 
 /*
