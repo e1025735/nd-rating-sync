@@ -12,6 +12,7 @@ import (
 	"github.com/bogem/id3v2/v2"
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -202,26 +203,36 @@ func TestProcessSong_IncrementalSkipsOldSongWithOldMTime(t *testing.T) {
 	}
 }
 
-// An untagged song Navidrome has no rating for needs no clearing call.
+// An untagged song Navidrome has no rating for needs no clearing call. With
+// clearing on, the file's 0 stars equal Navidrome's 0: the same rating.
+// With clearing off, the file's missing rating is simply not used.
 func TestProcessSong_UntaggedAndUnratedIsNotCleared(t *testing.T) {
-	resetSubsonicMock(t)
-	path := writeEmptyID3MP3At(t, t.TempDir(), "song.mp3")
-	file := songFile{entry: FileEntry{Path: path, MTime: time.Now()}, found: true}
+	for _, clear := range []bool{true, false} {
+		resetSubsonicMock(t)
+		path := writeEmptyID3MP3At(t, t.TempDir(), "song.mp3")
+		file := songFile{entry: FileEntry{Path: path, MTime: time.Now()}, found: true}
 
-	tally := &syncTally{}
-	processSong(
-		UserConfig{Username: "alice", ClearRatingIfUntagged: true, RatingTagOrder: DefaultTagOrder},
-		PluginConfig{},
-		subsonicSong{ID: "song-7", Title: "Unrated", Suffix: "mp3"},
-		time.Time{},
-		file,
-		false,
-		tally,
-	)
+		tally := &syncTally{}
+		processSong(
+			UserConfig{Username: "alice", ClearRatingIfUntagged: clear, RatingTagOrder: DefaultTagOrder},
+			PluginConfig{},
+			subsonicSong{ID: "song-7", Title: "Unrated", Suffix: "mp3"},
+			time.Time{},
+			file,
+			false,
+			tally,
+		)
 
-	assert.Equal(t, 1, tally.skippedNoTag)
-	assert.Equal(t, 0, tally.cleared)
-	host.SubsonicAPIMock.AssertNotCalled(t, "Call", "setRating?id=song-7&rating=0&u=alice")
+		if clear {
+			assert.Equal(t, 1, tally.skippedSameRating, "clear on")
+			assert.Zero(t, tally.skippedNoTag, "clear on")
+		} else {
+			assert.Equal(t, 1, tally.skippedNoTag, "clear off")
+			assert.Zero(t, tally.skippedSameRating, "clear off")
+		}
+		assert.Zero(t, tally.cleared)
+		host.SubsonicAPIMock.AssertNotCalled(t, "Call", "setRating?id=song-7&rating=0&u=alice")
+	}
 }
 
 // A file rating equal to the Navidrome rating is not written again, also in
@@ -271,4 +282,23 @@ func TestProcessSong_DifferentRatingIsOverwritten(t *testing.T) {
 
 	assert.Equal(t, 1, tally.rated)
 	host.SubsonicAPIMock.AssertExpectations(t)
+}
+
+// A file rated with a half star is rated, not untagged: clear_rating_if_untagged
+// must leave the Navidrome rating alone.
+func TestProcessSong_HalfStarIsNeverCleared(t *testing.T) {
+	resetSubsonicMock(t)
+
+	dir := t.TempDir()
+	path := writeFMPSFileAt(t, dir, "song.mp3", "0.7")
+	file := songFile{entry: FileEntry{Path: path, MTime: time.Now()}, found: true}
+
+	tally := &syncTally{}
+	song := subsonicSong{ID: "song-9", Title: "Three and a half", Suffix: "mp3", UserRating: 4}
+	processSong(UserConfig{Username: "alice", ClearRatingIfUntagged: true, RatingTagOrder: []string{"FMPS"}},
+		PluginConfig{}, song, time.Time{}, file, false, tally)
+
+	assert.Equal(t, 1, tally.skippedNotWholeStar)
+	assert.Zero(t, tally.cleared)
+	host.SubsonicAPIMock.AssertNotCalled(t, "Call", mock.Anything)
 }

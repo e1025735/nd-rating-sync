@@ -137,14 +137,16 @@ func ratingFromVorbisComments(cmts vorbisComments, path string, tagOrder []strin
 		r.fmps(vs[0])
 	}
 	if vs := cmts["RATING"]; len(vs) > 0 {
-		if stars, ok := ratingIntToStars(vs[0]); ok {
-			r.set(stars, "foobar2000")
-		}
+		// One RATING field, two scales: 1–5 for foobar2000, 0–100 for
+		// MusicBee and MediaMonkey. A value that fits neither scale of a
+		// source is unusable for it, so the file is not taken as unrated.
+		zero := isZeroValue(vs[0])
+		stars, _ := ratingIntToStars(vs[0])
+		r.decoded(stars, zero, "foobar2000")
 		// For MediaMonkey this overrides FMPS_RATING above: RATING is what
 		// MediaMonkey writes.
-		if stars, ok := ratingMusicBeeToStars(vs[0]); ok {
-			r.set(stars, "MusicBee", "MediaMonkey")
-		}
+		stars, _ = ratingMusicBeeToStars(vs[0])
+		r.decoded(stars, zero, "MusicBee", "MediaMonkey")
 	}
 	return r.pick(tagOrder)
 }

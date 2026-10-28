@@ -120,7 +120,8 @@ func ratingFromM4A(data []byte, path string, tagOrder []string) (int, bool, erro
 	}
 
 	r := newRatings(path)
-	mediaMonkeyRate := 0
+	// RATE is MediaMonkey's own atom; it is applied after the walk (see below).
+	rate, rateZero, hasRate := 0, true, false
 	var innerErr error
 
 	err = walkAtoms(ilst, func(typ string, body []byte) bool {
@@ -159,15 +160,13 @@ func ratingFromM4A(data []byte, path string, tagOrder []string) (int, bool, erro
 			r.parsed(stars, ok, err, "iTunes")
 		case nameUpper == "RATING":
 			// foobar2000 writes uppercase "RATING" with 1–5 integer scale.
-			if stars, ok := ratingIntToStars(value); ok {
-				r.set(stars, "foobar2000")
-			}
+			stars, _ := ratingIntToStars(value)
+			r.decoded(stars, isZeroValue(value), "foobar2000")
 		case nameUpper == "RATE":
 			// MusicBee and MediaMonkey write "RATE" in MP4 containers with a 0–100 scale.
-			if stars, ok := ratingMusicBeeToStars(value); ok {
-				r.set(stars, "MusicBee")
-				mediaMonkeyRate = stars
-			}
+			rate, _ = ratingMusicBeeToStars(value)
+			rateZero, hasRate = isZeroValue(value), true
+			r.decoded(rate, rateZero, "MusicBee")
 		}
 		return true
 	})
@@ -178,7 +177,9 @@ func ratingFromM4A(data []byte, path string, tagOrder []string) (int, bool, erro
 		return 0, false, fmt.Errorf("MP4 tag list: %w", err)
 	}
 	// Set after the walk, so RATE wins over an FMPS_Rating wherever it is.
-	r.set(mediaMonkeyRate, "MediaMonkey")
+	if hasRate {
+		r.decoded(rate, rateZero, "MediaMonkey")
+	}
 	return r.pick(tagOrder)
 }
 

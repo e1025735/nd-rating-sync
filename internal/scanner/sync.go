@@ -245,18 +245,19 @@ type syncTally struct {
 	rated, cleared, wouldRate, wouldClear         int
 	skippedRated, skippedNoTag, skippedUnchanged  int
 	skippedUnreadable, skippedSameRating, errored int
+	skippedNotWholeStar                           int
 }
 
 func (t syncTally) log(username, libraryID string, dryRun bool) {
 	if dryRun {
 		logging.Info(fmt.Sprintf(
-			"nd-rating-sync: [DRY RUN] chunk done user=%q library=%q – would_rate=%d would_clear=%d skipped_already_rated=%d skipped_same_rating=%d skipped_unchanged=%d skipped_no_tag=%d skipped_unreadable=%d",
-			username, libraryID, t.wouldRate, t.wouldClear, t.skippedRated, t.skippedSameRating, t.skippedUnchanged, t.skippedNoTag, t.skippedUnreadable))
+			"nd-rating-sync: [DRY RUN] chunk done user=%q library=%q – would_rate=%d would_clear=%d skipped_already_rated=%d skipped_same_rating=%d skipped_unchanged=%d skipped_no_tag=%d skipped_not_whole_star=%d skipped_unreadable=%d",
+			username, libraryID, t.wouldRate, t.wouldClear, t.skippedRated, t.skippedSameRating, t.skippedUnchanged, t.skippedNoTag, t.skippedNotWholeStar, t.skippedUnreadable))
 		return
 	}
 	logging.Info(fmt.Sprintf(
-		"nd-rating-sync: chunk done user=%q library=%q – rated=%d cleared=%d skipped_already_rated=%d skipped_same_rating=%d skipped_unchanged=%d skipped_no_tag=%d skipped_unreadable=%d errors=%d",
-		username, libraryID, t.rated, t.cleared, t.skippedRated, t.skippedSameRating, t.skippedUnchanged, t.skippedNoTag, t.skippedUnreadable, t.errored))
+		"nd-rating-sync: chunk done user=%q library=%q – rated=%d cleared=%d skipped_already_rated=%d skipped_same_rating=%d skipped_unchanged=%d skipped_no_tag=%d skipped_not_whole_star=%d skipped_unreadable=%d errors=%d",
+		username, libraryID, t.rated, t.cleared, t.skippedRated, t.skippedSameRating, t.skippedUnchanged, t.skippedNoTag, t.skippedNotWholeStar, t.skippedUnreadable, t.errored))
 }
 
 // formatThreshold renders a threshold timestamp for log output, with a

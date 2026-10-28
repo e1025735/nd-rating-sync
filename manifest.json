@@ -150,7 +150,7 @@
                     "clear_rating_if_untagged": {
                       "type": "string",
                       "title": "Clear rating if no tag found",
-                      "description": "When Yes, songs that have no embedded rating tag will have their Navidrome rating set to 0 (removed). To also clear ratings on songs that were previously rated in Navidrome, set skip_already_rated to No — otherwise already-rated songs are skipped before the file is read and their ratings will not be cleared. Inherit = use default_clear_rating_if_untagged; if that is also unset, the plugin uses false.",
+                      "description": "When Yes, a song whose file has no rating (or a rating of 0) from the sources in ratingTagOrder gets its Navidrome rating set to 0 (removed). Files that cannot be read and files rated with a half star or an out-of-range value are never cleared. To also clear ratings on songs that were previously rated in Navidrome, set skip_already_rated to No — otherwise already-rated songs are skipped before the file is read and their ratings will not be cleared. Inherit = use default_clear_rating_if_untagged; if that is also unset, the plugin uses false.",
                       "oneOf": [
                         {
                           "const": "inherit",

@@ -82,9 +82,10 @@ func pageEnd(offset int) int {
 type FileReadResult int
 
 const (
-	TagFound       FileReadResult = iota // a recognised rating tag was extracted
-	TagAbsent                            // file was read and parsed; no recognised tag
-	FileUnreadable                       // I/O error, unsupported extension, or corrupt tag
+	TagFound        FileReadResult = iota // a recognised rating tag was extracted
+	TagAbsent                             // file was read and parsed; no rating: it is rated 0 stars
+	FileUnreadable                        // I/O error, unsupported extension, or corrupt tag
+	TagNotWholeStar                       // rated, but with a half star or an out-of-range value
 )
 
 // DefaultTagOrder is the ratingTagOrder of a user who does not set one. A

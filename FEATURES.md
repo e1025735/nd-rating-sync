@@ -63,9 +63,9 @@ Incremental sync skips the per-*file* work, but a naive sweep still pages the en
 | `WMP` | POPM ("windows media player") | — | — | `WM/SharedUserRating` DWORD | MP3: non-linear 1/64/128/196/255 → 1–5 stars. WMA: 0–99 scale (WMP writes 1/25/50/75/99) → 1–5 stars |
 | `iTunes` | POPM ("itunes" / "com.apple.itunes") | — | `rating` freeform (lowercase) | — | Linear 0–100 in steps of 20 → 1–5 stars. iTunes-style tags written by other tools. iTunes and Apple Music keep ratings in their library, not in the file, so a rating set in iTunes is never in the file |
 | `MediaMonkey` | POPM ("no@email"), else TXXX `FMPS_Rating` | `RATING` (0–100), else `FMPS_RATING` | `rate` freeform, else `FMPS_Rating` freeform | `FMPS_Rating` Unicode string | POPM: 1/64/128/196/255 → 1–5 stars; `RATING`/`rate`: 20–100 in steps of 20; FMPS: 0.2/0.4/…/1.0. Half stars are unrated |
-| `foobar2000` | TXXX `RATING`, else POPM ("windows media player", which foobar2000 writes to MP3) | `RATING` | `RATING` freeform (uppercase) | — | Integer 1–5 (0 / empty / out-of-range = unrated); the POPM fallback uses the `WMP` scale |
-| `MusicBee` | POPM ("musicbee") | `RATING` | `RATE` freeform | `WM/SharedUserRating` DWORD | MusicBee-style `0/20/40/60/80/100` values → 1–5 stars (half-star values are treated as unrated, since Navidrome has no half stars); WMA uses the same 0–99 scale as `WMP` |
-| `FMPS` | TXXX `FMPS_Rating` | `FMPS_RATING` | `FMPS_Rating` freeform | `FMPS_Rating` Unicode string | freedesktop FMPS (Strawberry, Clementine, Amarok, …): 0.2/0.4/…/1.0 → 1–5 stars; half stars are unrated |
+| `foobar2000` | TXXX `RATING`, else POPM ("windows media player", which foobar2000 writes to MP3) | `RATING` | `RATING` freeform (uppercase) | — | Integer 1–5 (0 / empty = no rating; out of range = left alone); the POPM fallback uses the `WMP` scale |
+| `MusicBee` | POPM ("musicbee") | `RATING` | `RATE` freeform | `WM/SharedUserRating` DWORD | MusicBee-style `0/20/40/60/80/100` values → 1–5 stars (half-star values are left alone, since Navidrome has no half stars); WMA uses the same 0–99 scale as `WMP` |
+| `FMPS` | TXXX `FMPS_Rating` | `FMPS_RATING` | `FMPS_Rating` freeform | `FMPS_Rating` Unicode string | freedesktop FMPS (Strawberry, Clementine, Amarok, …): 0.2/0.4/…/1.0 → 1–5 stars; half stars are left alone |
 
 ---
 
@@ -98,7 +98,7 @@ disk. So the plugin never opens it.
 
 - **Tag priority order** — `ratingTagOrder` list; first tag *found in the file* wins
 - **Skip already-rated** — songs with an existing Navidrome rating are left untouched (default on; can be disabled to allow overwrites)
-- **Clear rating if untagged** — when enabled, songs whose file contains no recognised rating tag have their Navidrome rating removed (set to 0); requires `skip_already_rated=false` to also affect previously-rated songs. Files the plugin cannot read (I/O error, permission denied, unsupported extension, unparseable container) are **never** cleared — they're counted under `skipped_unreadable` so a transient read failure cannot wipe a user's rating.
+- **Clear rating if untagged** — a file read to a clean end without a rating (or with a rating of 0) is rated 0 stars; when enabled, its song's Navidrome rating is set to 0 too. Requires `skip_already_rated=false` to also affect previously-rated songs. A file rated with a half star or an out-of-range value is rated, so it is left alone and counted under `skipped_not_whole_star`. Files the plugin cannot read (I/O error, permission denied, unsupported extension, unparseable container) are **never** cleared — they're counted under `skipped_unreadable` so a transient read failure cannot wipe a user's rating.
 
 ---
 
@@ -167,7 +167,7 @@ disk. So the plugin never opens it.
 - Does not write tags back to files (read-only access to the filesystem)
 - Does not support container formats beyond MP3, FLAC, Ogg-Vorbis, Opus, WAV, DSF, M4A/AAC, and WMA (AIFF, WavPack, DFF, etc. are skipped with a warning)
 - Does not support tag formats beyond the ones listed in the table above
-- Does not sync half-star ratings (Navidrome has none); half-star tag values are treated as unrated
+- Does not sync half-star ratings (Navidrome has none); a song whose file holds a half star keeps its Navidrome rating
 - Does not import ratings in the other direction (Navidrome → file)
 - Does not share file reads between users: each `(library, user)` pair reads the files it needs on its own, so the first import, runs with `incremental_sync=false` and the re-read after a settings change cost one file read per song **per user**. Unchanged libraries and files are skipped as usual
 - Does not cache the Subsonic `search3` results between callbacks — each chunk fetches the page(s) it needs. A sweep of a *changed* library still enumerates it page by page (incremental sync skips the per-file work within); a sweep of an *unchanged* library is skipped wholesale by the change-detection gate, so it does no paging at all

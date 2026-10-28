@@ -12,6 +12,31 @@ The same rule applies inside the file: a file counts as "no tag" only when its c
 
 The `path` that the Subsonic `search3` API reports is a made-up string, so the plugin never uses it.
 
+## No rating, 0 stars and half stars
+
+A file the plugin read to a clean end that holds no rating for any source in
+the user's `ratingTagOrder` is **rated 0 stars**. The same holds for a rating
+field that is empty or `0` (POPM byte `0`, `FMPS_Rating` `0.0`, `RATING=0`,
+`WM/SharedUserRating` `0`). With `clear_rating_if_untagged` on (per user, or
+through `default_clear_rating_if_untagged`), the plugin then sets the song's
+Navidrome rating to 0 as well. Songs skipped by `skip_already_rated` are not
+read, so to clear ratings that already exist in Navidrome, set
+`skip_already_rated` to No too.
+
+Two kinds of files are **never** set to 0:
+
+- **Unreadable files** (see above): the plugin does not know what they hold.
+- **Files rated with a value Navidrome cannot show**: a half star (MusicBee or
+  MediaMonkey POPM byte `13`/`54`/`118`/`186`/`242`, `FMPS_Rating` `0.7`,
+  `RATING=70`) or a value outside the source's scale (foobar2000 `RATING=7`,
+  `WM/SharedUserRating` `150`). The file is rated, so its Navidrome rating is
+  left as it is. The chunk summary counts such songs as
+  `skipped_not_whole_star`. A whole-star rating from a later source in
+  `ratingTagOrder` still wins.
+
+Only the sources in `ratingTagOrder` count: a rating written by a player you
+did not list is not read, so such a file counts as having no rating.
+
 ## Incremental sync
 
 After the first full pass, recurring scans become nearly instant: the
@@ -73,7 +98,7 @@ run does redundant work, never incorrect work.
 FMPS_Rating is the freedesktop rating field (Strawberry, Clementine, Amarok and
 others). The `FMPS` key reads it in every container; `MediaMonkey` also reads it
 as a fallback. It is written as a float between `0.0` and `1.0`. Only whole stars
-are accepted; half stars (`0.1`, `0.3`, … `0.9`) are treated as unrated because
+are accepted; half stars (`0.1`, `0.3`, … `0.9`) are left alone because
 Navidrome has no half stars. A value that is not a number or lies outside
 `0.0`–`1.0` (e.g. `4` or `80` written by a tool that confused the scale) makes the
 file unreadable: nothing is written or cleared, and the warning names the value.
@@ -81,7 +106,8 @@ A valid rating from a source earlier in `ratingTagOrder` still wins.
 
 | Tag value | Stars |
 |-----------|-------|
-| `0`, `0.0`, empty, missing, half stars | (unrated → skip) |
+| `0`, `0.0`, empty, missing | no rating (0 stars) |
+| half stars | (not a whole star → left alone, never cleared) |
 | `0.2` | ★ |
 | `0.4` | ★★ |
 | `0.6` | ★★★ |
@@ -103,7 +129,8 @@ these frames are decoded by exact value instead of by range:
 | `128` | ★★★ |
 | `196` | ★★★★ |
 | `255` (MediaMonkey 3.x: `252`) | ★★★★★ |
-| anything else, incl. half stars | (unrated → skip) |
+| `0` | no rating (0 stars) |
+| anything else, incl. half stars | (not a whole star → left alone, never cleared) |
 
 MediaMonkey writes its rating as `POPM` in MP3, as `RATING` (0–100) in
 FLAC/Ogg/Opus and as `rate` in M4A. These take precedence over an
@@ -111,11 +138,12 @@ FLAC/Ogg/Opus and as `rate` in M4A. These take precedence over an
 
 ### foobar2000 RATING
 
-The foobar2000 `RATING` tag is a plain integer. Anything outside 1–5 is treated as unrated. In MP3 files foobar2000 writes its rating as a POPM frame with the email `Windows Media Player 9 Series`; when there is no `RATING` TXXX frame, the `foobar2000` key reads that frame with the Windows Media Player scale.
+The foobar2000 `RATING` tag is a plain integer. `0` or empty means no rating; anything else outside 1–5 is left alone. In MP3 files foobar2000 writes its rating as a POPM frame with the email `Windows Media Player 9 Series`; when there is no `RATING` TXXX frame, the `foobar2000` key reads that frame with the Windows Media Player scale.
 
 | Tag value | Stars |
 |-----------|-------|
-| `0`, empty, `6+`, non-numeric | (unrated → skip) |
+| `0`, empty | no rating (0 stars) |
+| `6+`, non-numeric | (out of range → left alone, never cleared) |
 | `1` – `5` | ★ – ★★★★★ |
 
 ### WMP POPM
@@ -148,7 +176,7 @@ property:
 | `38` – `62` | ★★★ |
 | `63` – `87` | ★★★★ |
 | `88` – `99` | ★★★★★ |
-| `100`+ | (out of range → skip) |
+| `100`+ | (out of range → left alone, never cleared) |
 
 ### iTunes POPM
 
@@ -168,14 +196,15 @@ iTunes ratings use a linear scale in steps of 20 across 0–100. These are iTune
 MusicBee uses a simple 0–100 scale in steps of 20 for tags written in the
 freeform `RATING` style used by Vorbis containers and the `RATE` freeform atom
 it writes in MP4/M4A files (MediaMonkey writes the same scale in the same
-fields). Half-star values (`10`, `30`, … `90`) are treated
-as unrated because Navidrome has no half stars. MusicBee's POPM frame uses the
+fields). Half-star values (`10`, `30`, … `90`) and values above `100` are
+left alone because Navidrome has no half stars. MusicBee's POPM frame uses the
 exact-value table under *MediaMonkey and MusicBee POPM*, and its WMA rating
 uses `WM/SharedUserRating` (see above).
 
 | Tag value | Stars |
 |-----------|-------|
-| `0`, empty, missing | (unrated → skip) |
+| `0`, empty, missing | no rating (0 stars) |
+| `10`, `30`, … `90`, above `100`, non-numeric | (not a whole star → left alone, never cleared) |
 | `20` | ★ |
 | `40` | ★★ |
 | `60` | ★★★ |
@@ -236,7 +265,9 @@ plugin OnInit
                                        │
                                        ├─ tag found and different from Navidrome's rating?  → SubsonicAPICall("setRating?id=…&rating=N")
                                        │
-                                       └─ no tag found + clear_rating_if_untagged + Navidrome has a rating?
+                                       ├─ half star or out-of-range value? → skip (rated, never cleared)
+                                       │
+                                       └─ no rating (0 stars) + clear_rating_if_untagged + Navidrome has a rating?
                                                        → SubsonicAPICall("setRating?id=…&rating=0")
                                                               │
                                                               ▼

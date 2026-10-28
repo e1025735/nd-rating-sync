@@ -136,7 +136,7 @@ func parseASFExtContentDesc(body []byte, path string, tagOrder []string) (int, b
 			case valueType == asfTypeWORD && valueLen >= 2:
 				v = uint32(binary.LittleEndian.Uint16(valueBytes[:2]))
 			}
-			r.set(sharedUserRatingToStars(v), "WMP", "MusicBee")
+			r.decoded(sharedUserRatingToStars(v), v == 0, "WMP", "MusicBee")
 		case "FMPS_RATING":
 			if valueType == 0 { // Unicode string
 				r.fmps(decodeUTF16LE(valueBytes))

@@ -1,6 +1,7 @@
 package media
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -97,16 +98,56 @@ func fmpsToStars(s string) (int, bool, error) {
 	return stars, true, nil
 }
 
+// ErrNotWholeStar reports a file whose rating tag holds a value Navidrome
+// cannot show: a half star or a value outside the source's scale. The file
+// is rated, so its Navidrome rating must be left alone; it is neither
+// written nor cleared.
+var ErrNotWholeStar = errors.New("the rating tag holds a half star or an out-of-range value, which Navidrome cannot show")
+
 // ratings collects the rating every source holds in one file; pick then
 // chooses by tagOrder. Each format's parser fills it while it walks the tags.
+//
+// A source whose value is empty or 0 holds no rating (the file is rated 0
+// stars by it) and records nothing.
 type ratings struct {
-	path    string           // for trace lines only
-	found   map[string]int   // source → stars
-	invalid map[string]error // source → error of a value that is present but invalid
+	path     string           // for trace lines only
+	found    map[string]int   // source → stars
+	invalid  map[string]error // source → error of a value that is present but invalid
+	unusable map[string]bool  // source → holds a half star or an out-of-range value
 }
 
 func newRatings(path string) *ratings {
-	return &ratings{path: path, found: map[string]int{}, invalid: map[string]error{}}
+	return &ratings{path: path, found: map[string]int{}, invalid: map[string]error{}, unusable: map[string]bool{}}
+}
+
+// decoded records the result of a converter that reports 0 for anything
+// that is not a whole-star rating. zero tells whether the raw value itself
+// was empty or 0: then the source holds no rating; otherwise a 0 result
+// means the value is a half star or out of range, and the source is marked
+// unusable.
+func (r *ratings) decoded(stars int, zero bool, sources ...string) {
+	if stars > 0 {
+		r.set(stars, sources...)
+		return
+	}
+	if zero {
+		return
+	}
+	for _, s := range sources {
+		r.unusable[s] = true
+	}
+	logging.Trace(fmt.Sprintf("nd-rating-sync: %s holds a rating that is not a whole star in %q", strings.Join(sources, " and "), r.path))
+}
+
+// isZeroValue reports whether a text rating value is empty or the number 0,
+// i.e. holds no rating.
+func isZeroValue(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return true
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	return err == nil && f == 0
 }
 
 // set records stars for each of sources. 0 (unrated) records nothing.
@@ -137,8 +178,12 @@ func (r *ratings) parsed(stars int, ok bool, err error, sources ...string) {
 // fmps records an FMPS_Rating value. FMPS reads it, and so does MediaMonkey
 // as the fallback behind its own field.
 func (r *ratings) fmps(value string) {
-	stars, ok, err := fmpsToStars(value)
-	r.parsed(stars, ok, err, "FMPS", "MediaMonkey")
+	stars, _, err := fmpsToStars(value)
+	if err != nil {
+		r.parsed(0, false, err, "FMPS", "MediaMonkey")
+		return
+	}
+	r.decoded(stars, isZeroValue(value), "FMPS", "MediaMonkey")
 }
 
 // has reports whether a rating was recorded for source.
@@ -149,7 +194,7 @@ func (r *ratings) has(source string) bool {
 
 // pick returns the rating of the first source in tagOrder (see pickRating).
 func (r *ratings) pick(tagOrder []string) (int, bool, error) {
-	return pickRating(tagOrder, r.found, r.invalid)
+	return pickRating(tagOrder, r.found, r.invalid, r.unusable)
 }
 
 // pickRating returns the rating of the first source in tagOrder that the
@@ -157,7 +202,13 @@ func (r *ratings) pick(tagOrder []string) (int, bool, error) {
 // error of a value that is present but invalid. Reaching an invalid source
 // before any valid one is an error, so the file is unreadable rather than
 // taking a rating from a later source or counting as untagged.
-func pickRating(tagOrder []string, found map[string]int, invalid map[string]error) (int, bool, error) {
+//
+// unusable marks sources that hold a half star or an out-of-range value. A
+// later source with a whole-star rating still wins; when none has one, the
+// result is ErrNotWholeStar, so the file is rated but not untagged and its
+// Navidrome rating is never cleared because of it.
+func pickRating(tagOrder []string, found map[string]int, invalid map[string]error, unusable map[string]bool) (int, bool, error) {
+	sawUnusable := false
 	for _, format := range tagOrder {
 		if stars, ok := found[format]; ok {
 			return stars, true, nil
@@ -165,6 +216,12 @@ func pickRating(tagOrder []string, found map[string]int, invalid map[string]erro
 		if err := invalid[format]; err != nil {
 			return 0, false, err
 		}
+		if unusable[format] {
+			sawUnusable = true
+		}
+	}
+	if sawUnusable {
+		return 0, false, ErrNotWholeStar
 	}
 	return 0, false, nil
 }

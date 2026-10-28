@@ -116,8 +116,8 @@ Additional options:
   - `inherit`: use the admin default.
 
 - `clear_rating_if_untagged`
-  - `yes`: clear the Navidrome rating when the file has no recognised rating tag. Songs skipped by `skip_already_rated` are not read, so their ratings are never cleared.
-  - `no`: leave unrated files alone.
+  - `yes`: a file without a rating (or with a rating of 0) is rated 0 stars, so the song's Navidrome rating is set to 0 too. Songs skipped by `skip_already_rated` are not read, so to clear ratings that already exist in Navidrome, set `skip_already_rated` to `no` as well. Files the plugin cannot read, and files rated with a half star or an out-of-range value, are never set to 0.
+  - `no`: leave the Navidrome rating of files without a rating alone.
   - `inherit`: use the admin default.
 
 - `ratingTagOrder`
@@ -147,7 +147,7 @@ Sources that do not exist in a container are simply skipped.
 - `WMP` and `iTunes` cover their respective POPM/ASF representations. `iTunes` means iTunes-style tags written by other tools. iTunes and Apple Music keep ratings in their library, not in the file, so a rating set in iTunes is never in the file.
 - `MusicBee` covers MusicBee's POPM frame, `RATING` (FLAC/Ogg/Opus), `RATE` (M4A) and `WM/SharedUserRating` (WMA).
 
-Half-star values are never synced. This lets each user mirror their own tagging workflow.
+Half-star values are never synced: such a song keeps its Navidrome rating. A rating from a player that is not in the list is not read, so for that user the file has no rating. This lets each user mirror their own tagging workflow.
 
 ## First run
 

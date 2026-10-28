@@ -56,11 +56,25 @@ func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.
 		logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, file unreadable song=%q", s.ID))
 		tally.skippedUnreadable++
 		return
+	case TagNotWholeStar:
+		// The file is rated, just not in whole stars: Navidrome cannot show
+		// the value, and it must not be taken as 0 stars either.
+		logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, not a whole-star rating song=%q", s.ID))
+		logging.Debug(fmt.Sprintf("nd-rating-sync: skipping %q – the file's rating is a half star or out of range", s.Title))
+		tally.skippedNotWholeStar++
+		return
 	case TagAbsent:
-		// Nothing to clear when Navidrome has no rating either.
-		if !u.ClearRatingIfUntagged || s.UserRating == 0 {
+		// A file read to a clean end without a rating is rated 0 stars.
+		if !u.ClearRatingIfUntagged {
 			logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, no tag song=%q", s.ID))
 			tally.skippedNoTag++
+			return
+		}
+		// With clearing on, 0 stars is a rating like any other: when
+		// Navidrome has none either, both already agree.
+		if s.UserRating == 0 {
+			logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, same rating (0) song=%q", s.ID))
+			tally.skippedSameRating++
 			return
 		}
 		if cfg.DryRun {

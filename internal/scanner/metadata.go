@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -87,6 +88,9 @@ func parseStars(path, ext string, data []byte, tagOrder []string) (stars int, re
 
 	stars, found, err := media.ParseRating(ext, data, path, tagOrder)
 	switch {
+	case errors.Is(err, media.ErrNotWholeStar):
+		logging.Debug(fmt.Sprintf("nd-rating-sync: %q – the rating tag holds a half star or an out-of-range value", path))
+		return 0, TagNotWholeStar
 	case err != nil:
 		logging.Trace(fmt.Sprintf("nd-rating-sync: parseStars stop, parse error path=%q, ext=%q", path, ext))
 		// The reason (e.g. an FMPS_Rating outside 0.0–1.0) comes from the tag

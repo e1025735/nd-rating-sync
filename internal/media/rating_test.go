@@ -59,15 +59,15 @@ func TestPickRating_InvalidSourceBeforeAValidOneIsAnError(t *testing.T) {
 	found := map[string]int{"WMP": 4}
 	invalid := map[string]error{"FMPS": assert.AnError}
 
-	stars, ok, err := pickRating([]string{"WMP", "FMPS"}, found, invalid)
+	stars, ok, err := pickRating([]string{"WMP", "FMPS"}, found, invalid, nil)
 	assert.NoError(t, err, "an earlier valid source wins")
 	assert.True(t, ok)
 	assert.Equal(t, 4, stars)
 
-	_, _, err = pickRating([]string{"FMPS", "WMP"}, found, invalid)
+	_, _, err = pickRating([]string{"FMPS", "WMP"}, found, invalid, nil)
 	assert.Error(t, err, "the invalid source comes first: unreadable")
 
-	_, ok, err = pickRating([]string{"MusicBee"}, found, invalid)
+	_, ok, err = pickRating([]string{"MusicBee"}, found, invalid, nil)
 	assert.NoError(t, err, "an invalid source outside the order does not matter")
 	assert.False(t, ok)
 }

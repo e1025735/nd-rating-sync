@@ -248,9 +248,8 @@ func ratingFromID3v2(data []byte, path string, tagOrder []string) (int, bool, er
 		case "FMPS_RATING":
 			r.fmps(txxx.Value)
 		case "RATING":
-			if stars, ok := ratingIntToStars(txxx.Value); ok {
-				r.set(stars, "foobar2000")
-			}
+			stars, _ := ratingIntToStars(txxx.Value)
+			r.decoded(stars, isZeroValue(txxx.Value), "foobar2000")
 		}
 	}
 
@@ -272,11 +271,11 @@ func ratingFromID3v2(data []byte, path string, tagOrder []string) (int, bool, er
 		case strings.Contains(e, "itunes") || "com.apple.itunes" == e:
 			r.set(popmITunesToStars(popm.Rating), "iTunes")
 		case "musicbee" == e:
-			r.set(popmMusicBeeToStars(popm.Rating), "MusicBee")
+			r.decoded(popmMusicBeeToStars(popm.Rating), popm.Rating == 0, "MusicBee")
 		case "no@email" == e:
 			// MediaMonkey's own rating frame. It runs after the TXXX loop, so it
 			// takes precedence over an FMPS_Rating another app may have written.
-			r.set(popmMediaMonkeyToStars(popm.Rating), "MediaMonkey")
+			r.decoded(popmMediaMonkeyToStars(popm.Rating), popm.Rating == 0, "MediaMonkey")
 		}
 	}
 

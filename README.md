@@ -38,6 +38,8 @@ The plugin supports these embedded rating sources:
 
 The order in `ratingTagOrder` determines which tag wins when a file contains multiple rating formats. The default order is `WMP`, `iTunes`, `MediaMonkey`, `foobar2000`, `MusicBee`, `FMPS`.
 
+A file that holds no rating from these sources (or a rating of 0) is rated 0 stars: with `clear_rating_if_untagged` on, its Navidrome rating is set to 0 as well. A file rated with a half star or an out-of-range value keeps its Navidrome rating, since Navidrome has no half stars. Files the plugin cannot read are never touched.
+
 If your player's ratings are not found, please [open an issue](https://github.com/e1025735/nd-rating-sync/issues) and attach a small sample file rated by that player (or the output of a tag viewer such as Mp3tag's extended tags), and name the player and its version. Player rating formats are poorly documented, so real files are the only reliable source.
 
 For detailed rating value mappings, see [`DETAILS.md`](DETAILS.md).
