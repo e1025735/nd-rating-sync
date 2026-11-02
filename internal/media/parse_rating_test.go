@@ -41,7 +41,7 @@ func TestExtractID3v2Metadata_NoMagicIsTagAbsent(t *testing.T) {
 func TestParseRating_UnsupportedID3VersionIsError(t *testing.T) {
 	_, found, err := ParseRating("mp3", []byte{'I', 'D', '3', 2, 0, 0, 0, 0, 0, 0}, "", []string{"MediaMonkey"})
 	assert.False(t, found)
-	assert.Error(t, err)
+	assert.ErrorContains(t, err, "ID3v2.2 tags are not supported")
 }
 
 // A FLAC whose metadata ends before a block flagged as last is cut off.
@@ -85,4 +85,14 @@ func TestParseRating_EmptyDataIsUntagged(t *testing.T) {
 func TestParseRating_UnsupportedExtension(t *testing.T) {
 	_, _, err := ParseRating("aiff", nil, "", nil)
 	assert.Error(t, err)
+}
+
+func TestSupported(t *testing.T) {
+	for _, ext := range []string{"mp3", "flac", "ogg", "oga", "opus", "wav", "dsf", "m4a", "aac", "mp4", "wma"} {
+		assert.True(t, Supported(ext), ext)
+	}
+	for _, ext := range []string{"", "txt", "jpg", "nfo", "MP3"} {
+		assert.False(t, Supported(ext), ext)
+	}
+	assert.Len(t, SupportedExtensions(), len(formats))
 }

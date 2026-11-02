@@ -10,6 +10,7 @@ import (
 )
 
 func TestRunSyncStep_NoLibraries(t *testing.T) {
+	noSweepRecord(t)
 	err := scanner.RunSyncStep(scanner.PluginConfig{}, "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no libraries configured")

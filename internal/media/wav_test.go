@@ -175,3 +175,22 @@ func TestExtractWAVMetadata_SkipsDataChunk(t *testing.T) {
 	assert.Equal(t, tagFound, result)
 	assert.Equal(t, 4, stars)
 }
+
+// A chunk size of 2 GiB or more must not wrap negative where int is 32 bits
+// (run the tests with GOARCH=386 to cover that case).
+func TestParseWAVRating_HugeChunkSizeDoesNotWrap(t *testing.T) {
+	for _, fourCC := range []string{"id3 ", "data"} {
+		var out bytes.Buffer
+		out.WriteString("RIFF")
+		require.NoError(t, binary.Write(&out, binary.LittleEndian, uint32(20)))
+		out.WriteString("WAVE")
+		out.WriteString(fourCC)
+		require.NoError(t, binary.Write(&out, binary.LittleEndian, uint32(0x80000000)))
+		out.Write(make([]byte, 8))
+
+		stars, found, err := ratingFromWAV(out.Bytes(), "", []string{"WMP"})
+		assert.NoError(t, err, fourCC)
+		assert.False(t, found, fourCC)
+		assert.Equal(t, 0, stars, fourCC)
+	}
+}

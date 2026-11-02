@@ -6,19 +6,15 @@ go 1.25
 
 require (
 	github.com/bogem/id3v2/v2 v2.1.4
-	github.com/dustin/go-humanize v1.1.0
 	github.com/extism/go-pdk v1.1.3
-	github.com/navidrome/navidrome/plugins/pdk/go v0.0.0-20260602123857-dad4203f9a93
+	github.com/navidrome/navidrome/plugins/pdk/go v0.0.0-20260707115439-6c95a66ad6e4
 	github.com/stretchr/testify v1.12.1
 )
 
 require (
-	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/text v0.3.8 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 // ── LOCAL DEVELOPMENT ──────────────────────────────────────────────────────────

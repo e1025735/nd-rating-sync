@@ -358,12 +358,14 @@ func TestExtractOggMetadata_SmallPictureCommentDropped(t *testing.T) {
 	assert.Equal(t, 3, stars)
 }
 
-func TestExtractOggMetadata_NotOggIsTagAbsent(t *testing.T) {
+// A file that is not an Ogg stream despite its extension cannot be read, so
+// its rating must never be cleared.
+func TestExtractOggMetadata_NotOggIsUnreadable(t *testing.T) {
 	dir := t.TempDir()
 	path := writeBinFile(t, dir, "song.ogg", []byte("definitely not an ogg file"))
 
 	_, result := extractStarsFromFile(path, "ogg", []string{"foobar2000"})
-	assert.Equal(t, tagAbsent, result)
+	assert.Equal(t, fileUnreadable, result)
 }
 
 // oggSynth must split packets with more than 255 lacing values over several
@@ -376,3 +378,87 @@ func TestOggSynth_RoundTripsLargePacket(t *testing.T) {
 	assert.Equal(t, idHeaderPlaceholder, packets[0])
 	assert.Equal(t, big, packets[1])
 }
+
+// Comments small enough to be kept must not add up past the per-file cap.
+func TestExtractOggMetadata_KeptCommentsAreCapped(t *testing.T) {
+	entry := "X=" + string(bytes.Repeat([]byte{'a'}, oggMaxKeptComment-2))
+	count := maxMetadataReadBytes/len(entry) + 2
+	var pkt bytes.Buffer
+	pkt.WriteString("OpusTags")
+	require.NoError(t, binary.Write(&pkt, binary.LittleEndian, uint32(0)))     // vendor
+	require.NoError(t, binary.Write(&pkt, binary.LittleEndian, uint32(count))) // comment count
+	for i := 0; i < count; i++ {
+		require.NoError(t, binary.Write(&pkt, binary.LittleEndian, uint32(len(entry))))
+		pkt.WriteString(entry)
+	}
+	path := writeBinFile(t, t.TempDir(), "song.opus", makeOggMultiPage(t, 255, idHeaderPlaceholder, pkt.Bytes()))
+
+	_, result := extractStarsFromFile(path, "opus", []string{"foobar2000"})
+	assert.Equal(t, fileUnreadable, result)
+}
+
+// ─── Ogg FLAC ─────────────────────────────────────────────────────────────────
+
+// oggFLACIdent is the identification packet of an Ogg FLAC stream: 0x7F
+// "FLAC", mapping version 1.0, one more header packet, then the native
+// "fLaC" signature and a (zeroed) STREAMINFO block.
+func oggFLACIdent() []byte {
+	pkt := []byte{0x7F, 'F', 'L', 'A', 'C', 1, 0, 0, 1, 'f', 'L', 'a', 'C', 0x00, 0, 0, 34}
+	return append(pkt, make([]byte, 34)...)
+}
+
+// makeOggFLACCommentPacket builds an Ogg FLAC VORBIS_COMMENT header packet:
+// a native metadata block header (flagged last) plus the comment block.
+func makeOggFLACCommentPacket(t *testing.T, comments ...string) []byte {
+	t.Helper()
+	var body bytes.Buffer
+	writeVorbisCommentBlock(t, &body, comments)
+	n := body.Len()
+	return append([]byte{0x80 | flacBlockVorbisComment, byte(n >> 16), byte(n >> 8), byte(n)}, body.Bytes()...)
+}
+
+// Ogg FLAC (.oga, sometimes .ogg) keeps its tags in a native VORBIS_COMMENT
+// block in the second header packet. Cover art in it is skipped as for Opus.
+func TestExtractOggMetadata_OggFLAC(t *testing.T) {
+	art := "METADATA_BLOCK_PICTURE=" + string(junkAudio())
+	file := makeOggMultiPage(t, 255, oggFLACIdent(), makeOggFLACCommentPacket(t, "TITLE=Song", art, "FMPS_RATING=0.8"))
+	path := writeBinFile(t, t.TempDir(), "song.oga", append(file, junkAudio()...))
+
+	data := extractedBytes(t, path, "oga")
+	assert.False(t, bytesContains(data, sentinel), "cover art and audio are not read")
+
+	stars, result := extractStarsFromFile(path, "oga", []string{"FMPS"})
+	assert.Equal(t, tagFound, result)
+	assert.Equal(t, 4, stars)
+
+	// The rebuilt block header describes the rebuilt body.
+	packets, err := extractOggPackets(data, 2)
+	require.NoError(t, err)
+	comment := packets[1]
+	assert.Equal(t, len(comment)-4, int(comment[1])<<16|int(comment[2])<<8|int(comment[3]))
+}
+
+// An Ogg FLAC stream without a rating is untagged, like any other file read
+// to a clean end.
+func TestRatingFromOgg_OggFLACWithoutRatingIsUntagged(t *testing.T) {
+	_, found, err := ratingFromOgg(makeOggSinglePage(t, oggFLACIdent(), makeOggFLACCommentPacket(t, "TITLE=Song")), "", everySource)
+	require.NoError(t, err)
+	assert.False(t, found)
+}
+
+// The mapping puts VORBIS_COMMENT first; any other block there is an error,
+// so the file is unreadable rather than untagged.
+func TestOggFLAC_OtherFirstBlockIsUnreadable(t *testing.T) {
+	padding := []byte{0x81, 0, 0, 4, 0, 0, 0, 0} // PADDING block, flagged last
+	file := makeOggSinglePage(t, oggFLACIdent(), padding)
+
+	_, _, err := ratingFromOgg(file, "", everySource)
+	assert.ErrorIs(t, err, errOggFLACNoComments)
+
+	path := writeBinFile(t, t.TempDir(), "song.oga", file)
+	_, result := extractStarsFromFile(path, "oga", everySource)
+	assert.Equal(t, fileUnreadable, result)
+}
+
+// everySource is a tag order listing every rating source.
+var everySource = []string{"WMP", "iTunes", "MediaMonkey", "foobar2000", "MusicBee", "FMPS"}

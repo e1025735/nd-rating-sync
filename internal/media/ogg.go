@@ -55,23 +55,19 @@ func extractOggPackets(data []byte, maxPackets int) ([][]byte, error) {
 	return packets, nil
 }
 
-// parseOggVorbisRating parses an Ogg-Vorbis or Ogg-Opus stream for a star
+// ratingFromOgg parses an Ogg-Vorbis, Ogg-Opus or Ogg-FLAC stream for a star
 // rating. The Ogg container's second packet is the comment header; after
-// stripping the format-specific magic prefix, its body is a standard Vorbis
+// stripping the format-specific prefix, its body is a standard Vorbis
 // comment block (vendor + count + entries).
 //
 // For Vorbis the comment packet starts with byte 0x03 then "vorbis"; for
-// Opus it starts with "OpusTags". A trailing Vorbis "framing bit" (Vorbis
-// only) is ignored — parseVorbisCommentBlock stops once it has read the
-// declared comment count.
-func parseOggVorbisRating(data []byte, path string, tagOrder []string) (int, bool) {
-	stars, ok, _ := ratingFromOgg(data, path, tagOrder)
-	return stars, ok
-}
-
-// ratingFromOgg is parseOggVorbisRating with the parse error kept. A stream
-// without a comment packet or with an unknown codec is untagged; a broken
-// page layout or comment block is an error.
+// Opus it starts with "OpusTags"; for FLAC (identification packet 0x7F
+// "FLAC") it is a native VORBIS_COMMENT metadata block with its 4-byte block
+// header. A trailing Vorbis "framing bit" (Vorbis only) is ignored —
+// parseVorbisCommentBlock stops once it has read the declared comment count.
+//
+// Empty data is untagged; a missing comment packet, an unknown codec, a
+// broken page layout or a broken comment block is an error.
 func ratingFromOgg(data []byte, path string, tagOrder []string) (int, bool, error) {
 	if len(data) == 0 {
 		return 0, false, nil
@@ -81,26 +77,30 @@ func ratingFromOgg(data []byte, path string, tagOrder []string) (int, bool, erro
 		return 0, false, err
 	}
 	if len(packets) < 2 {
-		return 0, false, nil
+		return 0, false, errors.New("Ogg stream has no comment header packet")
 	}
 	commentPkt := packets[1]
 
 	var body []byte
 	switch {
+	case isOggFLACIdent(packets[0]):
+		if len(commentPkt) < flacMetadataBlockHeaderSize || commentPkt[0]&0x7F != flacBlockVorbisComment {
+			return 0, false, errOggFLACNoComments
+		}
+		body = commentPkt[flacMetadataBlockHeaderSize:]
 	case len(commentPkt) >= 7 && commentPkt[0] == 0x03 && string(commentPkt[1:7]) == "vorbis":
 		body = commentPkt[7:]
 	case len(commentPkt) >= 8 && string(commentPkt[:8]) == "OpusTags":
 		body = commentPkt[8:]
 	default:
-		return 0, false, nil
+		return 0, false, errOggUnsupportedCodec
 	}
 
 	cmts, err := parseVorbisCommentBlock(body)
 	if err != nil {
 		return 0, false, err
 	}
-	stars, ok := ratingFromVorbisComments(cmts, path, tagOrder)
-	return stars, ok, nil
+	return ratingFromVorbisComments(cmts, path, tagOrder)
 }
 
 // Bounds for extractOggMetadata. They only guard against corrupt or hostile
@@ -120,6 +120,23 @@ const (
 )
 
 var errOggTruncated = errors.New("Ogg stream ends inside the header packets")
+
+// errOggUnsupportedCodec is a comment header that is neither Vorbis, Opus nor
+// FLAC (Speex, a Skeleton stream first, …). Its tags are not read, so the
+// file is unreadable rather than untagged.
+var errOggUnsupportedCodec = errors.New("Ogg stream is neither Vorbis, Opus nor FLAC")
+
+// errOggFLACNoComments is an Ogg FLAC stream whose second header packet is
+// not the VORBIS_COMMENT block the Ogg FLAC mapping requires there.
+var errOggFLACNoComments = errors.New("Ogg FLAC stream does not start its metadata with a VORBIS_COMMENT block")
+
+// isOggFLACIdent reports whether pkt is the identification packet of an Ogg
+// FLAC stream: 0x7F "FLAC", the mapping version, the header count and the
+// native "fLaC" signature with its STREAMINFO block. Each further header
+// packet holds one native FLAC metadata block.
+func isOggFLACIdent(pkt []byte) bool {
+	return len(pkt) >= 5 && pkt[0] == 0x7F && string(pkt[1:5]) == "FLAC"
+}
 
 // oggPacketReader reads one logical packet at a time straight from the file,
 // following the lacing values across page boundaries. It holds only the
@@ -142,14 +159,14 @@ func (r *oggPacketReader) nextPage() error {
 	}
 	var hdr [27]byte
 	if _, err := io.ReadFull(r.f, hdr[:]); err != nil {
-		return oggReadErr(err)
+		return cutOff(err, errOggTruncated)
 	}
 	if string(hdr[:4]) != "OggS" {
 		return errors.New("Ogg page magic missing inside the header packets")
 	}
 	n := int(hdr[26])
 	if _, err := io.ReadFull(r.f, r.lacingBuf[:n]); err != nil {
-		return oggReadErr(err)
+		return cutOff(err, errOggTruncated)
 	}
 	r.lacing = r.lacingBuf[:n]
 	r.pages++
@@ -196,7 +213,7 @@ func (r *oggPacketReader) readFull(p []byte) error {
 		}
 		n := min(len(p), r.segLeft)
 		if _, err := io.ReadFull(r.f, p[:n]); err != nil {
-			return oggReadErr(err)
+			return cutOff(err, errOggTruncated)
 		}
 		p = p[n:]
 		r.segLeft -= n
@@ -239,7 +256,7 @@ func (r *oggPacketReader) readPacket(max int) ([]byte, error) {
 		start := len(out)
 		out = append(out, make([]byte, r.segLeft)...)
 		if _, err := io.ReadFull(r.f, out[start:]); err != nil {
-			return nil, oggReadErr(err)
+			return nil, cutOff(err, errOggTruncated)
 		}
 		r.segLeft = 0
 	}
@@ -253,38 +270,24 @@ func (r *oggPacketReader) readUint32() (uint32, error) {
 	return binary.LittleEndian.Uint32(b[:]), nil
 }
 
-// oggReadErr maps a short read to errOggTruncated so a cut-off file reports
-// fileUnreadable (never tagAbsent, which clear_rating_if_untagged acts on).
-func oggReadErr(err error) error {
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return errOggTruncated
-	}
-	return err
-}
-
 // extractOggMetadata streams the two header packets of the leading logical
 // bitstream and returns a synthesised Ogg stream holding the identification
 // packet plus a compact comment packet. Comment entries larger than
 // oggMaxKeptComment (above all cover art, which Opus stores inside the
 // comment packet as METADATA_BLOCK_PICTURE) are Seeked past without being
 // read, so memory stays at a few KiB however large the art is. The synth is
-// walked by parseOggVorbisRating exactly like a real file.
+// walked by ratingFromOgg exactly like a real file.
 //
-// A file that does not start with "OggS" returns (nil, nil) → tagAbsent, as
-// for the other formats. A comment packet of an unknown codec yields a synth
-// with only the identification packet → tagAbsent. Anything cut off or
-// malformed inside the header packets is an error → fileUnreadable, so a
-// truncated file can never have its rating cleared.
+// A file that does not start with "OggS", a comment packet of an unknown
+// codec, and anything cut off or malformed inside the header packets is an
+// error → fileUnreadable, so such a file can never have its rating cleared.
 func extractOggMetadata(f *os.File) ([]byte, error) {
 	var magic [4]byte
 	if _, err := io.ReadFull(f, magic[:]); err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, nil
-		}
-		return nil, err
+		return nil, cutOff(err, errOggTruncated)
 	}
 	if string(magic[:]) != "OggS" {
-		return nil, nil
+		return nil, errors.New("not an Ogg stream (OggS magic missing)")
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return nil, err
@@ -296,40 +299,49 @@ func extractOggMetadata(f *os.File) ([]byte, error) {
 		return nil, err
 	}
 	r.startPacket()
-	comment, err := readOggCommentPacket(r)
+	comment, err := readOggCommentPacket(r, isOggFLACIdent(ident))
 	if err != nil {
 		return nil, err
-	}
-	if comment == nil {
-		return oggSynth(ident), nil
 	}
 	return oggSynth(ident, comment), nil
 }
 
-// readOggCommentPacket reads a Vorbis or Opus comment header from r and
-// rebuilds it with an empty vendor string and only the entries worth
-// keeping. It returns nil for a codec it does not recognise.
-func readOggCommentPacket(r *oggPacketReader) ([]byte, error) {
+// readOggCommentPacket reads a Vorbis, Opus or (flac set: the stream's
+// identification packet is Ogg FLAC) FLAC comment header from r and rebuilds
+// it with an empty vendor string and only the entries worth keeping. A codec
+// it does not recognise is errOggUnsupportedCodec.
+func readOggCommentPacket(r *oggPacketReader, flac bool) ([]byte, error) {
 	var prefix [8]byte
-	if err := r.readFull(prefix[:7]); err != nil {
-		return nil, err
-	}
 	var magic []byte
 	vorbis := false
-	switch {
-	case prefix[0] == 0x03 && string(prefix[1:7]) == "vorbis":
-		magic = prefix[:7]
-		vorbis = true
-	case string(prefix[:7]) == "OpusTag":
-		if err := r.readFull(prefix[7:8]); err != nil {
+	if flac {
+		// The VORBIS_COMMENT block header; its length is rewritten below.
+		if err := r.readFull(prefix[:flacMetadataBlockHeaderSize]); err != nil {
 			return nil, err
 		}
-		if prefix[7] != 's' {
-			return nil, nil
+		if prefix[0]&0x7F != flacBlockVorbisComment {
+			return nil, errOggFLACNoComments
 		}
-		magic = prefix[:8]
-	default:
-		return nil, nil
+		magic = prefix[:flacMetadataBlockHeaderSize]
+	} else {
+		if err := r.readFull(prefix[:7]); err != nil {
+			return nil, err
+		}
+		switch {
+		case prefix[0] == 0x03 && string(prefix[1:7]) == "vorbis":
+			magic = prefix[:7]
+			vorbis = true
+		case string(prefix[:7]) == "OpusTag":
+			if err := r.readFull(prefix[7:8]); err != nil {
+				return nil, err
+			}
+			if prefix[7] != 's' {
+				return nil, errOggUnsupportedCodec
+			}
+			magic = prefix[:8]
+		default:
+			return nil, errOggUnsupportedCodec
+		}
 	}
 
 	vendorLen, err := r.readUint32()
@@ -362,6 +374,12 @@ func readOggCommentPacket(r *oggPacketReader) ([]byte, error) {
 			}
 			continue
 		}
+		// The kept entries are bounded like every other extractor's read:
+		// many mid-sized comments (only a corrupt or crafted file has them)
+		// must not add up past the per-file cap.
+		if len(entries)+4+int(n) > maxMetadataReadBytes {
+			return nil, fmt.Errorf("Ogg comments exceed %d bytes", maxMetadataReadBytes)
+		}
 		start := len(entries)
 		entries = binary.LittleEndian.AppendUint32(entries, n)
 		entries = append(entries, make([]byte, n)...)
@@ -383,6 +401,14 @@ func readOggCommentPacket(r *oggPacketReader) ([]byte, error) {
 	pkt = append(pkt, entries...)
 	if vorbis {
 		pkt = append(pkt, 0x01) // framing bit
+	}
+	if flac {
+		// The block length must describe the rebuilt body (24 bits).
+		n := len(pkt) - flacMetadataBlockHeaderSize
+		if n > 0xFFFFFF {
+			return nil, fmt.Errorf("Ogg FLAC comments exceed %d bytes", 0xFFFFFF)
+		}
+		pkt[1], pkt[2], pkt[3] = byte(n>>16), byte(n>>8), byte(n)
 	}
 	return pkt, nil
 }

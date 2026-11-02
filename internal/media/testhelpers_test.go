@@ -62,15 +62,6 @@ func realID3v2(t *testing.T, value string) []byte {
 	return buf.Bytes()
 }
 
-func isSupportedExt(ext string) bool {
-	switch ext {
-	case "mp3", "flac", "ogg", "oga", "opus", "wav", "dsf", "m4a", "aac", "mp4", "wma":
-		return true
-	default:
-		return false
-	}
-}
-
 func readAudioMetadata(path, ext string) ([]byte, bool) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -92,7 +83,7 @@ func extractStarsFromFile(path string, suffix string, tagOrder []string) (int, f
 	if ext == "" {
 		ext = strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
 	}
-	if !isSupportedExt(ext) {
+	if !Supported(ext) {
 		return 0, fileUnreadable
 	}
 

@@ -6,11 +6,14 @@
   "website": "https://github.com/e1025735/nd-rating-sync",
   "permissions": {
     "library": {
-      "reason": "Read music files from all assigned Navidrome libraries to extract embedded rating tags",
+      "reason": "Read music files from all assigned Navidrome libraries to extract embedded rating tags; filesystem access also makes the matcher return each song's path",
       "filesystem": true
     },
     "subsonicapi": {
       "reason": "Call setRating to write star ratings back into Navidrome per user"
+    },
+    "matcher": {
+      "reason": "Look up each song's file path inside its library by song ID, so the plugin can read the rating tag"
     },
     "users": {
       "reason": "Required by the subsonicapi permission for per-user authorisation and to scope scrobble/scan events"
@@ -19,7 +22,7 @@
       "reason": "Schedule periodic scans of the music library"
     },
     "kvstore": {
-      "reason": "Persist the last successful scan timestamp per (library, user) so recurring scans can skip files whose mtime has not changed since",
+      "reason": "Persist the last successful scan timestamp per (library, user) so recurring scans can skip files whose mtime has not changed since, and a heartbeat that keeps two sweeps from overlapping",
       "maxSize": "1MB"
     }
   },
@@ -87,18 +90,6 @@
           ],
           "default": "inherit"
         },
-        "cache_libraries_filesystem_tree": {
-          "type": "boolean",
-          "title": "Cache Libraries Filesystem Tree",
-          "description": "When true, the plugin caches the libraries filesystem tree in its KV store and rebuilds it after each Navidrome library scan. Only enable this if the libraries are very large or on slow media (like a CIFS share), or if the log suggests it. Default: false.",
-          "default": false
-        },
-        "kv_storage_max_size": {
-          "type": "string",
-          "title": "KV storage max size",
-          "description": "This only needs to be changed if: \"Cache Libraries Filesystem Tree\" is enabled and you changed permissions.kvstore.maxSize in the manifest. Add the same value here as in the manifest. Default: 1MB",
-          "default": "1MB"
-        },
         "libraries": {
           "type": "array",
           "title": "Library configurations",
@@ -159,7 +150,7 @@
                     "clear_rating_if_untagged": {
                       "type": "string",
                       "title": "Clear rating if no tag found",
-                      "description": "When Yes, songs that have no embedded rating tag will have their Navidrome rating set to 0 (removed). To also clear ratings on songs that were previously rated in Navidrome, set skip_already_rated to No — otherwise already-rated songs are skipped before the file is read and their ratings will not be cleared. Inherit = use default_clear_rating_if_untagged; if that is also unset, the plugin uses false.",
+                      "description": "When Yes, a song whose file has no rating (or a rating of 0) from the sources in ratingTagOrder gets its Navidrome rating set to 0 (removed). Files that cannot be read and files rated with a half star or an out-of-range value are never cleared. To also clear ratings on songs that were previously rated in Navidrome, set skip_already_rated to No — otherwise already-rated songs are skipped before the file is read and their ratings will not be cleared. Inherit = use default_clear_rating_if_untagged; if that is also unset, the plugin uses false.",
                       "oneOf": [
                         {
                           "const": "inherit",
@@ -179,14 +170,15 @@
                     "ratingTagOrder": {
                       "type": "array",
                       "title": "Rating tag priority order",
-                      "description": "Ordered list of embedded tag formats to try when reading a rating from a file. The first tag found in a file wins. Remove formats this user does not use. Supported values: WMP = Windows Media Player (POPM in MP3/WAV/DSF; WM/SharedUserRating in WMA), iTunes (POPM in MP3/WAV/DSF; lowercase 'rating' atom in M4A/AAC), MediaMonkey (POPM 'no@email' or FMPS_Rating TXXX in MP3/WAV/DSF; RATING (0-100) or FMPS_RATING Vorbis comment in FLAC/Ogg/Opus; 'rate' or FMPS_Rating atom in M4A/AAC; FMPS_Rating Unicode string in WMA), foobar2000 (RATING TXXX in MP3/WAV/DSF; RATING Vorbis comment in FLAC/Ogg/Opus; uppercase RATING atom in M4A/AAC), MusicBee (POPM 'MusicBee' in MP3/WAV/DSF; RATING (0-100) in FLAC/Ogg/Opus; RATE atom in M4A/AAC; WM/SharedUserRating in WMA). Half-star ratings are not synced. Sources with no representation in a given container are silently skipped.",
+                      "description": "Ordered list of embedded tag formats to try when reading a rating from a file. The first tag found in a file wins. Remove formats this user does not use. Supported values: WMP = Windows Media Player (POPM in MP3/WAV/DSF/AAC; WM/SharedUserRating in WMA), iTunes = iTunes-style tags written by other tools, since iTunes itself keeps ratings in its library, not in the file (POPM in MP3/WAV/DSF/AAC; lowercase 'rating' atom in M4A), MediaMonkey (POPM 'no@email' or FMPS_Rating TXXX in MP3/WAV/DSF/AAC; RATING (0-100) or FMPS_RATING Vorbis comment in FLAC/Ogg/Opus; 'rate' or FMPS_Rating atom in M4A; FMPS_Rating Unicode string in WMA), foobar2000 (RATING TXXX, else the Windows Media Player POPM frame foobar2000 writes, in MP3/WAV/DSF/AAC; RATING Vorbis comment in FLAC/Ogg/Opus; uppercase RATING atom in M4A), MusicBee (POPM 'MusicBee' in MP3/WAV/DSF/AAC; RATING (0-100) in FLAC/Ogg/Opus; RATE atom in M4A; WM/SharedUserRating in WMA), FMPS = Strawberry, Clementine, Amarok and other players using the freedesktop FMPS_Rating field (TXXX in MP3/WAV/DSF/AAC; Vorbis comment in FLAC/Ogg/Opus; freeform atom in M4A; Unicode string in WMA). Half-star ratings are not synced. Sources with no representation in a given container are silently skipped.",
                       "minItems": 1,
                       "default": [
                         "WMP",
                         "iTunes",
                         "MediaMonkey",
                         "foobar2000",
-                        "MusicBee"
+                        "MusicBee",
+                        "FMPS"
                       ],
                       "items": {
                         "oneOf": [
@@ -209,6 +201,10 @@
                           {
                             "const": "MusicBee",
                             "title": "MusicBee"
+                          },
+                          {
+                            "const": "FMPS",
+                            "title": "FMPS (Strawberry, Clementine, Amarok, …)"
                           }
                         ]
                       }
@@ -238,19 +234,11 @@
         },
         {
           "type": "Control",
-          "scope": "#/properties/cache_libraries_filesystem_tree"
-        },
-        {
-          "type": "Control",
           "scope": "#/properties/default_skip_already_rated"
         },
         {
           "type": "Control",
           "scope": "#/properties/default_clear_rating_if_untagged"
-        },
-        {
-          "type": "Control",
-          "scope": "#/properties/kv_storage_max_size"
         },
         {
           "type": "Control",

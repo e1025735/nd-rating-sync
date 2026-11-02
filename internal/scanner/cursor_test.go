@@ -41,9 +41,15 @@ func TestSyncCursorMarshal(t *testing.T) {
 }
 
 func TestSyncCursorNextPair_ClearsPairFields(t *testing.T) {
-	cur := SyncCursor{Lib: 1, User: 2, Offset: 7, PairStart: "2026-06-02T18:00:00Z", Retry: 2}
+	cur := SyncCursor{Lib: 1, User: 2, Offset: 7, PairStart: "2026-06-02T18:00:00Z", Retry: 2, LogReadsUntil: 500}
 	cur.nextPair()
 	assert.Equal(t, SyncCursor{Lib: 1, User: 3}, cur)
+}
+
+func TestSyncCursorNextLibrary_ClearsPairFields(t *testing.T) {
+	cur := SyncCursor{Lib: 1, User: 2, Offset: 7, PairStart: "2026-06-02T18:00:00Z", Retry: 2, LogReadsUntil: 500}
+	cur.nextLibrary()
+	assert.Equal(t, SyncCursor{Lib: 2}, cur)
 }
 
 // Changing what a sweep writes must change the fingerprint stored with the
@@ -66,18 +72,4 @@ func TestPairFingerprint_ChangesWithPairSettings(t *testing.T) {
 		change(&u)
 		assert.NotEqual(t, fp, pairFingerprint(u), name)
 	}
-}
-
-// Only the library IDs and the cache switch decide whether the persistent
-// file index is purged.
-func TestFileCacheConfig_IgnoresUnrelatedSettings(t *testing.T) {
-	cfg := PluginConfig{Libraries: []LibraryConfig{{LibraryID: "1", Users: []UserConfig{{Username: "alice"}}}}}
-	other := cfg
-	other.SyncSchedule = "0 3 * * *"
-	other.DryRun = true
-	other.Libraries = []LibraryConfig{{LibraryID: "1", Users: []UserConfig{{Username: "bob", RatingTagOrder: []string{"WMP"}}}}}
-	assert.Equal(t, configHashFor(cfg), configHashFor(other))
-
-	other.CacheLibrariesFilesystemTree = true
-	assert.NotEqual(t, configHashFor(cfg), configHashFor(other))
 }

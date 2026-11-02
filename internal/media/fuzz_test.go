@@ -18,7 +18,10 @@ func FuzzFmpsToStars(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
-		stars, ok := fmpsToStars(s)
+		stars, ok, err := fmpsToStars(s)
+		if err != nil && (ok || stars != 0) {
+			t.Errorf("fmpsToStars(%q) = (%d, %v, %v): an error must come with no rating", s, stars, ok, err)
+		}
 		if stars < 0 || stars > 5 {
 			t.Errorf("fmpsToStars(%q) = %d (out of [0,5])", s, stars)
 		}
