@@ -133,7 +133,9 @@ const (
 //     no frames at all;
 //   - a POPM or TXXX frame that is compressed, encrypted, grouped or carries
 //     a data-length indicator would be misread as "no rating", so it is an
-//     error and the file is unreadable rather than untagged.
+//     error and the file is unreadable rather than untagged;
+//   - an ID3v2.2 tag is an error that says so, instead of the library's
+//     bare "unsupported version of ID3 tag".
 //
 // Data without the "ID3" magic, other versions and anything the walk does
 // not understand are returned unchanged for the library to judge.
@@ -142,6 +144,9 @@ func prepareID3v2(data []byte) ([]byte, error) {
 		return data, nil
 	}
 	version, flags := data[3], data[5]
+	if version == 2 {
+		return nil, errors.New("ID3v2.2 tags are not supported by this plugin (only ID3v2.3 and v2.4); re-save the tags with a current tagger to convert them")
+	}
 	if version != 3 && version != 4 {
 		return data, nil
 	}

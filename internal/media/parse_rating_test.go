@@ -41,7 +41,7 @@ func TestExtractID3v2Metadata_NoMagicIsTagAbsent(t *testing.T) {
 func TestParseRating_UnsupportedID3VersionIsError(t *testing.T) {
 	_, found, err := ParseRating("mp3", []byte{'I', 'D', '3', 2, 0, 0, 0, 0, 0, 0}, "", []string{"MediaMonkey"})
 	assert.False(t, found)
-	assert.Error(t, err)
+	assert.ErrorContains(t, err, "ID3v2.2 tags are not supported")
 }
 
 // A FLAC whose metadata ends before a block flagged as last is cut off.
