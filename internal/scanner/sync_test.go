@@ -19,11 +19,20 @@ import (
 
 // ─── runSyncStep ─────────────────────────────────────────────────────────────
 
+// A chain that ends because the config lost its libraries is marked
+// interrupted, so the next sweep does not report it as a crash.
 func TestRunSyncStep_NoLibraries(t *testing.T) {
-	allowSweepRecordWrites()
-	err := RunSyncStep(PluginConfig{}, "")
+	resetKVStoreMock(t)
+	host.KVStoreMock.On("Get", kvKeySweepActive()).
+		Return([]byte(`{"at":"2026-06-01T00:00:00Z","cursor":{"lib":0,"user":0,"off":700}}`), true, nil)
+	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.MatchedBy(func(v []byte) bool {
+		return strings.Contains(string(v), `"interrupted":true`)
+	})).Return(nil).Once()
+
+	err := RunSyncStep(PluginConfig{}, `{"lib":0,"user":0,"off":700}`)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no libraries configured")
+	host.KVStoreMock.AssertExpectations(t)
 }
 
 // ─── Regression: read failures must not trigger clear ────────────────────────
@@ -583,7 +592,7 @@ func TestRunSyncChunk_FetchFailureSkipsPairAfterMaxAttempts(t *testing.T) {
 		Users:     []UserConfig{{Username: "ghost", RatingTagOrder: DefaultTagOrder}},
 	}}}
 
-	cur := SyncCursor{Retry: maxPairAttempts - 1, PairStart: "2026-06-01T00:00:00Z"}
+	cur := SyncCursor{Retry: maxPairAttempts - 1, PairStart: "2026-06-01T00:00:00Z", Pair: pairID(cfg.Libraries[0], cfg.Libraries[0].Users[0])}
 	next, done := runSyncChunk(cfg, cur, time.Now().Add(time.Hour))
 	assert.True(t, done, "the failing pair is skipped, so the sweep finishes")
 	assert.Equal(t, 0, next.Retry)
@@ -639,7 +648,8 @@ func TestRunSyncChunk_MatcherFailureIsRetriedThenSkipped(t *testing.T) {
 	assert.Equal(t, 1, next.Retry)
 	assert.Equal(t, 0, next.Offset, "the page is retried from the same offset")
 
-	next, done = runSyncChunk(cfg, SyncCursor{Retry: maxPairAttempts - 1, PairStart: "2026-06-01T00:00:00Z"}, time.Now().Add(time.Hour))
+	next.Retry = maxPairAttempts - 1
+	next, done = runSyncChunk(cfg, next, time.Now().Add(time.Hour))
 	assert.True(t, done, "the last attempt skips the pair")
 	assert.Equal(t, 0, next.Retry)
 }
@@ -709,6 +719,72 @@ func TestRunSyncStepUntil_RefusedContinuationIsMarkedInterrupted(t *testing.T) {
 
 	require.Error(t, runSyncStepUntil(resumeTestConfig(), "", time.Now().Add(-time.Second)))
 	host.KVStoreMock.AssertExpectations(t)
+}
+
+// pairChangeTest runs one sweep of cfg from a position saved inside alice's
+// pair at offset 600 and returns the offsets search3 was asked for plus the
+// value stored as the pair's threshold.
+func pairChangeTest(t *testing.T, cfg PluginConfig, saved SyncCursor) (offsets []string, threshold string) {
+	t.Helper()
+	resetSubsonicMock(t)
+	resetKVStoreMock(t)
+	resetLibraryMock(t)
+	allowSweepRecordWrites()
+	mockGetLibrary(1, t.TempDir())
+	u := cfg.Libraries[0].Users[0]
+	host.KVStoreMock.On("Get", kvKeyLastSynced("1", u.Username)).Return([]byte(nil), false, nil)
+	host.KVStoreMock.On("Set", kvKeyLastSynced("1", u.Username), mock.Anything).
+		Run(func(a mock.Arguments) { threshold = string(a.Get(1).([]byte)) }).Return(nil)
+	host.SubsonicAPIMock.On("Call", mock.MatchedBy(func(uri string) bool { return strings.HasPrefix(uri, "search3?") })).
+		Run(func(a mock.Arguments) {
+			uri := a.String(0)
+			offsets = append(offsets, uri[strings.Index(uri, "songOffset=")+len("songOffset="):strings.Index(uri, "&albumCount")])
+		}).Return(subsonicOK(nil), nil)
+
+	_, done := runSyncChunk(cfg, saved, time.Now().Add(time.Hour))
+	require.True(t, done)
+	return offsets, threshold
+}
+
+// alicesPosition is a position inside alice's pair as resumeTestConfig had it.
+func alicesPosition() SyncCursor {
+	cfg := resumeTestConfig()
+	return SyncCursor{Offset: 600, PairStart: "2026-06-01T00:00:00Z", Pair: pairID(cfg.Libraries[0], cfg.Libraries[0].Users[0])}
+}
+
+// TestRunSyncChunk_PositionOfAnotherPairRestartsThePair proves a position
+// saved for alice is not applied to bob when a config change moved bob to
+// alice's place: bob's pair starts at offset 0 and saves its own start time.
+func TestRunSyncChunk_PositionOfAnotherPairRestartsThePair(t *testing.T) {
+	cfg := resumeTestConfig()
+	cfg.IncrementalSync = true
+	cfg.Libraries[0].Users[0].Username = "bob"
+
+	offsets, threshold := pairChangeTest(t, cfg, alicesPosition())
+	assert.Equal(t, []string{"0"}, offsets)
+	assert.NotContains(t, threshold, "2026-06-01T00:00:00Z", "the threshold is bob's own start time")
+}
+
+// TestRunSyncChunk_PositionWithOtherSettingsRestartsThePair proves a changed
+// tag order restarts the pair, so no song is skipped with the new settings.
+func TestRunSyncChunk_PositionWithOtherSettingsRestartsThePair(t *testing.T) {
+	cfg := resumeTestConfig()
+	cfg.IncrementalSync = true
+	cfg.Libraries[0].Users[0].RatingTagOrder = []string{"FMPS"}
+
+	offsets, _ := pairChangeTest(t, cfg, alicesPosition())
+	assert.Equal(t, []string{"0"}, offsets)
+}
+
+// TestRunSyncChunk_PositionOfTheSamePairContinues proves an unchanged config
+// resumes at the saved offset with the saved start time.
+func TestRunSyncChunk_PositionOfTheSamePairContinues(t *testing.T) {
+	cfg := resumeTestConfig()
+	cfg.IncrementalSync = true
+
+	offsets, threshold := pairChangeTest(t, cfg, alicesPosition())
+	assert.Equal(t, []string{"500"}, offsets, "the page holding offset 600")
+	assert.True(t, strings.HasPrefix(threshold, "2026-06-01T00:00:00Z "))
 }
 
 // TestProcessPairChunk_StoresPositionAtEveryPage proves the sweep record is

@@ -4,7 +4,7 @@ A [Navidrome](https://www.navidrome.org/)  plugin that reads embedded star-ratin
 
 **Warning: This is still in beta!** Start with `dry_run=true` and verify the first import before allowing the plugin to write ratings.
 
-**Requires Navidrome 0.63.0 or newer** (the plugin uses Navidrome's matcher service to find each song's file). On older Navidrome versions the plugin cannot be loaded; stay on nd-rating-sync 0.22.x there.
+**Requires Navidrome 0.63.0 or newer** (the plugin uses Navidrome's matcher service to find each song's file). On older Navidrome versions the plugin cannot be loaded; stay on nd-rating-sync 0.23.x there.
 
 ## What it does
 
@@ -18,7 +18,7 @@ A [Navidrome](https://www.navidrome.org/)  plugin that reads embedded star-ratin
 
 - MP3
 - FLAC
-- Ogg / Opus
+- Ogg (Vorbis, Opus, FLAC)
 - WAV
 - DSF
 - M4A / MP4
@@ -77,4 +77,4 @@ See [`DETAILS.md`](DETAILS.md) for runtime behavior and rating value mapping det
 - The first full scan can be slow for large libraries or remote mounts.
 - The plugin breaks work into budgeted chunks to stay safely under Navidrome's 30-second callback limit.
 - The Subsonic API only gives plugins a made-up song path, so the plugin asks Navidrome's matcher for the real path (relative to the library) and opens the file through the library's read-only mount.
-- Upgrading from 0.22.x: the settings `cache_libraries_filesystem_tree` and `kv_storage_max_size` are gone, and the file index older versions kept in the KV store is deleted when the plugin loads.
+- Upgrading from 0.23.x or older: the settings `cache_libraries_filesystem_tree` and `kv_storage_max_size` are gone, and the file index older versions kept in the KV store is deleted when the plugin loads.

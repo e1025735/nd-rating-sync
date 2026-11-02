@@ -186,6 +186,21 @@ func (r *ratings) fmps(value string) {
 	r.decoded(stars, isZeroValue(value), "FMPS", "MediaMonkey")
 }
 
+// own records the value of a source's own field, which outranks a fallback
+// field already recorded for it (MediaMonkey's POPM, RATE or RATING over an
+// FMPS_Rating): a whole star, a half star or an out-of-range value replaces
+// whatever the fallback recorded, so a half star in the own field is never
+// overridden by the fallback's rating. An empty or 0 value leaves the
+// fallback in place.
+func (r *ratings) own(stars int, zero bool, source string) {
+	if stars <= 0 && zero {
+		return
+	}
+	delete(r.found, source)
+	delete(r.invalid, source)
+	r.decoded(stars, zero, source)
+}
+
 // has reports whether a rating was recorded for source.
 func (r *ratings) has(source string) bool {
 	_, ok := r.found[source]

@@ -178,7 +178,7 @@ func ratingFromM4A(data []byte, path string, tagOrder []string) (int, bool, erro
 	}
 	// Set after the walk, so RATE wins over an FMPS_Rating wherever it is.
 	if hasRate {
-		r.decoded(rate, rateZero, "MediaMonkey")
+		r.own(rate, rateZero, "MediaMonkey")
 	}
 	return r.pick(tagOrder)
 }

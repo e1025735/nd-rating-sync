@@ -275,7 +275,7 @@ func ratingFromID3v2(data []byte, path string, tagOrder []string) (int, bool, er
 		case "no@email" == e:
 			// MediaMonkey's own rating frame. It runs after the TXXX loop, so it
 			// takes precedence over an FMPS_Rating another app may have written.
-			r.decoded(popmMediaMonkeyToStars(popm.Rating), popm.Rating == 0, "MediaMonkey")
+			r.own(popmMediaMonkeyToStars(popm.Rating), popm.Rating == 0, "MediaMonkey")
 		}
 	}
 

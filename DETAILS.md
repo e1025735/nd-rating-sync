@@ -134,7 +134,10 @@ these frames are decoded by exact value instead of by range:
 
 MediaMonkey writes its rating as `POPM` in MP3, as `RATING` (0–100) in
 FLAC/Ogg/Opus and as `rate` in M4A. These take precedence over an
-`FMPS_Rating` tag in the same file when `MediaMonkey` is in `ratingTagOrder`.
+`FMPS_Rating` tag in the same file when `MediaMonkey` is in `ratingTagOrder`,
+also when they hold a half star (the song is then left alone). A `RATING`
+of 1–5 is foobar2000's scale, not MediaMonkey's, and leaves the
+`FMPS_Rating` in place.
 
 ### foobar2000 RATING
 
@@ -165,8 +168,10 @@ above instead):
 
 In WMA files Windows Media Player stores the rating as a DWORD on a 0–99
 scale (it writes `1`, `25`, `50`, `75`, `99`). MusicBee's WMA ratings use the
-same field. The plugin groups the values like the Windows `System.Rating`
-property:
+same field. Taggers that store it as a WORD, a QWORD or a number in a Unicode
+string are read too; a value of any other type, or a string that is not a
+whole number, makes the file unreadable, so it is never cleared. The plugin
+groups the values like the Windows `System.Rating` property:
 
 | Value | Stars |
 |-------|-------|

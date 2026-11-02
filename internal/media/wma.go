@@ -6,14 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"strconv"
 	"strings"
 )
 
 // ASF descriptor value types (Extended Content Description Object).
 const (
-	asfTypeDWORD = 3
-	asfTypeWORD  = 5
+	asfTypeUnicode = 0
+	asfTypeDWORD   = 3
+	asfTypeQWORD   = 4
+	asfTypeWORD    = 5
 )
 
 var (
@@ -42,6 +46,35 @@ func decodeUTF16LE(b []byte) string {
 		runes = append(runes, r)
 	}
 	return string(runes)
+}
+
+// sharedUserRatingValue reads a WM/SharedUserRating value. The Windows Media
+// Format SDK defines it as a DWORD on a 0–99 scale (WMP writes 1/25/50/75/99);
+// WORD, QWORD and a Unicode number are accepted too for taggers that write
+// another type. Any other type, a value too short for its type and a string
+// that is not a whole number are an error: the file holds a rating the
+// plugin cannot read, so it must not count as untagged.
+func sharedUserRatingValue(valueType uint16, b []byte) (uint32, error) {
+	switch {
+	case valueType == asfTypeDWORD && len(b) >= 4:
+		return binary.LittleEndian.Uint32(b[:4]), nil
+	case valueType == asfTypeWORD && len(b) >= 2:
+		return uint32(binary.LittleEndian.Uint16(b[:2])), nil
+	case valueType == asfTypeQWORD && len(b) >= 8:
+		// Anything above 99 is out of range; the clamp keeps it there.
+		return uint32(min(binary.LittleEndian.Uint64(b[:8]), math.MaxUint32)), nil
+	case valueType == asfTypeUnicode:
+		s := strings.TrimSpace(decodeUTF16LE(b))
+		if s == "" {
+			return 0, nil
+		}
+		n, err := strconv.ParseUint(s, 10, 32)
+		if err != nil {
+			return 0, fmt.Errorf("WM/SharedUserRating %q is not a whole number", s)
+		}
+		return uint32(n), nil
+	}
+	return 0, fmt.Errorf("WM/SharedUserRating has value type %d with %d bytes, which cannot be read", valueType, len(b))
 }
 
 // errMalformedASF reports an ASF object or descriptor whose size does not fit
@@ -88,10 +121,12 @@ func ratingFromWMA(data []byte, path string, tagOrder []string) (int, bool, erro
 // Object (after its 24-byte GUID+size header) and extracts a star rating.
 // Recognised descriptors:
 //
-//   - "WM/SharedUserRating" (DWORD/type 3, or WORD/type 5): WMP 0–99 scale
+//   - "WM/SharedUserRating" (see sharedUserRatingValue): WMP 0–99 scale
 //   - "FMPS_Rating"         (Unicode/type 0): FMPS and MediaMonkey, float 0.0–1.0
 //
-// A descriptor that runs past the object is an error.
+// A descriptor that runs past the object is an error. A rating descriptor
+// whose value cannot be read marks its sources invalid, so the file is
+// unreadable rather than untagged.
 func parseASFExtContentDesc(body []byte, path string, tagOrder []string) (int, bool, error) {
 	if len(body) < 2 {
 		return 0, false, errMalformedASF
@@ -126,21 +161,17 @@ func parseASFExtContentDesc(body []byte, path string, tagOrder []string) (int, b
 
 		switch strings.ToUpper(name) {
 		case "WM/SHAREDUSERRATING":
-			// The Windows Media Format SDK defines this as a DWORD (type 3) on a
-			// 0–99 scale (WMP writes 1/25/50/75/99). WORD (type 5) is accepted
-			// too for taggers that write the narrower type.
-			var v uint32
-			switch {
-			case valueType == asfTypeDWORD && valueLen >= 4:
-				v = binary.LittleEndian.Uint32(valueBytes[:4])
-			case valueType == asfTypeWORD && valueLen >= 2:
-				v = uint32(binary.LittleEndian.Uint16(valueBytes[:2]))
+			if v, err := sharedUserRatingValue(valueType, valueBytes); err != nil {
+				r.parsed(0, false, err, "WMP", "MusicBee")
+			} else {
+				r.decoded(sharedUserRatingToStars(v), v == 0, "WMP", "MusicBee")
 			}
-			r.decoded(sharedUserRatingToStars(v), v == 0, "WMP", "MusicBee")
 		case "FMPS_RATING":
-			if valueType == 0 { // Unicode string
-				r.fmps(decodeUTF16LE(valueBytes))
+			if valueType != asfTypeUnicode {
+				r.parsed(0, false, fmt.Errorf("FMPS_Rating has value type %d instead of a string", valueType), "FMPS", "MediaMonkey")
+				break
 			}
+			r.fmps(decodeUTF16LE(valueBytes))
 		}
 	}
 

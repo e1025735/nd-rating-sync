@@ -3,6 +3,7 @@ package scanner
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"time"
 
 	kvadapter "github.com/e1025735/nd-rating-sync/internal/adapter/kv_store"
@@ -32,12 +33,6 @@ type PluginConfig struct {
 	Libraries                    []LibraryConfig
 }
 
-// FileEntry is a song's file inside the library mount.
-type FileEntry struct {
-	Path  string
-	MTime time.Time
-}
-
 // SyncCursor is the resumable position of a sync. It is serialised into the
 // scheduler callback payload so a long sync can be spread across many short
 // callbacks: each call processes songs until callBudget elapses, then
@@ -46,13 +41,17 @@ type FileEntry struct {
 // Package globals do NOT survive between callbacks – the host instantiates a
 // fresh WASM module per call – so the payload (and the KV store) are the only
 // channels through which progress persists. Indices reference the config as
-// loaded at fire time; because setRating is idempotent a re-processed song is
-// harmless if they ever shift.
+// loaded at fire time; Pair records which pair a position inside a pair
+// belongs to, so a config change that moves another pair to those indices
+// restarts that pair instead of continuing it (see runSyncChunk).
 type SyncCursor struct {
 	Lib       int    `json:"lib"`   // index into cfg.Libraries
 	User      int    `json:"user"`  // index into cfg.Libraries[Lib].Users
 	Offset    int    `json:"off"`   // next song index to process within this (lib,user)
 	PairStart string `json:"start"` // RFC3339Nano scan-start for the current pair; saved as the incremental threshold when the pair completes
+	// Pair is the pairID of the pair Offset and PairStart belong to. Set
+	// together with PairStart.
+	Pair string `json:"pair,omitempty"`
 	// Retry counts attempts at the current pair that failed without
 	// progress (see maxPairAttempts). Non-zero delays the continuation.
 	Retry int `json:"retry,omitempty"`
@@ -157,6 +156,9 @@ func RunSyncStep(cfg PluginConfig, payload string) error {
 
 func runSyncStepUntil(cfg PluginConfig, payload string, deadline time.Time) error {
 	if len(cfg.Libraries) == 0 {
+		// The chain ends here without a crash: mark it interrupted, so a
+		// later sweep does not report a crash and hunt for a file.
+		kvadapter.MarkSweepInterrupted("")
 		return fmt.Errorf("no libraries configured – add at least one library with users in the plugin settings")
 	}
 	cur, resumed := parseCursor(payload)
@@ -275,4 +277,11 @@ func pairFingerprint(u UserConfig) string {
 		return ""
 	}
 	return kvadapter.ConfigHashFor(raw)[:16]
+}
+
+// pairID identifies a (library, user) pair together with its settings
+// fingerprint. Both names are query-escaped, as in the KV key, so a ":" in
+// either cannot make two pairs look alike.
+func pairID(lib LibraryConfig, u UserConfig) string {
+	return url.QueryEscape(lib.LibraryID) + ":" + url.QueryEscape(u.Username) + ":" + pairFingerprint(u)
 }

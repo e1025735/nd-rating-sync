@@ -11,15 +11,26 @@ import (
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 )
 
+// parseLibraryID parses a configured library ID. Navidrome's library IDs are
+// 32-bit integers; a larger number is rejected instead of being cut down to
+// the ID of another library.
+func parseLibraryID(libraryID string) (int32, error) {
+	id, err := strconv.ParseInt(strings.TrimSpace(libraryID), 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("library ID %q is not a numeric Navidrome library ID", libraryID)
+	}
+	return int32(id), nil
+}
+
 // getLibrary fetches a configured library from the host. The ID must be
 // numeric (Navidrome's internal library IDs are); anything else never
 // reaches the host.
 func getLibrary(libraryID string) (*host.Library, error) {
-	id, err := strconv.Atoi(strings.TrimSpace(libraryID))
+	id, err := parseLibraryID(libraryID)
 	if err != nil {
-		return nil, fmt.Errorf("library ID %q is not numeric", libraryID)
+		return nil, err
 	}
-	lib, err := host.LibraryGetLibrary(int32(id))
+	lib, err := host.LibraryGetLibrary(id)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +147,7 @@ func (h *hostLookups) loadAccess() {
 func (h *hostLookups) problem(libraryID, username string) string {
 	h.loadAccess()
 	if h.accessible != nil {
-		if id, err := strconv.Atoi(strings.TrimSpace(libraryID)); err == nil && !h.accessible[int32(id)] {
+		if id, err := parseLibraryID(libraryID); err == nil && !h.accessible[id] {
 			return fmt.Sprintf("library %d does not exist or is not assigned to the plugin (Library Access)", id)
 		}
 	}

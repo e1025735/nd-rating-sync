@@ -258,6 +258,21 @@ func TestMarkSweepInterrupted_NothingToMark(t *testing.T) {
 	host.KVStoreMock.AssertNotCalled(t, "Set", mock.Anything, mock.Anything)
 }
 
+// A completed sweep whose record cannot be deleted leaves one without a
+// position, so the next sweep starts normally instead of resuming it as a
+// crash.
+func TestClearSweepActive_FailedDeleteDropsThePosition(t *testing.T) {
+	resetKVStoreMock(t)
+	host.KVStoreMock.On("Delete", SweepActiveKey).Return(errors.New("kv down"))
+	host.KVStoreMock.On("Set", SweepActiveKey, mock.MatchedBy(func(v []byte) bool {
+		var r SweepRecord
+		return json.Unmarshal(v, &r) == nil && len(r.Cursor) == 0 && r.Interrupted
+	})).Return(nil).Once()
+
+	ClearSweepActive()
+	host.KVStoreMock.AssertExpectations(t)
+}
+
 func TestDeleteStaleLastSynced_KeepsConfiguredPairs(t *testing.T) {
 	resetKVStoreMock(t)
 	keep := KVKeyLastSynced("1", "alice")

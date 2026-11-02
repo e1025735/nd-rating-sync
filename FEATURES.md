@@ -1,7 +1,7 @@
 # nd-rating-sync — Feature List
 
 ## Core purpose
-Reads embedded star-rating tags from MP3, FLAC, Ogg-Vorbis, Opus, WAV, DSF,
+Reads embedded star-rating tags from MP3, FLAC, Ogg-Vorbis, Opus, Ogg-FLAC, WAV, DSF,
 M4A/AAC, and WMA files and writes them to Navidrome's user-rating system via
 the Subsonic `setRating` API. Navidrome does not import embedded ratings on
 its own; this plugin bridges file tags and the UI.
@@ -47,6 +47,7 @@ Incremental sync skips the per-*file* work, but a naive sweep still pages the en
 | MP3 | ID3v2 (TXXX, POPM) | `.mp3` |
 | FLAC | Vorbis comments | `.flac` |
 | Ogg-Vorbis | Vorbis comments | `.ogg`, `.oga` |
+| Ogg-FLAC | Vorbis comments (native `VORBIS_COMMENT` block in the second header packet) | `.oga`, `.ogg` |
 | Opus | Vorbis comments (`OpusTags`) | `.opus` |
 | WAV | ID3v2 chunk inside RIFF container | `.wav` |
 | DSD Stream File | ID3v2 block (offset stored in DSD header) | `.dsf` |
@@ -165,7 +166,7 @@ disk. So the plugin never opens it.
 ## What the plugin does NOT do
 
 - Does not write tags back to files (read-only access to the filesystem)
-- Does not support container formats beyond MP3, FLAC, Ogg-Vorbis, Opus, WAV, DSF, M4A/AAC, and WMA (AIFF, WavPack, DFF, etc. are skipped with a warning)
+- Does not support container formats beyond MP3, FLAC, Ogg-Vorbis, Opus, Ogg-FLAC, WAV, DSF, M4A/AAC, and WMA (AIFF, WavPack, DFF, etc. are skipped with a warning)
 - Does not support tag formats beyond the ones listed in the table above
 - Does not sync half-star ratings (Navidrome has none); a song whose file holds a half star keeps its Navidrome rating
 - Does not import ratings in the other direction (Navidrome → file)

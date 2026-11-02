@@ -65,6 +65,19 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 			continue
 		}
 
+		// A position inside a pair is only valid for the pair it was saved
+		// for. After a config change the indices can point at another pair,
+		// or at the same pair with other settings; carrying on there would
+		// leave the songs before the offset unread and still save the
+		// threshold, so the pair starts over instead.
+		id := pairID(lib, u)
+		if (cur.Offset > 0 || cur.PairStart != "") && cur.Pair != id {
+			logging.Info(fmt.Sprintf(
+				"nd-rating-sync: the configuration changed since the sync position at user #%d of library #%d was saved – starting user=%q library=%q from the beginning",
+				cur.User, cur.Lib, u.Username, lib.LibraryID))
+			cur = SyncCursor{Lib: cur.Lib, User: cur.User}
+		}
+
 		// Before a pair starts, check the user and library against what the
 		// plugin may access: a typo or a missing grant is reported plainly
 		// and skipped at once, instead of failing the song listing three
@@ -115,6 +128,7 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 
 		if cur.PairStart == "" {
 			cur.PairStart = time.Now().UTC().Format(time.RFC3339Nano)
+			cur.Pair = id
 		}
 
 		next, pairDone := processPairChunk(pairRun{lib: lib, user: u, cfg: cfg, mount: mount, threshold: threshold}, cur, deadline)

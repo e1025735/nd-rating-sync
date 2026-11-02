@@ -51,6 +51,24 @@ func TestHostLookupsLastScan_NeverScannedFailsOpen(t *testing.T) {
 	assert.False(t, ok, "LastScanAt==0 (never scanned) → gate open (false)")
 }
 
+// A library ID beyond 32 bits is rejected, not cut down to another library's
+// ID (4294967297 would become 1).
+func TestParseLibraryID_RejectsIDsBeyond32Bits(t *testing.T) {
+	id, err := parseLibraryID(" 7 ")
+	require.NoError(t, err)
+	assert.Equal(t, int32(7), id)
+
+	for _, s := range []string{"4294967297", "2147483648", "x1"} {
+		_, err := parseLibraryID(s)
+		assert.Error(t, err, s)
+	}
+
+	resetLibraryMock(t)
+	_, err = newHostLookups().mount("4294967297")
+	require.Error(t, err)
+	host.LibraryMock.AssertNotCalled(t, "GetLibrary", mock.Anything)
+}
+
 // File access needs a numeric library ID, so an empty one never reaches the
 // host either.
 func TestHostLookupsLastScan_EmptyIDFailsOpen(t *testing.T) {

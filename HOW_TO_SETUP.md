@@ -11,7 +11,7 @@ It is designed to preserve ratings stored in file metadata formats such as FMPS_
 
 - MP3: ID3v2 (TXXX, POPM)
 - FLAC: Vorbis comments
-- Ogg / Opus: Vorbis comments
+- Ogg (Vorbis, Opus, FLAC): Vorbis comments
 - WAV: ID3v2 chunk inside RIFF
 - DSF: ID3v2 block in the DSD header
 - M4A / MP4: MP4 freeform atoms

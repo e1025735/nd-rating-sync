@@ -155,21 +155,52 @@ func TestParseWMARating_WMPZeroAndOutOfRangeAreUnrated(t *testing.T) {
 	}
 }
 
-func TestParseWMARating_WMPShortDWordIgnored(t *testing.T) {
-	data := buildWMA(t, []wmaDescriptor{
-		{name: "WM/SharedUserRating", valueType: 3, value: wmaWordValue(99)},
-	})
-	_, ok := parseWMARating(data, "", []string{"WMP"})
-	assert.False(t, ok)
+// Taggers that write another type than DWORD are read too: a QWORD or a
+// number stored as a Unicode string.
+func TestRatingFromWMA_WMPQWordAndStringAccepted(t *testing.T) {
+	qword := make([]byte, 8)
+	binary.LittleEndian.PutUint64(qword, 99)
+	for name, d := range map[string]wmaDescriptor{
+		"QWORD":   {name: "WM/SharedUserRating", valueType: asfTypeQWORD, value: qword},
+		"Unicode": {name: "WM/SharedUserRating", valueType: asfTypeUnicode, value: encodeUTF16LE(" 99 ")},
+	} {
+		stars, found, err := ratingFromWMA(buildWMA(t, []wmaDescriptor{d}), "", []string{"WMP"})
+		require.NoError(t, err, name)
+		assert.True(t, found, name)
+		assert.Equal(t, 5, stars, name)
+	}
 }
 
-func TestParseWMARating_WMPWrongValueTypeIgnored(t *testing.T) {
-	// FMPS_Rating as a string masquerading as WM/SharedUserRating with wrong type.
-	data := buildWMA(t, []wmaDescriptor{
-		{name: "WM/SharedUserRating", valueType: 0, value: encodeUTF16LE("99")},
-	})
-	_, ok := parseWMARating(data, "", []string{"WMP"})
-	assert.False(t, ok)
+// A huge QWORD is out of range like a DWORD above 99: rated, not untagged.
+func TestRatingFromWMA_WMPHugeQWordIsNotWholeStar(t *testing.T) {
+	qword := make([]byte, 8)
+	binary.LittleEndian.PutUint64(qword, 1<<40|50)
+	_, _, err := ratingFromWMA(buildWMA(t, []wmaDescriptor{{name: "WM/SharedUserRating", valueType: asfTypeQWORD, value: qword}}), "", []string{"WMP"})
+	assert.ErrorIs(t, err, ErrNotWholeStar)
+}
+
+// A rating value the plugin cannot read makes the file unreadable, so it is
+// never cleared as untagged.
+func TestRatingFromWMA_UnreadableRatingValueIsError(t *testing.T) {
+	for name, d := range map[string]wmaDescriptor{
+		"short DWORD":     {name: "WM/SharedUserRating", valueType: asfTypeDWORD, value: wmaWordValue(99)},
+		"byte array":      {name: "WM/SharedUserRating", valueType: 1, value: []byte{99, 0, 0, 0}},
+		"BOOL":            {name: "WM/SharedUserRating", valueType: 2, value: wmaDWordValue(1)},
+		"not a number":    {name: "WM/SharedUserRating", valueType: asfTypeUnicode, value: encodeUTF16LE("five")},
+		"FMPS as a DWORD": {name: "FMPS_Rating", valueType: asfTypeDWORD, value: wmaDWordValue(1)},
+	} {
+		_, found, err := ratingFromWMA(buildWMA(t, []wmaDescriptor{d}), "", []string{"WMP", "FMPS"})
+		require.Error(t, err, name)
+		assert.NotErrorIs(t, err, ErrNotWholeStar, name)
+		assert.False(t, found, name)
+	}
+}
+
+// An empty string holds no rating, like a 0 DWORD.
+func TestRatingFromWMA_WMPEmptyStringIsUnrated(t *testing.T) {
+	_, found, err := ratingFromWMA(buildWMA(t, []wmaDescriptor{{name: "WM/SharedUserRating", valueType: asfTypeUnicode, value: encodeUTF16LE("")}}), "", []string{"WMP"})
+	require.NoError(t, err)
+	assert.False(t, found)
 }
 
 // ─── MediaMonkey (FMPS_Rating) ────────────────────────────────────────────────

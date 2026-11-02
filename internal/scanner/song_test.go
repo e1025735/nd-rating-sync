@@ -87,7 +87,7 @@ func TestProcessSong_ClearsRatingWhenUntaggedAndAllowed(t *testing.T) {
 
 	dir := t.TempDir()
 	path := writeEmptyID3MP3At(t, dir, "song.mp3")
-	file := songFile{entry: FileEntry{Path: path, MTime: time.Now()}, found: true}
+	file := songFile{path: path, found: true}
 
 	host.SubsonicAPIMock.On("Call", "setRating?id=song-3&rating=0&u=alice").
 		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
@@ -123,7 +123,7 @@ func TestProcessSong_DryRunWouldRateTaggedFile(t *testing.T) {
 
 	dir := t.TempDir()
 	path := writeFMPSFileAt(t, dir, "song.mp3", "0.6")
-	file := songFile{entry: FileEntry{Path: path, MTime: time.Now()}, found: true}
+	file := songFile{path: path, found: true}
 
 	tally := &syncTally{}
 	song := subsonicSong{
@@ -154,7 +154,9 @@ func TestProcessSong_IncrementalProcessesNewlyAddedSongWithOldMTime(t *testing.T
 	dir := t.TempDir()
 	path := writeFMPSFileAt(t, dir, "renamed.mp3", "0.6")
 	threshold := time.Now().Add(-time.Hour)
-	file := songFile{entry: FileEntry{Path: path, MTime: threshold.Add(-24 * time.Hour)}, found: true}
+	old := threshold.Add(-24 * time.Hour)
+	require.NoError(t, os.Chtimes(path, old, old))
+	file := songFile{path: path, found: true}
 
 	tally := &syncTally{}
 	song := subsonicSong{
@@ -183,7 +185,9 @@ func TestProcessSong_IncrementalSkipsOldSongWithOldMTime(t *testing.T) {
 
 	threshold := time.Now().Add(-time.Hour)
 	old := threshold.Add(-24 * time.Hour)
-	file := songFile{entry: FileEntry{Path: "/nonexistent.mp3", MTime: old}, found: true}
+	path := writeFMPSFileAt(t, t.TempDir(), "old.mp3", "0.6")
+	require.NoError(t, os.Chtimes(path, old, old))
+	file := songFile{path: path, found: true}
 
 	for _, created := range []string{"", "not-a-date", old.UTC().Format(time.RFC3339Nano)} {
 		tally := &syncTally{}
@@ -203,6 +207,26 @@ func TestProcessSong_IncrementalSkipsOldSongWithOldMTime(t *testing.T) {
 	}
 }
 
+// The incremental check stats the file itself; a file that cannot be stat'ed
+// is unreadable, never unchanged or untagged.
+func TestProcessSong_IncrementalUnstattableFileCountsUnreadable(t *testing.T) {
+	resetSubsonicMock(t)
+
+	tally := &syncTally{}
+	processSong(
+		UserConfig{Username: "alice", ClearRatingIfUntagged: true, RatingTagOrder: DefaultTagOrder},
+		PluginConfig{},
+		subsonicSong{ID: "song-10", Title: "Gone", Suffix: "mp3", UserRating: 3},
+		time.Now().Add(-time.Hour),
+		songFile{path: filepath.Join(t.TempDir(), "gone.mp3"), found: true},
+		false,
+		tally,
+	)
+
+	assert.Equal(t, 1, tally.skippedUnreadable)
+	host.SubsonicAPIMock.AssertNotCalled(t, "Call", mock.Anything)
+}
+
 // An untagged song Navidrome has no rating for needs no clearing call. With
 // clearing on, the file's 0 stars equal Navidrome's 0: the same rating.
 // With clearing off, the file's missing rating is simply not used.
@@ -210,7 +234,7 @@ func TestProcessSong_UntaggedAndUnratedIsNotCleared(t *testing.T) {
 	for _, clear := range []bool{true, false} {
 		resetSubsonicMock(t)
 		path := writeEmptyID3MP3At(t, t.TempDir(), "song.mp3")
-		file := songFile{entry: FileEntry{Path: path, MTime: time.Now()}, found: true}
+		file := songFile{path: path, found: true}
 
 		tally := &syncTally{}
 		processSong(
@@ -240,7 +264,7 @@ func TestProcessSong_UntaggedAndUnratedIsNotCleared(t *testing.T) {
 func TestProcessSong_SameRatingIsNotWrittenAgain(t *testing.T) {
 	resetSubsonicMock(t)
 	path := writeFMPSFileAt(t, t.TempDir(), "song.mp3", "0.6") // 3 stars
-	file := songFile{entry: FileEntry{Path: path, MTime: time.Now()}, found: true}
+	file := songFile{path: path, found: true}
 	song := subsonicSong{ID: "song-8", Title: "Same", Suffix: "mp3", UserRating: 3}
 
 	for _, dryRun := range []bool{false, true} {
@@ -265,7 +289,7 @@ func TestProcessSong_SameRatingIsNotWrittenAgain(t *testing.T) {
 func TestProcessSong_DifferentRatingIsOverwritten(t *testing.T) {
 	resetSubsonicMock(t)
 	path := writeFMPSFileAt(t, t.TempDir(), "song.mp3", "0.6") // 3 stars
-	file := songFile{entry: FileEntry{Path: path, MTime: time.Now()}, found: true}
+	file := songFile{path: path, found: true}
 	host.SubsonicAPIMock.On("Call", "setRating?id=song-9&rating=3&u=alice").
 		Return(`{"subsonic-response":{"status":"ok"}}`, nil)
 
@@ -291,7 +315,7 @@ func TestProcessSong_HalfStarIsNeverCleared(t *testing.T) {
 
 	dir := t.TempDir()
 	path := writeFMPSFileAt(t, dir, "song.mp3", "0.7")
-	file := songFile{entry: FileEntry{Path: path, MTime: time.Now()}, found: true}
+	file := songFile{path: path, found: true}
 
 	tally := &syncTally{}
 	song := subsonicSong{ID: "song-9", Title: "Three and a half", Suffix: "mp3", UserRating: 4}

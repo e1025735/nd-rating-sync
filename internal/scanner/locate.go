@@ -2,7 +2,6 @@ package scanner
 
 import (
 	"fmt"
-	"os"
 	"path"
 	"strings"
 
@@ -11,10 +10,12 @@ import (
 	"github.com/navidrome/navidrome/plugins/pdk/go/types"
 )
 
-// songFile is where one song's file was found inside the library mount, or
-// why it could not be located.
+// songFile is where one song's file is inside the library mount, or why it
+// could not be located. The file is not stat'ed here: processSong reads its
+// mtime only when the incremental check needs it, one song at a time between
+// deadline checks, instead of for a whole page before the first song.
 type songFile struct {
-	entry  FileEntry
+	path   string
 	found  bool
 	reason string // set when !found, for the warning
 }
@@ -77,12 +78,7 @@ func locateTrack(mount libraryMount, songID string, t *types.Track) songFile {
 	if !ok {
 		return songFile{reason: fmt.Sprintf("its path %q is not inside the library root %q", t.Path, mount.hostPath)}
 	}
-	full := path.Join(mount.mountPoint, rel)
-	info, err := os.Stat(full)
-	if err != nil {
-		return songFile{reason: fmt.Sprintf("cannot stat %q: %q", full, err.Error())}
-	}
-	return songFile{entry: FileEntry{Path: full, MTime: info.ModTime()}, found: true}
+	return songFile{path: path.Join(mount.mountPoint, rel), found: true}
 }
 
 // relativeTrackPath turns a track path from the matcher into a clean,

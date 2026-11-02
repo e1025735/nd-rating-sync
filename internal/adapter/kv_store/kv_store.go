@@ -214,8 +214,23 @@ func saveSweepRecord(r SweepRecord) {
 	}
 }
 
+// ClearSweepActive deletes the sweep record of a completed sweep. A record
+// left behind would make the next sweep resume the finished one at its last
+// page and report a crash, so when the delete fails the record is replaced by
+// one without a position, which starts the next sweep normally.
 func ClearSweepActive() {
-	if err := host.KVStoreDelete(SweepActiveKey); err != nil {
-		logging.Debug(fmt.Sprintf("nd-rating-sync: KVStoreDelete(%q) failed: %q", SweepActiveKey, err.Error()))
+	err := host.KVStoreDelete(SweepActiveKey)
+	if err == nil {
+		return
+	}
+	logging.Warn(fmt.Sprintf(
+		"nd-rating-sync: KVStoreDelete(%q) failed: %q – storing the completed sweep without a position instead", SweepActiveKey, err.Error()))
+	value, err := json.Marshal(SweepRecord{At: time.Now().UTC(), Interrupted: true})
+	if err == nil {
+		err = host.KVStoreSet(SweepActiveKey, value)
+	}
+	if err != nil {
+		logging.Warn(fmt.Sprintf(
+			"nd-rating-sync: KVStoreSet(%q) failed: %q – the next sweep re-reads the last page of this one and reports it as a crash", SweepActiveKey, err.Error()))
 	}
 }

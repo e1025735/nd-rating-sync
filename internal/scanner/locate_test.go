@@ -6,7 +6,6 @@ import (
 	"os"
 	"path"
 	"testing"
-	"time"
 
 	"github.com/navidrome/navidrome/plugins/pdk/go/types"
 	"github.com/stretchr/testify/assert"
@@ -44,26 +43,22 @@ func TestLocateTrack_FindsFileInsideMount(t *testing.T) {
 	require.NoError(t, os.MkdirAll(mount+"/Artist", 0o755))
 	full := path.Join(mount, "Artist", "01.mp3")
 	require.NoError(t, os.WriteFile(full, []byte("12345"), 0o644))
-	when := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
-	require.NoError(t, os.Chtimes(full, when, when))
 
 	m := libraryMount{id: 1, mountPoint: mount, hostPath: hostLibraryRoot}
 	f := locateTrack(m, "s1", trackAt("s1", 1, "Artist/01.mp3"))
 	require.True(t, f.found, f.reason)
-	assert.Equal(t, full, f.entry.Path)
-	assert.True(t, when.Equal(f.entry.MTime), "mtime comes from the file itself")
+	assert.Equal(t, full, f.path)
 }
 
 func TestLocateTrack_ReportsWhyAFileIsNotLocated(t *testing.T) {
 	m := libraryMount{id: 1, mountPoint: t.TempDir(), hostPath: hostLibraryRoot}
 	for name, tr := range map[string]*types.Track{
-		"no track":       nil,
-		"other song":     trackAt("s2", 1, "a.mp3"),
-		"missing":        {ID: "s1", LibraryID: 1, Path: "a.mp3", Missing: true},
-		"other library":  trackAt("s1", 2, "a.mp3"),
-		"no path":        trackAt("s1", 1, ""),
-		"outside root":   trackAt("s1", 1, "/elsewhere/a.mp3"),
-		"file not there": trackAt("s1", 1, "a.mp3"),
+		"no track":      nil,
+		"other song":    trackAt("s2", 1, "a.mp3"),
+		"missing":       {ID: "s1", LibraryID: 1, Path: "a.mp3", Missing: true},
+		"other library": trackAt("s1", 2, "a.mp3"),
+		"no path":       trackAt("s1", 1, ""),
+		"outside root":  trackAt("s1", 1, "/elsewhere/a.mp3"),
 	} {
 		f := locateTrack(m, "s1", tr)
 		assert.False(t, f.found, name)

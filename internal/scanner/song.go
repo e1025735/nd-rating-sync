@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	subsonicadapter "github.com/e1025735/nd-rating-sync/internal/adapter/subsonic"
@@ -33,24 +34,34 @@ func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.
 		tally.skippedUnreadable++
 		return
 	}
-	entry := file.entry
 
 	// A renamed/moved file keeps its old mtime but is imported by Navidrome as
 	// a new, unrated song – so a song added since the last sweep is processed
-	// even when the file itself looks unchanged.
-	if !threshold.IsZero() && entry.MTime.Before(threshold) && !songAddedSince(s, threshold) {
-		logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, no change song=%q", s.ID))
-		logging.Debug(fmt.Sprintf(
-			"nd-rating-sync: skipping %q – unchanged since last scan (mtime=%s)",
-			s.Title, entry.MTime.Format(time.RFC3339)))
-		tally.skippedUnchanged++
-		return
+	// even when the file itself looks unchanged. Only the songs that reach
+	// this check are stat'ed.
+	if !threshold.IsZero() && !songAddedSince(s, threshold) {
+		info, err := os.Stat(file.path)
+		if err != nil {
+			logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, cannot stat song=%q", s.ID))
+			logging.Warn(fmt.Sprintf("nd-rating-sync: cannot stat %q (skipping)", file.path))
+			logging.Debug(fmt.Sprintf("nd-rating-sync: stat %q error: %q", file.path, err.Error()))
+			tally.skippedUnreadable++
+			return
+		}
+		if info.ModTime().Before(threshold) {
+			logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, no change song=%q", s.ID))
+			logging.Debug(fmt.Sprintf(
+				"nd-rating-sync: skipping %q – unchanged since last scan (mtime=%s)",
+				s.Title, info.ModTime().Format(time.RFC3339)))
+			tally.skippedUnchanged++
+			return
+		}
 	}
 
 	if logRead {
-		logging.Warn(fmt.Sprintf("nd-rating-sync: reading %q (song %q, id=%q) after an unexpected stop", entry.Path, s.Title, s.ID))
+		logging.Warn(fmt.Sprintf("nd-rating-sync: reading %q (song %q, id=%q) after an unexpected stop", file.path, s.Title, s.ID))
 	}
-	stars, result := extractStarsFromFile(entry.Path, s.Suffix, u.RatingTagOrder)
+	stars, result := extractStarsFromFile(file.path, s.Suffix, u.RatingTagOrder)
 	switch result {
 	case FileUnreadable:
 		logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, file unreadable song=%q", s.ID))

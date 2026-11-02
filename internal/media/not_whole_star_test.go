@@ -3,8 +3,10 @@
 package media
 
 import (
+	"math/big"
 	"testing"
 
+	"github.com/bogem/id3v2/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -80,6 +82,36 @@ func TestNotWholeStar_ZeroIsNoRating(t *testing.T) {
 			assert.Zero(t, stars)
 		})
 	}
+}
+
+// MediaMonkey's own field wins over an FMPS_Rating in the same file also when
+// it holds a half star: the file is rated 3½ stars by MediaMonkey, not 3.
+func TestNotWholeStar_MediaMonkeyOwnFieldBeatsFMPS(t *testing.T) {
+	fmps := id3v2.UserDefinedTextFrame{Encoding: id3v2.EncodingUTF8, Description: "FMPS_Rating", Value: "0.6"}
+	cases := map[string]func() (int, bool, error){
+		"MP3 POPM no@email half star": func() (int, bool, error) {
+			popm := id3v2.PopularimeterFrame{Email: "no@email", Rating: 186, Counter: big.NewInt(0)}
+			return ratingFromID3v2(makeTagWithTXXXAndPOPM(t, fmps, popm), "", []string{"MediaMonkey"})
+		},
+		"MP4 RATE half star": func() (int, bool, error) {
+			return ratingFromM4A(buildM4A(map[string]string{"RATE": "70", "FMPS_Rating": "0.6"}), "", []string{"MediaMonkey"})
+		},
+		"Vorbis RATING half star": func() (int, bool, error) {
+			return ratingFromFLAC(makeFLAC(t, "FMPS_RATING=0.6", "RATING=70"), "", []string{"MediaMonkey"})
+		},
+	}
+	for name, parse := range cases {
+		_, found, err := parse()
+		assert.ErrorIs(t, err, ErrNotWholeStar, name)
+		assert.False(t, found, name)
+	}
+
+	// An own field of 0 leaves the FMPS_Rating in place.
+	popm := id3v2.PopularimeterFrame{Email: "no@email", Rating: 0, Counter: big.NewInt(0)}
+	stars, found, err := ratingFromID3v2(makeTagWithTXXXAndPOPM(t, fmps, popm), "", []string{"MediaMonkey"})
+	require.NoError(t, err)
+	assert.True(t, found)
+	assert.Equal(t, 3, stars)
 }
 
 // A whole-star rating from a later source still wins over a half star.

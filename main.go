@@ -1,9 +1,10 @@
 // nd-rating-sync – a Navidrome plugin that reads the embedded rating tag
 // from each music file and writes it back into Navidrome via the Subsonic
-// setRating API. Supported containers: MP3, FLAC, Ogg-Vorbis, Opus, WAV,
-// DSF, M4A/AAC, and WMA. Supported rating sources (ratingTagOrder): WMP,
-// iTunes, MediaMonkey, foobar2000, MusicBee and FMPS — see CLAUDE.md,
-// "Supported tag formats", for the tag each one writes in each container.
+// setRating API. Supported containers: MP3, FLAC, Ogg-Vorbis, Opus,
+// Ogg-FLAC, WAV, DSF, M4A/AAC, and WMA. Supported rating sources
+// (ratingTagOrder): WMP, iTunes, MediaMonkey, foobar2000, MusicBee and FMPS —
+// see CLAUDE.md, "Supported tag formats", for the tag each one writes in each
+// container.
 //
 // Build: tinygo build -o plugin.wasm -target wasip1 -buildmode=c-shared .
 // Package: zip -j nd-rating-sync.ndp manifest.json plugin.wasm

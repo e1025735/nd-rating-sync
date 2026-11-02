@@ -83,12 +83,14 @@ func TestOnInit_MarksSweepInterrupted(t *testing.T) {
 // the scheduleID → handler dispatch.
 
 func TestOnCallback_RecurringRunsSyncAndErrorsWithoutLibraries(t *testing.T) {
+	noSweepRecord(t)
 	err := ratingPlugin{}.OnCallback(scheduler.SchedulerCallbackRequest{ScheduleID: scheduleID})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no libraries configured")
 }
 
 func TestOnCallback_ImmediateFallsThroughToSync(t *testing.T) {
+	noSweepRecord(t)
 	err := ratingPlugin{}.OnCallback(scheduler.SchedulerCallbackRequest{ScheduleID: scheduleIDImmediate})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no libraries configured")
@@ -104,6 +106,7 @@ func TestOnCallback_ImmediateFallsThroughToSync(t *testing.T) {
 func TestOnCallback_UnknownIDsFallThroughToSync(t *testing.T) {
 	for _, id := range []string{"", "nd-rating-sync-some-future-id", "totally-foreign-id"} {
 		t.Run(id, func(t *testing.T) {
+			noSweepRecord(t)
 			err := ratingPlugin{}.OnCallback(scheduler.SchedulerCallbackRequest{ScheduleID: id})
 			require.Error(t, err, "ID %q should route to runSyncStep (which errors on empty libraries)", id)
 			assert.Contains(t, err.Error(), "no libraries configured",
