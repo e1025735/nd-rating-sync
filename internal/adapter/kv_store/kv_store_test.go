@@ -286,3 +286,31 @@ func TestDeleteStaleLastSynced_KeepsConfiguredPairs(t *testing.T) {
 	host.KVStoreMock.AssertNotCalled(t, "Delete", keep)
 	host.KVStoreMock.AssertExpectations(t)
 }
+
+// Song IDs are query-escaped in the key, and an entry round-trips through
+// LoadCrashedFiles.
+func TestCrashedFile_SaveAndLoad(t *testing.T) {
+	resetKVStoreMock(t)
+	f := CrashedFile{Path: "/libraries/1/a.mp3", MTime: 123, Size: 456, At: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)}
+	var stored []byte
+	host.KVStoreMock.On("Set", "crashed:a%2Fb", mock.Anything).
+		Run(func(a mock.Arguments) { stored = a.Get(1).([]byte) }).Return(nil).Once()
+	SaveCrashedFile("a/b", f)
+	require.NotNil(t, stored)
+
+	host.KVStoreMock.On("List", "crashed:").Return([]string{"crashed:a%2Fb", "crashed:broken"}, nil)
+	host.KVStoreMock.On("GetMany", []string{"crashed:a%2Fb", "crashed:broken"}).
+		Return(map[string][]byte{"crashed:a%2Fb": stored, "crashed:broken": []byte("not json")}, nil)
+
+	got := LoadCrashedFiles()
+	assert.Equal(t, map[string]CrashedFile{"a/b": f}, got, "the unreadable entry is ignored")
+}
+
+// A failed lookup never blocks a sync: the quarantine reads as empty.
+func TestLoadCrashedFiles_FailedListIsEmpty(t *testing.T) {
+	resetKVStoreMock(t)
+	host.KVStoreMock.On("List", "crashed:").Return([]string(nil), errors.New("kv down"))
+
+	assert.Empty(t, LoadCrashedFiles())
+	host.KVStoreMock.AssertNotCalled(t, "GetMany", mock.Anything)
+}

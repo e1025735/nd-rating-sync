@@ -234,3 +234,76 @@ func ClearSweepActive() {
 			"nd-rating-sync: KVStoreSet(%q) failed: %q – the next sweep re-reads the last page of this one and reports it as a crash", SweepActiveKey, err.Error()))
 	}
 }
+
+// CrashedFilePrefix is the key prefix of the quarantine: the files that
+// crashed the plugin, one key per song ID (KVKeyCrashedFile).
+const CrashedFilePrefix = "crashed"
+
+// CrashedFile is a file that crashed the plugin while it was read. It is
+// skipped for every user until its size or mtime differs from the ones
+// stored here, i.e. until the file was changed.
+type CrashedFile struct {
+	Path  string    `json:"path"`
+	MTime int64     `json:"mtime"` // UnixNano; 0 when the file could not be stat'ed
+	Size  int64     `json:"size"`
+	At    time.Time `json:"at"` // when it was quarantined
+}
+
+// KVKeyCrashedFile is the quarantine key of a song. The ID is query-escaped
+// like the other keys' components.
+func KVKeyCrashedFile(songID string) string {
+	return CrashedFilePrefix + ":" + url.QueryEscape(songID)
+}
+
+// SaveCrashedFile quarantines the file of songID. A failed write is logged:
+// the file is then read again and crashes the plugin once more.
+func SaveCrashedFile(songID string, f CrashedFile) {
+	key := KVKeyCrashedFile(songID)
+	value, err := json.Marshal(f)
+	if err == nil {
+		err = host.KVStoreSet(key, value)
+	}
+	if err != nil {
+		logging.Warn(fmt.Sprintf(
+			"nd-rating-sync: KVStoreSet(%q) failed: %q – the file %q is not quarantined and will be read again", key, err.Error(), f.Path))
+	}
+}
+
+// LoadCrashedFiles returns the quarantine by song ID. A failed lookup returns
+// what could be read, so a sync is never blocked by it; a quarantined file
+// that is missing from the result is read again.
+func LoadCrashedFiles() map[string]CrashedFile {
+	files := map[string]CrashedFile{}
+	keys, err := host.KVStoreList(CrashedFilePrefix + ":")
+	if err != nil {
+		logging.Warn(fmt.Sprintf("nd-rating-sync: listing the quarantined files failed: %q – they are read again", err.Error()))
+		return files
+	}
+	if len(keys) == 0 {
+		return files
+	}
+	values, err := host.KVStoreGetMany(keys)
+	if err != nil {
+		logging.Warn(fmt.Sprintf("nd-rating-sync: reading the quarantined files failed: %q – they are read again", err.Error()))
+		return files
+	}
+	for key, raw := range values {
+		songID, err := url.QueryUnescape(strings.TrimPrefix(key, CrashedFilePrefix+":"))
+		var f CrashedFile
+		if err != nil || json.Unmarshal(raw, &f) != nil {
+			logging.Warn(fmt.Sprintf("nd-rating-sync: quarantine entry %q is unreadable – ignoring it", key))
+			continue
+		}
+		files[songID] = f
+	}
+	return files
+}
+
+// DeleteCrashedFile releases the file of songID from the quarantine. A failed
+// delete only means the release is checked again on the next sweep.
+func DeleteCrashedFile(songID string) {
+	key := KVKeyCrashedFile(songID)
+	if err := host.KVStoreDelete(key); err != nil {
+		logging.Warn(fmt.Sprintf("nd-rating-sync: KVStoreDelete(%q) failed: %q", key, err.Error()))
+	}
+}

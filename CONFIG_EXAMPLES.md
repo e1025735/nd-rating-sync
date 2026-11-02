@@ -55,6 +55,7 @@ changes how a file without a rating is counted:
 | no rating, Clear = No | nothing to do: the missing rating is not used | `skipped_no_tag` |
 | half star | left unrated | `skipped_not_whole_star` |
 | unreadable | left unrated, with a warning | `skipped_unreadable` |
+| quarantined (crashed the plugin) | left unrated | `skipped_crashed` |
 
 ### Song that already has a rating in Navidrome
 
@@ -65,11 +66,12 @@ changes how a file without a rating is counted:
 | no rating | kept (file not read) | kept | **set to 0** |
 | half star | kept (file not read) | kept | kept |
 | unreadable | kept (file not read) | kept, with a warning | kept, with a warning |
+| quarantined (crashed the plugin) | kept (file not read) | kept | kept |
 
 Counted as: Skip = Yes → `skipped_already_rated`. Otherwise "kept" for the
 same stars is `skipped_same_rating`, for no rating (Clear = No) `skipped_no_tag`, for a
 half star `skipped_not_whole_star`, for an unreadable file
-`skipped_unreadable`; a new rating is `rated`, a rating set to 0 is
+`skipped_unreadable`, for a quarantined file `skipped_crashed`; a new rating is `rated`, a rating set to 0 is
 `cleared`.
 
 Things to keep in mind:
@@ -201,7 +203,7 @@ nd-rating-sync: [DRY RUN] would clear rating for "Other song" (no tag found)
 and for each time slice a summary per user:
 
 ```
-nd-rating-sync: [DRY RUN] chunk done user="bob" library="1" – would_rate=120 would_clear=8 skipped_already_rated=0 skipped_same_rating=310 skipped_unchanged=0 skipped_no_tag=42 skipped_not_whole_star=3 skipped_unreadable=1
+nd-rating-sync: [DRY RUN] chunk done user="bob" library="1" – would_rate=120 would_clear=8 skipped_already_rated=0 skipped_same_rating=310 skipped_unchanged=0 skipped_no_tag=42 skipped_not_whole_star=3 skipped_unreadable=1 skipped_crashed=0
 ```
 
 How to read it:
@@ -213,6 +215,9 @@ How to read it:
   Navidrome rating is kept.
 - `skipped_unreadable` comes with a warning per file that says why. Such a
   file is never changed.
+- `skipped_crashed` are files that crashed the plugin and were quarantined
+  (a warning named each one when it happened). They are read again once the
+  file changes.
 - `skipped_already_rated` is everything Skip = Yes protected.
 - A large library runs in slices (`time budget reached – rescheduled
   continuation …`); it is done at `sync complete`.

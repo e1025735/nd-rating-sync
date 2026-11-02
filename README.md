@@ -70,7 +70,7 @@ See [`DETAILS.md`](DETAILS.md) for runtime behavior and rating value mapping det
 - Files whose tags cannot be read or parsed are counted as unreadable; their ratings are never cleared.
 - If `setRating` fails with API error 50, the user is not authorised in plugin User Access.
 - If a rating you changed in a file does not show up, the file's modification time may look older than the last sync (clock skew between machines, timezone/DST settings on a NAS, or a tag editor that keeps the original file time). See [Incremental sync and file times](HOW_TO_SETUP.md#incremental-sync-and-file-times); one run with `incremental_sync=false` reads every file again.
-- If the log says `the previous sync stopped unexpectedly`, the plugin crashed or ran into Navidrome's 30-second limit. It resumes there and logs every file it reads on that page (`reading … after an unexpected stop`). If it stops again, the last of those lines names the file causing it: fix or remove that file.
+- If the log says `the previous sync stopped unexpectedly`, the plugin crashed or ran into Navidrome's 30-second limit. It resumes there and watches every file on that page. If it stops again while reading one of them, that file is quarantined: the log names it (`… stopped the plugin while it was read after an earlier stop – it is quarantined`), it is skipped for every user (`skipped_crashed`) and the sync carries on. Once you fix or replace the file (its size or modification time changes), it is read again.
 
 ## Notes
 

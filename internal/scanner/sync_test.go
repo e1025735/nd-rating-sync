@@ -903,6 +903,7 @@ func TestRunSyncStepUntil_CompletedSweepDeletesStaleThresholds(t *testing.T) {
 	host.KVStoreMock.On("Get", kvKeySweepActive()).Return([]byte(nil), false, nil)
 	host.KVStoreMock.On("Set", kvKeySweepActive(), mock.Anything).Return(nil)
 	host.KVStoreMock.On("Delete", kvKeySweepActive()).Return(nil)
+	host.KVStoreMock.On("List", "crashed:").Return([]string(nil), nil)
 	host.KVStoreMock.On("List", "last-synced:").
 		Return([]string{kvKeyLastSynced("1", "alice"), kvKeyLastSynced("1", "removed")}, nil)
 	host.KVStoreMock.On("Delete", kvKeyLastSynced("1", "removed")).Return(nil).Once()
