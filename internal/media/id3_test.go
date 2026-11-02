@@ -4,6 +4,8 @@ package media
 
 import (
 	"bytes"
+	"encoding/binary"
+	"slices"
 	"testing"
 
 	"math/big"
@@ -339,5 +341,48 @@ func TestParseID3v2Rating_MediaMonkeyPOPMBeatsFMPS(t *testing.T) {
 	)
 	stars, ok := parseID3v2Rating(data, "", []string{"MediaMonkey"})
 	assert.True(t, ok)
+	assert.Equal(t, 4, stars)
+}
+
+// rawID3v23Frame builds one ID3v2.3 frame (plain 32-bit size, no flags).
+func rawID3v23Frame(id string, body []byte) []byte {
+	f := append([]byte(id), 0, 0, 0, 0, 0, 0)
+	binary.BigEndian.PutUint32(f[4:8], uint32(len(body)))
+	return append(f, body...)
+}
+
+// rawID3v23Tag assembles an ID3v2.3 tag from frames in the given order (the
+// library's writer does not keep one), followed by padding zero bytes.
+func rawID3v23Tag(padding int, frames ...[]byte) []byte {
+	body := slices.Concat(slices.Concat(frames...), make([]byte, padding))
+	n := len(body)
+	hdr := []byte{'I', 'D', '3', 3, 0, 0, byte(n >> 21 & 0x7F), byte(n >> 14 & 0x7F), byte(n >> 7 & 0x7F), byte(n & 0x7F)}
+	return append(hdr, body...)
+}
+
+// ID3v2 allows padding shorter than a 10-byte frame header, e.g. 4 zero bytes
+// after the cover art. The library used to complete such a header with stale
+// cover-art bytes and fail with "frame went over tag area"; padding must end
+// the frames instead, whatever follows the tag.
+func TestParseID3v2Rating_PaddingShorterThanFrameHeader(t *testing.T) {
+	txxx := rawID3v23Frame("TXXX", []byte("\x00FMPS_Rating\x000.8"))
+	apic := rawID3v23Frame("APIC", slices.Concat([]byte("\x00image/jpeg\x00\x03\x00"), bytes.Repeat([]byte{0xAB}, 4096)))
+	audio := []byte{0xFF, 0xFB, 0xE0, 0x64, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB}
+	for padding := 1; padding < id3v2HeaderSize; padding++ {
+		tag := rawID3v23Tag(padding, txxx, apic)
+		for name, data := range map[string][]byte{
+			"tag only":          tag,
+			"followed by audio": slices.Concat(tag, audio),
+		} {
+			stars, found, err := ratingFromID3v2(data, "", []string{"MediaMonkey"})
+			require.NoError(t, err, "padding=%d, %s", padding, name)
+			assert.True(t, found, "padding=%d, %s", padding, name)
+			assert.Equal(t, 4, stars, "padding=%d, %s", padding, name)
+		}
+	}
+
+	path := writeBinFile(t, t.TempDir(), "song.mp3", slices.Concat(rawID3v23Tag(4, txxx, apic), junkAudio()))
+	stars, result := extractStarsFromFile(path, "mp3", []string{"MediaMonkey"})
+	assert.Equal(t, tagFound, result)
 	assert.Equal(t, 4, stars)
 }

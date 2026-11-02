@@ -1,7 +1,6 @@
 package media
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -211,6 +210,48 @@ func prepareID3v2(data []byte) ([]byte, error) {
 // being decoded into yet another copy.
 var id3v2RatingFrames = []string{"TXXX", "POPM"}
 
+// id3v2TagReader serves an ID3v2 tag followed by id3v2HeaderSize zero bytes,
+// filling every Read as far as those bytes go.
+//
+// The library reads each frame header with a single Read and stops at an
+// all-zero header (padding). ID3v2 lets padding be shorter than a frame
+// header, though: when a tag ends in, say, 4 zero bytes after its cover art,
+// a bytes.Reader returns just those 4, the library takes the other 6 header
+// bytes from the cover art still in its buffer, reads a bogus frame size and
+// fails with "frame went over tag area". The trailing zeros complete such a
+// header, so the library sees padding and stops.
+type id3v2TagReader struct {
+	data []byte
+	pad  int // zero bytes left to serve after data
+}
+
+// newID3v2TagReader cuts data at the tag's declared end, so whatever follows
+// the tag (audio, a v2.4 footer, the rest of a container chunk) is never read
+// as a frame header. Data too short for a tag header gets no padding and still
+// fails as before: a corrupt WAV "id3 " chunk stays unreadable.
+func newID3v2TagReader(data []byte) *id3v2TagReader {
+	if len(data) < id3v2HeaderSize {
+		return &id3v2TagReader{data: data}
+	}
+	if size := id3v2SyncsafeSize(data[6:10]); size >= 0 && size < len(data)-id3v2HeaderSize {
+		data = data[:id3v2HeaderSize+size]
+	}
+	return &id3v2TagReader{data: data, pad: id3v2HeaderSize}
+}
+
+func (r *id3v2TagReader) Read(p []byte) (int, error) {
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	for ; n < len(p) && r.pad > 0; n++ {
+		p[n] = 0
+		r.pad--
+	}
+	if n == 0 && len(p) > 0 {
+		return 0, io.EOF
+	}
+	return n, nil
+}
+
 // ratingFromID3v2 inspects raw MP3 (or any file with an ID3v2 header) data
 // and returns a 1–5 star rating. It first collects every recognised rating
 // frame from the file (one pass), then picks the winner by tagOrder. Empty
@@ -232,7 +273,7 @@ func ratingFromID3v2(data []byte, path string, tagOrder []string) (int, bool, er
 	if err != nil {
 		return 0, false, err
 	}
-	tag, err := id3v2.ParseReader(bytes.NewReader(data), id3v2.Options{Parse: true, ParseFrames: id3v2RatingFrames})
+	tag, err := id3v2.ParseReader(newID3v2TagReader(data), id3v2.Options{Parse: true, ParseFrames: id3v2RatingFrames})
 	if err != nil {
 		return 0, false, fmt.Errorf("parse ID3v2 tag: %w", err)
 	}
