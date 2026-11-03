@@ -35,6 +35,12 @@ func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.
 		return
 	}
 
+	if env.crashed {
+		logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, file just quarantined song=%q", s.ID))
+		tally.skippedCrashed++
+		return
+	}
+
 	// From here on the file is accessed (stat'ed or read).
 	if env.watch != nil {
 		logging.Debug(fmt.Sprintf("nd-rating-sync: watching %q (song %q, id=%q) after an unexpected stop", file.path, s.Title, s.ID))

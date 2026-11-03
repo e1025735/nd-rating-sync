@@ -175,9 +175,10 @@ func LoadSweepRecord() (SweepRecord, bool) {
 }
 
 // MarkSweepActive refreshes the heartbeat and records cursor (a marshalled
-// scanner cursor) as the position the sweep has reached.
-func MarkSweepActive(cursor string) {
-	saveSweepRecord(SweepRecord{At: time.Now().UTC(), Cursor: rawCursor(cursor)})
+// scanner cursor) as the position the sweep has reached. It reports whether
+// the record was written; a failure is already logged.
+func MarkSweepActive(cursor string) bool {
+	return saveSweepRecord(SweepRecord{At: time.Now().UTC(), Cursor: rawCursor(cursor)})
 }
 
 // MarkSweepInterrupted records that the running sweep stopped without a crash,
@@ -203,7 +204,7 @@ func rawCursor(cursor string) json.RawMessage {
 	return json.RawMessage(cursor)
 }
 
-func saveSweepRecord(r SweepRecord) {
+func saveSweepRecord(r SweepRecord) bool {
 	value, err := json.Marshal(r)
 	if err == nil {
 		err = host.KVStoreSet(SweepActiveKey, value)
@@ -211,7 +212,9 @@ func saveSweepRecord(r SweepRecord) {
 	if err != nil {
 		logging.Warn(fmt.Sprintf(
 			"nd-rating-sync: KVStoreSet(%q) failed: %q – overlapping sweeps are not prevented and a crashed sweep restarts from the beginning until it works again", SweepActiveKey, err.Error()))
+		return false
 	}
+	return true
 }
 
 // ClearSweepActive deletes the sweep record of a completed sweep. A record

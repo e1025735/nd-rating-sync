@@ -179,8 +179,10 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 // startOrResumeSweep). While cur.LogReadsUntil is set, every file up to that
 // offset is watched before it is accessed (watchRead), so a file that stops
 // the plugin again is quarantined; once the cursor passes it, files are no
-// longer watched.
-func processPairChunk(p pairRun, cur SyncCursor, deadline time.Time) (SyncCursor, bool) {
+// longer watched. A watched song stays in the record until the next write,
+// so the record is written once more on return: a stop in later work of the
+// callback (the threshold, the next pairs) must not quarantine that file.
+func processPairChunk(p pairRun, cur SyncCursor, deadline time.Time) (next SyncCursor, pairDone bool) {
 	lib, u, cfg := p.lib, p.user, p.cfg
 	logging.Trace(fmt.Sprintf("nd-rating-sync: processPairChunk start lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
 	if cfg.DryRun {
@@ -199,6 +201,12 @@ func processPairChunk(p pairRun, cur SyncCursor, deadline time.Time) (SyncCursor
 
 	var tally syncTally
 	defer func() { tally.log(u.Username, lib.LibraryID, cfg.DryRun) }()
+	watched := false
+	defer func() {
+		if watched {
+			kvadapter.MarkSweepActive(next.marshal())
+		}
+	}()
 	for {
 		pageOffset := (cur.Offset / songPageSize) * songPageSize
 		skip := cur.Offset - pageOffset
@@ -234,9 +242,10 @@ func processPairChunk(p pairRun, cur SyncCursor, deadline time.Time) (SyncCursor
 		}
 
 		for i := skip; i < len(page); i++ {
-			env := songEnv{quarantine: p.quarantine}
+			env := songEnv{quarantine: p.quarantine, crashed: cur.Skip != "" && page[i].ID == cur.Skip}
 			if pageOffset+i < cur.LogReadsUntil {
 				env.watch = watchRead(cur, page[i].ID) // cur.Offset is this song's offset
+				watched = true
 			}
 			processSong(u, cfg, page[i], p.threshold, files[page[i].ID], env, &tally)
 			cur.Offset = pageOffset + i + 1

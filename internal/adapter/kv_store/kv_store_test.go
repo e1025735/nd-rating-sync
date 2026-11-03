@@ -196,12 +196,16 @@ func TestSweepInProgress_KVErrorFailsOpen(t *testing.T) {
 	assert.False(t, sweepInProgress(), "KV error must not block a sync")
 }
 
-func TestMarkSweepActive_KVErrorIsSwallowed(t *testing.T) {
+// A failed write never stops a sync, but is reported, so a crash hunt can
+// fall back to naming the file in the log.
+func TestMarkSweepActive_KVErrorIsReported(t *testing.T) {
 	resetKVStoreMock(t)
 	host.KVStoreMock.On("Set", SweepActiveKey, mock.Anything).
-		Return(errors.New("storage limit exceeded: would use 1.0 MB of 1.0 MB allowed"))
+		Return(errors.New("storage limit exceeded: would use 1.0 MB of 1.0 MB allowed")).Once()
+	assert.False(t, MarkSweepActive(""))
 
-	MarkSweepActive("")
+	host.KVStoreMock.On("Set", SweepActiveKey, mock.Anything).Return(nil).Once()
+	assert.True(t, MarkSweepActive(""))
 }
 
 func TestLoadSweepRecord_ReadsCursorAndOldTimestampFormat(t *testing.T) {
