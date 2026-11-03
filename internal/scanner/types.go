@@ -56,10 +56,24 @@ type SyncCursor struct {
 	// progress (see maxPairAttempts). Non-zero delays the continuation.
 	Retry int `json:"retry,omitempty"`
 	// LogReadsUntil is set after a crash: up to this song offset (the end of
-	// the page the crash happened on) every file is logged as a warning
-	// before it is read, so a file that crashes the plugin again is the last
-	// one in the log. 0 = normal logging.
+	// the page the crash happened on) every file is watched before it is
+	// accessed (see watchRead), so a file that crashes the plugin again is
+	// quarantined. 0 = no watching.
 	LogReadsUntil int `json:"logto,omitempty"`
+	// Reading is only set in the sweep record, by watchRead: the song whose
+	// file is about to be accessed. A record that still holds it after a
+	// stop names the file that crashed the plugin (startOrResumeSweep).
+	Reading *readingSong `json:"reading,omitempty"`
+	// Skip is the ID of the song whose file was just quarantined: it is
+	// skipped in this pair whatever its offset, and also when the
+	// quarantine write failed. Cleared with the pair.
+	Skip string `json:"skip,omitempty"`
+}
+
+// readingSong is the song whose file a crash hunt is about to access.
+type readingSong struct {
+	ID   string `json:"id"`
+	Path string `json:"path"`
 }
 
 // nextPair moves the cursor to the next user of the current library and
@@ -96,6 +110,11 @@ var DefaultTagOrder = []string{"WMP", "iTunes", "MediaMonkey", "foobar2000", "Mu
 // continuation. Navidrome force-closes a call after 30 s; the budget stays
 // well below that (see CLAUDE.md, "Sync execution").
 const callBudget = 15 * time.Second
+
+// cleanupReserve is the budget a completed sweep must have left for its
+// cleanup (deleteStaleThresholds, pruneQuarantine); with less, the cleanup
+// runs in a continuation, so it never pushes a callback toward the 30 s limit.
+const cleanupReserve = 5 * time.Second
 
 const (
 	// maxPairAttempts bounds how often one pair is retried after a callback
@@ -173,11 +192,20 @@ func runSyncStepUntil(cfg PluginConfig, payload string, deadline time.Time) erro
 	kvadapter.MarkSweepActive(cur.marshal())
 
 	next, done := runSyncChunk(cfg, cur, deadline)
-	if done {
-		kvadapter.ClearSweepActive()
+	if done && time.Until(deadline) >= cleanupReserve {
 		deleteStaleThresholds(cfg)
+		pruneQuarantine(cfg)
+		kvadapter.ClearSweepActive()
 		logging.Info("nd-rating-sync: sync complete")
 		return nil
+	}
+	if done {
+		// Every song is done, but too little budget is left for the cleanup
+		// (KV listings, a matcher call, a stat per quarantined file). A
+		// continuation does it with a fresh budget: its cursor lies past the
+		// last library, so it goes straight to the cleanup. The sweep record
+		// stays until then, so a stop in between only repeats the cleanup.
+		logging.Info("nd-rating-sync: all songs synced – finishing the cleanup in a continuation")
 	}
 	delay := int32(0)
 	if next.Retry > 0 {
@@ -223,9 +251,14 @@ func deleteStaleThresholds(cfg PluginConfig) {
 //     happened;
 //   - otherwise the callback crashed: the plugin cannot log anything once it
 //     is dead, so the sweep resumes at the start of the page it was on and
-//     logs every file read on that page as a warning before reading it. If a
-//     file crashes the plugin again, it is the last file in the log; the
-//     next page is read normally again.
+//     watches every file accessed on that page (watchRead): before each one
+//     it stores the song in the record. The next page is read normally
+//     again;
+//   - a record that still names the song being read (Reading) means the
+//     plugin stopped again while watching that file: it is quarantined
+//     (quarantineFile) and the sweep resumes at its offset, skipping it by
+//     ID (Skip). This holds for
+//     an interrupted record too, since a reload keeps the cursor of a crash.
 func startOrResumeSweep(cfg PluginConfig) (cur SyncCursor, busy bool) {
 	rec, found := kvadapter.LoadSweepRecord()
 	if !found {
@@ -241,6 +274,22 @@ func startOrResumeSweep(cfg PluginConfig) (cur SyncCursor, busy bool) {
 	if !ok {
 		return SyncCursor{}, false
 	}
+	if cur.Reading != nil {
+		// The rest of the crash page stays watched (LogReadsUntil is kept),
+		// so a second such file on it is found the same way.
+		// The sweep resumes at the song's own offset rather than after it:
+		// songs before it may have disappeared since, so the offset alone
+		// could point at another song. The song is skipped by its ID (Skip),
+		// even if the quarantine could not be written.
+		crashed := *cur.Reading
+		quarantineFile(crashed)
+		cur.Reading = nil
+		cur.Skip = crashed.ID
+		logging.Warn(fmt.Sprintf(
+			"nd-rating-sync: %q (song id=%q) stopped the plugin while it was read after an earlier stop – it is quarantined: skipped for every user until the file changes; resuming at %s",
+			crashed.Path, crashed.ID, describeCursor(cfg, cur)))
+		return cur, false
+	}
 	cur.LogReadsUntil = 0
 	where := describeCursor(cfg, cur)
 	if rec.Interrupted {
@@ -249,7 +298,7 @@ func startOrResumeSweep(cfg PluginConfig) (cur SyncCursor, busy bool) {
 	}
 	cur.LogReadsUntil = pageEnd(cur.Offset)
 	logging.Warn(fmt.Sprintf(
-		"nd-rating-sync: the previous sync stopped unexpectedly at %s (the plugin crashed or exceeded Navidrome's 30 s limit) – resuming there and logging every file read up to song offset %d; if the plugin stops again, the last \"reading\" warning before the stop names the file that causes it",
+		"nd-rating-sync: the previous sync stopped unexpectedly at %s (the plugin crashed or exceeded Navidrome's 30 s limit) – resuming there and watching every file up to song offset %d; a file that stops the plugin again is quarantined",
 		where, cur.LogReadsUntil))
 	return cur, false
 }

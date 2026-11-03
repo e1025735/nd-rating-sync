@@ -12,11 +12,11 @@ import (
 type subsonicSong = subsonicadapter.SubsonicSong
 
 // processSong syncs one song. file is where locateSongFiles found the song's
-// file; it is not consulted for a song skipped as already rated. logRead
-// logs the file as a warning before it is read: after a crash, the last such
-// line before the next stop names the file that crashes the plugin (the
-// plugin cannot log once it has died).
-func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.Time, file songFile, logRead bool, tally *syncTally) {
+// file; it is not consulted for a song skipped as already rated. env holds
+// the quarantine, whose files are skipped, and during a crash hunt the hook
+// that records the file before it is accessed (the plugin cannot log once it
+// has died, so a stop while the file is read is found from that record).
+func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.Time, file songFile, env songEnv, tally *syncTally) {
 	logging.Trace(fmt.Sprintf("nd-rating-sync: processSong start song=%q", s.ID))
 	if u.SkipAlreadyRated && s.UserRating > 0 {
 		logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, already rated song=%q", s.ID))
@@ -32,6 +32,24 @@ func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.
 			"nd-rating-sync: cannot locate the file of %q (id=%q): %s – skipping",
 			s.Title, s.ID, file.reason))
 		tally.skippedUnreadable++
+		return
+	}
+
+	if env.crashed {
+		logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, file just quarantined song=%q", s.ID))
+		tally.skippedCrashed++
+		return
+	}
+
+	// From here on the file is accessed (stat'ed or read).
+	if env.watch != nil {
+		logging.Debug(fmt.Sprintf("nd-rating-sync: watching %q (song %q, id=%q) after an unexpected stop", file.path, s.Title, s.ID))
+		env.watch(file.path)
+	}
+	if env.quarantine.holds(s.ID, file.path) {
+		logging.Trace(fmt.Sprintf("nd-rating-sync: processSong stop, quarantined song=%q", s.ID))
+		logging.Debug(fmt.Sprintf("nd-rating-sync: skipping %q – its file %q crashed the plugin and has not changed since", s.Title, file.path))
+		tally.skippedCrashed++
 		return
 	}
 
@@ -58,9 +76,6 @@ func processSong(u UserConfig, cfg PluginConfig, s subsonicSong, threshold time.
 		}
 	}
 
-	if logRead {
-		logging.Warn(fmt.Sprintf("nd-rating-sync: reading %q (song %q, id=%q) after an unexpected stop", file.path, s.Title, s.ID))
-	}
 	stars, result := extractStarsFromFile(file.path, s.Suffix, u.RatingTagOrder)
 	switch result {
 	case FileUnreadable:

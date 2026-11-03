@@ -49,7 +49,7 @@ func TestProcessSong_SkipsAlreadyRated(t *testing.T) {
 		song,
 		time.Time{},
 		songFile{},
-		false,
+		songEnv{},
 		tally,
 	)
 
@@ -74,7 +74,7 @@ func TestProcessSong_UnlocatedFileCountsUnreadable(t *testing.T) {
 		song,
 		time.Time{},
 		songFile{reason: "Navidrome returned no track for this song ID"},
-		false,
+		songEnv{},
 		tally,
 	)
 
@@ -110,7 +110,7 @@ func TestProcessSong_ClearsRatingWhenUntaggedAndAllowed(t *testing.T) {
 		song,
 		time.Time{},
 		file,
-		false,
+		songEnv{},
 		tally,
 	)
 
@@ -138,7 +138,7 @@ func TestProcessSong_DryRunWouldRateTaggedFile(t *testing.T) {
 		song,
 		time.Time{},
 		file,
-		false,
+		songEnv{},
 		tally,
 	)
 
@@ -172,7 +172,7 @@ func TestProcessSong_IncrementalProcessesNewlyAddedSongWithOldMTime(t *testing.T
 		song,
 		threshold,
 		file,
-		false,
+		songEnv{},
 		tally,
 	)
 
@@ -199,7 +199,7 @@ func TestProcessSong_IncrementalSkipsOldSongWithOldMTime(t *testing.T) {
 			song,
 			threshold,
 			file,
-			false,
+			songEnv{},
 			tally,
 		)
 
@@ -219,7 +219,7 @@ func TestProcessSong_IncrementalUnstattableFileCountsUnreadable(t *testing.T) {
 		subsonicSong{ID: "song-10", Title: "Gone", Suffix: "mp3", UserRating: 3},
 		time.Now().Add(-time.Hour),
 		songFile{path: filepath.Join(t.TempDir(), "gone.mp3"), found: true},
-		false,
+		songEnv{},
 		tally,
 	)
 
@@ -243,7 +243,7 @@ func TestProcessSong_UntaggedAndUnratedIsNotCleared(t *testing.T) {
 			subsonicSong{ID: "song-7", Title: "Unrated", Suffix: "mp3"},
 			time.Time{},
 			file,
-			false,
+			songEnv{},
 			tally,
 		)
 
@@ -275,7 +275,7 @@ func TestProcessSong_SameRatingIsNotWrittenAgain(t *testing.T) {
 			song,
 			time.Time{},
 			file,
-			false,
+			songEnv{},
 			tally,
 		)
 		assert.Equal(t, 1, tally.skippedSameRating, "dryRun=%v", dryRun)
@@ -300,7 +300,7 @@ func TestProcessSong_DifferentRatingIsOverwritten(t *testing.T) {
 		subsonicSong{ID: "song-9", Title: "Changed", Suffix: "mp3", UserRating: 5},
 		time.Time{},
 		file,
-		false,
+		songEnv{},
 		tally,
 	)
 
@@ -320,7 +320,7 @@ func TestProcessSong_HalfStarIsNeverCleared(t *testing.T) {
 	tally := &syncTally{}
 	song := subsonicSong{ID: "song-9", Title: "Three and a half", Suffix: "mp3", UserRating: 4}
 	processSong(UserConfig{Username: "alice", ClearRatingIfUntagged: true, RatingTagOrder: []string{"FMPS"}},
-		PluginConfig{}, song, time.Time{}, file, false, tally)
+		PluginConfig{}, song, time.Time{}, file, songEnv{}, tally)
 
 	assert.Equal(t, 1, tally.skippedNotWholeStar)
 	assert.Zero(t, tally.cleared)

@@ -251,11 +251,13 @@ func mockGetLibrary(libID int32, mountPoint string) {
 }
 
 // allowSweepRecordWrites lets processPairChunk store its position in the
-// sweep record at every page, and a completed sweep look for stale
-// thresholds, without each test spelling it out.
+// sweep record at every page, runSyncChunk find an empty quarantine, and a
+// completed sweep look for stale thresholds, without each test spelling it
+// out.
 func allowSweepRecordWrites() {
 	host.KVStoreMock.On("Set", kvadapter.SweepActiveKey, mock.Anything).Return(nil).Maybe()
 	host.KVStoreMock.On("List", kvadapter.LibraryUserLastSyncPrefix+":").Return([]string(nil), nil).Maybe()
+	host.KVStoreMock.On("List", kvadapter.CrashedFilePrefix+":").Return([]string(nil), nil).Maybe()
 	allowAccessLookupsToFail()
 }
 

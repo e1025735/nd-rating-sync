@@ -14,11 +14,12 @@ const songPageSize = subsonicadapter.SongPageSize
 // pairRun is the (library, user) pair processPairChunk works on, with what
 // runSyncChunk resolved for it.
 type pairRun struct {
-	lib       LibraryConfig
-	user      UserConfig
-	cfg       PluginConfig
-	mount     libraryMount
-	threshold time.Time // incremental threshold; zero reads every file
+	lib        LibraryConfig
+	user       UserConfig
+	cfg        PluginConfig
+	mount      libraryMount
+	threshold  time.Time   // incremental threshold; zero reads every file
+	quarantine *quarantine // files that crashed the plugin
 }
 
 // runSyncChunk processes as many songs as fit before deadline, starting from
@@ -35,6 +36,7 @@ type pairRun struct {
 // terminates.
 func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCursor, bool) {
 	lookups := newHostLookups()
+	var quarantined *quarantine // read on the first pair that is processed
 
 	logging.Trace(fmt.Sprintf("nd-rating-sync: runSyncChunk start lib=%d user=%d offset=%d deadline=%s",
 		cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
@@ -131,7 +133,10 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 			cur.Pair = id
 		}
 
-		next, pairDone := processPairChunk(pairRun{lib: lib, user: u, cfg: cfg, mount: mount, threshold: threshold}, cur, deadline)
+		if quarantined == nil {
+			quarantined = loadQuarantine()
+		}
+		next, pairDone := processPairChunk(pairRun{lib: lib, user: u, cfg: cfg, mount: mount, threshold: threshold, quarantine: quarantined}, cur, deadline)
 		cur = next
 		if !pairDone {
 			if cur.Retry >= maxPairAttempts {
@@ -171,10 +176,13 @@ func runSyncChunk(cfg PluginConfig, cur SyncCursor, deadline time.Time) (SyncCur
 //
 // The position is stored in the sweep record at the start of every page, so
 // a callback that crashes on a page is resumed at that page's start (see
-// startOrResumeSweep). While cur.LogReadsUntil is set, every file read up to
-// that offset is logged as a warning first; once the cursor passes it,
-// logging is normal again.
-func processPairChunk(p pairRun, cur SyncCursor, deadline time.Time) (SyncCursor, bool) {
+// startOrResumeSweep). While cur.LogReadsUntil is set, every file up to that
+// offset is watched before it is accessed (watchRead), so a file that stops
+// the plugin again is quarantined; once the cursor passes it, files are no
+// longer watched. A watched song stays in the record until the next write,
+// so the record is written once more on return: a stop in later work of the
+// callback (the threshold, the next pairs) must not quarantine that file.
+func processPairChunk(p pairRun, cur SyncCursor, deadline time.Time) (next SyncCursor, pairDone bool) {
 	lib, u, cfg := p.lib, p.user, p.cfg
 	logging.Trace(fmt.Sprintf("nd-rating-sync: processPairChunk start lib=%d user=%d offset=%d deadline=%s", cur.Lib, cur.User, cur.Offset, deadline.Format(time.RFC3339Nano)))
 	if cfg.DryRun {
@@ -193,6 +201,12 @@ func processPairChunk(p pairRun, cur SyncCursor, deadline time.Time) (SyncCursor
 
 	var tally syncTally
 	defer func() { tally.log(u.Username, lib.LibraryID, cfg.DryRun) }()
+	watched := false
+	defer func() {
+		if watched {
+			kvadapter.MarkSweepActive(next.marshal())
+		}
+	}()
 	for {
 		pageOffset := (cur.Offset / songPageSize) * songPageSize
 		skip := cur.Offset - pageOffset
@@ -228,13 +242,17 @@ func processPairChunk(p pairRun, cur SyncCursor, deadline time.Time) (SyncCursor
 		}
 
 		for i := skip; i < len(page); i++ {
-			logRead := pageOffset+i < cur.LogReadsUntil
-			processSong(u, cfg, page[i], p.threshold, files[page[i].ID], logRead, &tally)
+			env := songEnv{quarantine: p.quarantine, crashed: cur.Skip != "" && page[i].ID == cur.Skip}
+			if pageOffset+i < cur.LogReadsUntil {
+				env.watch = watchRead(cur, page[i].ID) // cur.Offset is this song's offset
+				watched = true
+			}
+			processSong(u, cfg, page[i], p.threshold, files[page[i].ID], env, &tally)
 			cur.Offset = pageOffset + i + 1
 			cur.Retry = 0
 			if cur.LogReadsUntil > 0 && cur.Offset >= cur.LogReadsUntil {
 				logging.Info(fmt.Sprintf(
-					"nd-rating-sync: user=%q library=%q – the songs up to offset %d were read without a stop; file reads are no longer logged",
+					"nd-rating-sync: user=%q library=%q – the songs up to offset %d were read without a stop; files are no longer watched",
 					u.Username, lib.LibraryID, cur.LogReadsUntil))
 				cur.LogReadsUntil = 0
 			}
@@ -259,19 +277,19 @@ type syncTally struct {
 	rated, cleared, wouldRate, wouldClear         int
 	skippedRated, skippedNoTag, skippedUnchanged  int
 	skippedUnreadable, skippedSameRating, errored int
-	skippedNotWholeStar                           int
+	skippedNotWholeStar, skippedCrashed           int
 }
 
 func (t syncTally) log(username, libraryID string, dryRun bool) {
 	if dryRun {
 		logging.Info(fmt.Sprintf(
-			"nd-rating-sync: [DRY RUN] chunk done user=%q library=%q – would_rate=%d would_clear=%d skipped_already_rated=%d skipped_same_rating=%d skipped_unchanged=%d skipped_no_tag=%d skipped_not_whole_star=%d skipped_unreadable=%d",
-			username, libraryID, t.wouldRate, t.wouldClear, t.skippedRated, t.skippedSameRating, t.skippedUnchanged, t.skippedNoTag, t.skippedNotWholeStar, t.skippedUnreadable))
+			"nd-rating-sync: [DRY RUN] chunk done user=%q library=%q – would_rate=%d would_clear=%d skipped_already_rated=%d skipped_same_rating=%d skipped_unchanged=%d skipped_no_tag=%d skipped_not_whole_star=%d skipped_unreadable=%d skipped_crashed=%d",
+			username, libraryID, t.wouldRate, t.wouldClear, t.skippedRated, t.skippedSameRating, t.skippedUnchanged, t.skippedNoTag, t.skippedNotWholeStar, t.skippedUnreadable, t.skippedCrashed))
 		return
 	}
 	logging.Info(fmt.Sprintf(
-		"nd-rating-sync: chunk done user=%q library=%q – rated=%d cleared=%d skipped_already_rated=%d skipped_same_rating=%d skipped_unchanged=%d skipped_no_tag=%d skipped_not_whole_star=%d skipped_unreadable=%d errors=%d",
-		username, libraryID, t.rated, t.cleared, t.skippedRated, t.skippedSameRating, t.skippedUnchanged, t.skippedNoTag, t.skippedNotWholeStar, t.skippedUnreadable, t.errored))
+		"nd-rating-sync: chunk done user=%q library=%q – rated=%d cleared=%d skipped_already_rated=%d skipped_same_rating=%d skipped_unchanged=%d skipped_no_tag=%d skipped_not_whole_star=%d skipped_unreadable=%d skipped_crashed=%d errors=%d",
+		username, libraryID, t.rated, t.cleared, t.skippedRated, t.skippedSameRating, t.skippedUnchanged, t.skippedNoTag, t.skippedNotWholeStar, t.skippedUnreadable, t.skippedCrashed, t.errored))
 }
 
 // formatThreshold renders a threshold timestamp for log output, with a
